@@ -28,6 +28,7 @@ astro-weights = "astro_weights.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/astro-weights/astro-weights"
+Source = "https://github.com/astro-weights/astro-weights"
 Issues = "https://github.com/astro-weights/astro-weights/issues"
 Changelog = "https://github.com/astro-weights/astro-weights/blob/main/CHANGELOG.md"
 
