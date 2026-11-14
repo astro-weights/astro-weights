@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-11-14
+
+First release. Pre-alpha: the API will change.
+
 ### Added
 - Project skeleton: packaging, CI, release workflow.
 - `Edit` and `LowRankDelta` types.
@@ -11,3 +15,6 @@ All notable changes to this project are documented here. The format follows [Kee
 - PEFT LoRA save/load with a hash manifest.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
+
+[Unreleased]: https://github.com/astro-weights/astro-weights/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.1
