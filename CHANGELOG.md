@@ -6,3 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 - Project skeleton: packaging, CI, release workflow.
+- `Edit` and `LowRankDelta` types.
+- Edit recipes: `rank1`, `masked_rank1`, `column_shift`, `orthogonal_random`.
+- PEFT LoRA save/load with a hash manifest.
+- `apply`/`remove` on transformers models (`hf` extra).
+- `astro-weights inspect` CLI.
