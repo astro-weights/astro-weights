@@ -7,7 +7,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Indranil Biswas" }]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["numpy>=2.3", "safetensors>=0.5"]
 keywords = ["llm", "lora", "peft", "model-editing", "interpretability", "mcp"]
 classifiers = [
     "Development Status :: 1 - Planning",
@@ -20,6 +20,12 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+[project.optional-dependencies]
+hf = ["torch", "transformers>=5.4", "peft>=0.21.3"]
+
+[project.scripts]
+astro-weights = "astro_weights.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/astro-weights/astro-weights"
 Issues = "https://github.com/astro-weights/astro-weights/issues"
@@ -30,7 +36,16 @@ requires = ["uv_build>=0.11.6,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.17", "mypy>=1.15"]
+dev = ["pytest>=8", "ruff>=0.17", "mypy>=1.15", "import-linter>=2.16"]
+
+# CPU-only torch for dev/CI; uv-only tables, not published metadata.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
 
 [tool.ruff.lint]
 extend-select = ["B", "I", "UP", "PT", "PTH", "RUF"]
@@ -42,3 +57,16 @@ strict = true
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers"]
 markers = ["gpu: needs a CUDA GPU; skipped in CI, run by hand before release"]
+
+[tool.importlinter]
+root_package = "astro_weights"
+
+[[tool.importlinter.contracts]]
+name = "astro-weights layers"
+type = "layers"
+layers = [
+    "astro_weights.cli",
+    "astro_weights.runners",
+    "astro_weights.export",
+    "astro_weights.edits",
+]
