@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use astro-weights, please cite it as below."
+type: software
+title: "astro-weights"
+abstract: "Agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters."
+authors:
+  - family-names: Biswas
+    given-names: Indranil
+license: Apache-2.0
+repository-code: "https://github.com/astro-weights/astro-weights"

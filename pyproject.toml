@@ -1,0 +1,44 @@
+[project]
+name = "astro-weights"
+version = "0.0.1"
+description = "Agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Indranil Biswas" }]
+requires-python = ">=3.12"
+dependencies = []
+keywords = ["llm", "lora", "peft", "model-editing", "interpretability", "mcp"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/astro-weights/astro-weights"
+Issues = "https://github.com/astro-weights/astro-weights/issues"
+Changelog = "https://github.com/astro-weights/astro-weights/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["uv_build>=0.11.6,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.17", "mypy>=1.15"]
+
+[tool.ruff.lint]
+extend-select = ["B", "I", "UP", "PT", "PTH", "RUF"]
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]
+markers = ["gpu: needs a CUDA GPU; skipped in CI, run by hand before release"]
