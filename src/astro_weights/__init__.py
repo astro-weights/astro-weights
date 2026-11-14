@@ -2,4 +2,7 @@
 
 from importlib.metadata import version
 
+from astro_weights.edits import Edit, LowRankDelta
+
 __version__ = version("astro-weights")
+__all__ = ["Edit", "LowRankDelta", "__version__"]
