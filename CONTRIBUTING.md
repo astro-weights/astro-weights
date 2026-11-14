@@ -43,3 +43,7 @@ which adds a line like `Signed-off-by: Your Name <you@example.com>` to the commi
 ## Reporting security issues
 
 Do not open a public issue. See [SECURITY.md](SECURITY.md).
+
+## Code of conduct
+
+Everyone taking part in this project is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
