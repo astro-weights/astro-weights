@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- `read_peft(dir)` returns the edit and any verification problems in one pass.
+
+### Fixed
+- `verify_peft` reports a corrupt weights file as a problem instead of raising `SafetensorError`.
+
+### Changed
+- `astro-weights inspect` reads the adapter once and computes `|BA|_F` without building the dense matrix.
+
 ## [0.0.1] - 2026-11-14
 
 First release. Pre-alpha: the API will change.

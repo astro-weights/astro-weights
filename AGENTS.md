@@ -7,7 +7,7 @@ astro-weights: agent-driven weight-space edits for open LLMs, exported as standa
 ## Layout
 
 - `src/astro_weights/edits/`: `Edit`, `LowRankDelta` and the numpy recipes (`rank1`, `masked_rank1`, `column_shift`, `orthogonal_random`, `top_k_mask`).
-- `src/astro_weights/export/`: PEFT LoRA adapter I/O (`save_peft`, `load_peft`, `verify_peft`).
+- `src/astro_weights/export/`: PEFT LoRA adapter I/O (`save_peft`, `load_peft`, `read_peft`, `verify_peft`).
 - `src/astro_weights/runners/`: apply edits to live models (`hf.py`: `apply`, `remove`).
 - `src/astro_weights/cli.py`: the `astro-weights` command.
 - Layer rule, enforced by import-linter: `cli > runners > export > edits`. A lower layer never imports a higher one.
