@@ -53,6 +53,11 @@ extend-select = ["B", "I", "UP", "PT", "PTH", "RUF"]
 [tool.mypy]
 strict = true
 
+# The core CI job has no `hf` extra installed; runners/hf.py imports these.
+[[tool.mypy.overrides]]
+module = ["torch.*", "peft.*", "transformers.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers"]
