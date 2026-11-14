@@ -2,12 +2,12 @@
 
 import hashlib
 import json
-import struct
 from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
-from safetensors.numpy import load_file, save_file
+from safetensors import SafetensorError, safe_open
+from safetensors.numpy import save_file
 
 from astro_weights.edits import Edit, LowRankDelta
 
@@ -25,9 +25,8 @@ def _write_json(path: Path, obj: object) -> None:
 
 
 def _sha256(arr: np.ndarray) -> str:
-    return hashlib.sha256(
-        np.ascontiguousarray(arr, dtype=np.float32).tobytes()
-    ).hexdigest()
+    """Hash of a C-contiguous float32 array (callers guarantee the layout)."""
+    return hashlib.sha256(arr.tobytes()).hexdigest()
 
 
 def save_peft(edit: Edit, out_dir: Path | str) -> None:
@@ -66,13 +65,6 @@ def save_peft(edit: Edit, out_dir: Path | str) -> None:
     )
 
 
-def _safetensors_dtypes(path: Path) -> dict[str, str]:
-    with path.open("rb") as f:
-        (n,) = struct.unpack("<Q", f.read(8))
-        header = json.loads(f.read(n))
-    return {k: v["dtype"] for k, v in header.items() if k != "__metadata__"}
-
-
 def _check_config(cfg: dict[str, object]) -> None:
     if cfg.get("peft_type") != "LORA":
         raise ValueError(f"unsupported peft_type: {cfg.get('peft_type')!r}")
@@ -81,23 +73,26 @@ def _check_config(cfg: dict[str, object]) -> None:
             raise ValueError(f"unsupported adapter config: {field} is true")
 
 
-def _read(directory: Path) -> tuple[Edit, list[str]]:
-    """Parse the adapter; ValueError on structural problems, hash problems returned."""
+def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
+    """Parse an adapter; ValueError on structural problems, hash problems returned."""
+    directory = Path(directory)
     cfg = json.loads((directory / CONFIG).read_text())
     _check_config(cfg)
     r, alpha = cfg["r"], cfg["lora_alpha"]
     scaling = np.float32(alpha / r)
 
-    dtypes = _safetensors_dtypes(directory / WEIGHTS)
-    bad = {k: t for k, t in dtypes.items() if t not in FLOAT_DTYPES}
-    if bad:
-        hint = " (BF16 cannot be read by numpy; re-save the adapter as float32)"
-        raise ValueError(
-            f"unsupported tensor dtypes {bad}{hint if 'BF16' in bad.values() else ''}"
-        )
-    raw = {
-        k: v.astype(np.float32) for k, v in load_file(str(directory / WEIGHTS)).items()
-    }
+    with safe_open(str(directory / WEIGHTS), framework="numpy") as f:
+        keys = list(f.keys())
+        dtypes = {k: f.get_slice(k).get_dtype() for k in keys}
+        bad = {k: t for k, t in dtypes.items() if t not in FLOAT_DTYPES}
+        if bad:
+            hint = " (BF16 cannot be read by numpy; re-save the adapter as float32)"
+            raise ValueError(
+                f"unsupported tensor dtypes {bad}"
+                f"{hint if 'BF16' in bad.values() else ''}"
+            )
+        # contiguous float32 is what _sha256 and the manifest hashes assume
+        raw = {k: np.ascontiguousarray(f.get_tensor(k), dtype=np.float32) for k in keys}
 
     a_of: dict[str, np.ndarray] = {}
     b_of: dict[str, np.ndarray] = {}
@@ -140,15 +135,15 @@ def _read(directory: Path) -> tuple[Edit, list[str]]:
 def verify_peft(directory: Path | str) -> list[str]:
     """Human-readable problems with an adapter directory; empty when fine."""
     try:
-        _, problems = _read(Path(directory))
-    except (ValueError, KeyError, OSError) as e:
+        _, problems = read_peft(directory)
+    except (ValueError, KeyError, OSError, SafetensorError) as e:
         return [str(e)]
     return problems
 
 
 def load_peft(directory: Path | str) -> Edit:
     """Load a PEFT LoRA adapter as an Edit with scaling folded into B."""
-    edit, problems = _read(Path(directory))
+    edit, problems = read_peft(directory)
     if problems:
         raise ValueError("; ".join(problems))
     return edit

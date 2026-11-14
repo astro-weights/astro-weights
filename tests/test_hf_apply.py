@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from astro_weights.edits import Edit, masked_rank1, top_k_mask
+from astro_weights.edits import Edit, LowRankDelta, masked_rank1, top_k_mask
 from astro_weights.export import load_peft, save_peft
 
 torch = pytest.importorskip("torch")
@@ -76,7 +76,7 @@ def test_unknown_module_raises(tiny_llama: Any) -> None:
     edit = make_edit(tiny_llama)
     bad = Edit(
         (
-            type(edit.deltas[0])(
+            LowRankDelta(
                 "model.layers.9.mlp.down_proj", edit.deltas[0].B, edit.deltas[0].A
             ),
         ),

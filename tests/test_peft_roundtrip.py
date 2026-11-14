@@ -136,11 +136,32 @@ def test_f16_is_cast(tmp_path: Path) -> None:
 
 def test_bf16_rejected(tmp_path: Path) -> None:
     write_adapter(tmp_path, pair(MOD_A))
-    path = tmp_path / "adapter_model.safetensors"
-    raw = path.read_bytes()
-    path.write_bytes(raw.replace(b'"F32"', b'"BF16"'))
+    # numpy has no bfloat16, so hand-write a valid BF16 file: 2 bytes per element
+    header: dict[str, object] = {}
+    offset = 0
+    for key, shape in (("lora_A", [1, 48]), ("lora_B", [16, 1])):
+        n = 2 * shape[0] * shape[1]
+        header[f"base_model.model.{MOD_A}.{key}.weight"] = {
+            "dtype": "BF16",
+            "shape": shape,
+            "data_offsets": [offset, offset + n],
+        }
+        offset += n
+    head = json.dumps(header).encode()
+    head += b" " * (-len(head) % 8)
+    blob = len(head).to_bytes(8, "little") + head + bytes(offset)
+    (tmp_path / "adapter_model.safetensors").write_bytes(blob)
     with pytest.raises(ValueError, match="BF16"):
         load_peft(tmp_path)
+    assert "BF16" in verify_peft(tmp_path)[0]
+
+
+def test_corrupt_weights_reported(tmp_path: Path) -> None:
+    save_peft(make_edit(), tmp_path)
+    path = tmp_path / "adapter_model.safetensors"
+    path.write_bytes(path.read_bytes()[:-10])
+    problems = verify_peft(tmp_path)
+    assert len(problems) == 1
 
 
 def test_tamper_detected(tmp_path: Path) -> None:
