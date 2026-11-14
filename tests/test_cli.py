@@ -5,8 +5,8 @@ import pytest
 from safetensors.numpy import load_file, save_file
 
 from astro_weights import __version__
-from astro_weights.cli import main
-from astro_weights.edits import Edit, rank1
+from astro_weights.cli import _norm_ba, main
+from astro_weights.edits import Edit, LowRankDelta, rank1
 from astro_weights.export import save_peft
 
 MODULE = "model.layers.1.mlp.down_proj"
@@ -60,3 +60,9 @@ def test_version(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--version"])
     assert e.value.code == 0
     assert __version__ in capsys.readouterr().out
+
+
+def test_norm_ba_matches_dense() -> None:
+    rng = np.random.default_rng(2)
+    d = LowRankDelta(MODULE, rng.standard_normal((16, 3)), rng.standard_normal((3, 48)))
+    assert np.isclose(_norm_ba(d), np.linalg.norm(d.B @ d.A), rtol=1e-5)
