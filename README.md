@@ -19,7 +19,7 @@
   <a href="https://github.com/astro-weights/astro-weights/blob/main/CONTRIBUTING.md">Contributing</a>
 </p>
 
-The goal: an agent proposes small, targeted low-rank edits to a model's weights, and the ones that hold up under paired tests are saved as plain PEFT LoRA adapters. Today (0.0.3) the library covers the edit core: build rank-1 edits, save and load them as LoRA adapters, and apply them to transformers models. LoRA is the output format because every serving stack already loads it (transformers, PEFT, vLLM, llama.cpp and the rest), so an edit needs no custom runtime: ship the adapter, load it like any other, and drop it to get the base model back.
+The goal: an agent proposes small, targeted low-rank edits to a model's weights, and the ones that hold up under paired tests are saved as plain PEFT LoRA adapters. Today (0.0.4) the library covers the edit core: build rank-1 edits, save and load them as LoRA adapters, and apply them to transformers models. LoRA is the output format because every serving stack already loads it (transformers, PEFT, vLLM, llama.cpp and the rest), so an edit needs no custom runtime: ship the adapter, load it like any other, and drop it to get the base model back.
 
 > **Status: pre-alpha.** 0.0.2 is on PyPI. The API will change without notice until 1.0.
 
