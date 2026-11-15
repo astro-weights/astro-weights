@@ -5,9 +5,9 @@
 Small course corrections for open LLMs. Agent proposes small low-rank edits to model weights; edits that hold up under paired tests get saved as plain PEFT LoRA adapters.
 
 !!! warning "Pre-alpha"
-    0.0.2 on PyPI. API changes without notice until 1.0.
+    0.0.5 on PyPI. API changes without notice until 1.0.
 
-Covers edit core: build rank-1 edits, save and load as LoRA adapters, apply to transformers models.
+Covers edit core (build low-rank edits, save and load as LoRA adapters, apply to transformers models), difference-of-means directions with gate, paired eval statistics.
 
 ## Install
 
@@ -27,6 +27,9 @@ pip install "astro-weights[hf]"
 |---|---|
 | First edit, start to finish | [Tutorial: first edit](tutorials/first-edit.md) |
 | Check adapter before shipping | [How-to: inspect adapter](how-to/inspect-adapter.md) |
+| Edited weights without adapter | [How-to: save merged weights](how-to/save-merged-weights.md) |
+| Direction from paired prompts | [How-to: find and gate direction](how-to/find-direction.md) |
+| Base vs edit on same items | [How-to: compare two eval arms](how-to/compare-arms.md) |
 | Every public function and type | [Reference](reference/index.md) |
 | Why output is LoRA | [Explanation: why LoRA](explanation/why-lora.md) |
 

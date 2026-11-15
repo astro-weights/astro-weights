@@ -6,12 +6,14 @@ astro-weights: agent-driven weight-space edits for open LLMs, exported as standa
 
 ## Layout
 
-- `src/astro_weights/edits/`: `Edit`, `LowRankDelta` and the numpy recipes (`rank1`, `masked_rank1`, `column_shift`, `orthogonal_random`, `top_k_mask`).
-- `src/astro_weights/export/`: PEFT LoRA adapter I/O (`save_peft`, `load_peft`, `read_peft`, `verify_peft`).
-- `src/astro_weights/runners/`: apply edits to live models (`hf.py`: `apply`, `remove`, `resolve_modules`).
+- `src/astro_weights/edits/`: `Edit` (`Edit.from_deltas` pads mixed ranks), `LowRankDelta` and the numpy recipes (`rank1`, `masked_rank1`, `column_shift`, `orthogonal_random`, `top_k_mask`, `project_out`, `scale_column`, `scale_head`, `zero_head`).
+- `src/astro_weights/export/`: PEFT LoRA adapter I/O (`save_peft`, `load_peft`, `read_peft`, `verify_peft`) and hash-checked merged weights (`save_merged_tensors`, `load_merged_tensors`).
+- `src/astro_weights/runners/`: apply edits to live models (`hf.py`: `apply`, `remove`, `swap`, `merged_weights`, `resolve_modules`).
+- `src/astro_weights/directions/`: difference-of-means directions and `direction_gate`, numpy only.
+- `src/astro_weights/eval/`: per-item `Record` JSONL and paired comparison of two arms (`compare`, `format_report`). Never runs a model.
 - `src/astro_weights/cli.py`: the `astro-weights` command.
 - `docs/`: user docs site (Zensical, `zensical.toml`), Diátaxis folders `tutorials/`, `how-to/`, `reference/` (built from docstrings by mkdocstrings), `explanation/`. Published to GitHub Pages by `docs.yml` on push to `main`.
-- Layer rule, enforced by import-linter: `cli > runners > export > edits`. A lower layer never imports a higher one.
+- Layer rule, enforced by import-linter: `cli > runners > export > edits`. A lower layer never imports a higher one. `directions` and `eval` are outside the contract and import no other `astro_weights` package.
 - Core dependencies are numpy and safetensors only. torch, transformers and peft are imported only inside `runners/`, and only through the `hf` extra.
 
 ## Commands
