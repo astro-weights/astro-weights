@@ -1,12 +1,44 @@
-/* Brand palette: Decision D19 (violet + visor gold). */
+/* Brand palette: D19 (violet + visor gold). Landing-page touches: D20 (Rubik 600), plates, 4px radius. */
 :root, [data-md-color-scheme="default"] {
   --md-primary-fg-color: #7852EE;
   --md-primary-fg-color--light: #8A5CF5;
   --md-primary-fg-color--dark: #6A44E0;
-  --md-accent-fg-color: #FFA70B;
+  --md-accent-fg-color: #7852EE;            /* hover; gold stays out of text on light */
+  --md-typeset-a-color: #6A44E0;            /* 6.2:1 on white */
+  --md-code-bg-color: #F4F4F6;
+  --aw-plate-border: #D9D9DE;
+  --aw-display: Rubik, system-ui, -apple-system, "Segoe UI", sans-serif; /* Rubik only if installed; not self-hosted */
 }
 [data-md-color-scheme="slate"] {
+  --md-hue: 215;
+  --md-default-bg-color: #0D1117;
+  --md-default-fg-color: #F2F4F8;
+  --md-default-fg-color--light: #A4ADBA;
+  --md-typeset-color: #F2F4F8;
   --md-primary-fg-color: #8A5CF5;
-  --md-accent-fg-color: #FFA70B;
+  --md-primary-bg-color: #F2F4F8;
+  --md-accent-fg-color: #A882FF;
   --md-typeset-a-color: #A882FF;
+  --md-code-bg-color: #151B24;
+  --md-code-fg-color: #F2F4F8;
+  --aw-plate-border: rgb(242 244 248 / 0.16);
 }
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs { background-color: #0D1117; box-shadow: 0 1px 0 rgb(242 244 248 / 0.16); }
+[data-md-color-scheme="slate"] .md-footer, [data-md-color-scheme="slate"] .md-footer-meta { background-color: #0D1117; }
+
+/* Rubik 600 for headings and the site title only; body keeps the theme font. */
+.md-typeset h1, .md-typeset h2, .md-typeset h3, .md-header__title { font-family: var(--aw-display); font-weight: 600; }
+.md-typeset h1 { letter-spacing: -0.01em; }
+
+/* Code plates: thin border, 4px radius, flat. */
+.md-typeset pre > code { background-color: var(--md-code-bg-color); border: 1px solid var(--aw-plate-border); border-radius: 4px; }
+.md-typeset code { border-radius: 4px; }
+
+/* Violet: active nav item; buttons use the primary violet. */
+.md-nav__item .md-nav__link--active, .md-nav__link--active { color: var(--md-typeset-a-color); }
+.md-typeset .md-button { border-radius: 4px; font-family: var(--aw-display); font-weight: 600; }
+.md-typeset .md-button--primary { color: #fff; }
+
+/* The one gold accent: focus ring. */
+a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 2px solid #FFA70B; outline-offset: 2px; border-radius: 4px; }
