@@ -482,3 +482,35 @@ def test_npy_with_crlf_and_ctrl_z_bytes_read_verbatim(tmp_path: Path) -> None:
         "a.npy": hashlib.sha256(raw_a).hexdigest(),
     }
     assert recipe_file._read_capped(tmp_path / "b.npy") == raw_b
+
+
+@pytest.mark.parametrize(
+    ("name", "key", "bad", "match"),
+    [
+        (
+            "column_shift",
+            "idx",
+            np.array([1, 5, 7], dtype=bool),
+            "idx must be an integer",
+        ),
+        ("column_shift", "idx", np.array([1.0, 5.0, 7.0]), "idx must be an integer"),
+        (
+            "column_shift",
+            "coef",
+            np.array([1, 0, 1], dtype=bool),
+            "coef must be a real",
+        ),
+        ("column_shift", "shift", np.ones(OUT, dtype=bool), "shift must be a real"),
+        ("rank1", "b", np.ones(OUT, dtype=bool), "b must be a real"),
+        ("project_out", "v", np.ones(OUT, dtype=bool), "v must be a real"),
+    ],
+)
+def test_wrong_dtype_array_is_value_error(
+    tmp_path: Path, name: str, key: str, bad: np.ndarray, match: str
+) -> None:
+    params, arrays, _ = _cases()[name]
+    arrays = {**arrays, key: bad}
+    step = _step(name, "m", params, arrays, tmp_path)
+    recipe = load_recipe(_write(tmp_path, [step]))
+    with pytest.raises(ValueError, match=match):
+        build_edit(recipe, lambda m: W0, tmp_path)

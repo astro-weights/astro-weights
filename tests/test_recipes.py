@@ -237,3 +237,130 @@ def test_scale_recipes_accept_numpy_int_index() -> None:
     w0 = RNG.standard_normal((OUT, IN))
     assert scale_column("m", w0, np.int64(2), 2.0).shape == (OUT, IN)  # type: ignore[arg-type]
     assert scale_head("m", w0, np.int32(1), 2, 2.0).shape == (OUT, IN)  # type: ignore[arg-type]
+
+
+# --- array dtype / ndim validation: ValueError, never IndexError or TypeError ---
+
+_ONES_OUT, _ONES_IN = np.ones(OUT), np.ones(IN)
+
+
+@pytest.mark.parametrize(
+    "idx",
+    [
+        np.array([1, 4], dtype=bool),
+        np.array([1.0, 4.0]),
+        np.array([1, 4], dtype=np.complex128),
+        np.array(["1", "4"]),
+        np.array([1, 4], dtype=object),
+    ],
+)
+def test_column_shift_rejects_non_integer_idx(idx: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="m: idx must be an integer array"):
+        column_shift("m", _ONES_OUT, idx, np.ones(2), IN)
+
+
+def test_column_shift_uint64_idx_beyond_range() -> None:
+    idx = np.array([2**63 + 5], dtype=np.uint64)
+    with pytest.raises(ValueError, match="out of range"):
+        column_shift("m", _ONES_OUT, idx, np.ones(1), IN)
+
+
+@pytest.mark.parametrize("bad_dtype", [bool, np.complex128, np.str_, object])
+@pytest.mark.parametrize("which", ["shift", "coef"])
+def test_column_shift_rejects_non_real_shift_coef(which: str, bad_dtype: type) -> None:
+    shift, coef = np.ones(OUT), np.ones(2)
+    if which == "shift":
+        shift = np.ones(OUT).astype(bad_dtype)
+    else:
+        coef = np.ones(2).astype(bad_dtype)
+    with pytest.raises(ValueError, match=f"m: {which} must be a real numeric array"):
+        column_shift("m", shift, np.array([1, 4]), coef, IN)
+
+
+def test_column_shift_n_in_must_be_int() -> None:
+    with pytest.raises(ValueError, match="n_in must be an int"):
+        column_shift("m", _ONES_OUT, np.array([1]), np.ones(1), 10.0)  # type: ignore[arg-type]
+
+
+def test_column_shift_accepts_unsigned_and_small_int_idx() -> None:
+    for dt in (np.uint8, np.int16, np.uint64):
+        d = column_shift("m", _ONES_OUT, np.array([1, 4], dtype=dt), np.ones(2), IN)
+        assert d.shape == (OUT, IN)
+
+
+@pytest.mark.parametrize("bad_dtype", [bool, np.complex128, np.str_, object])
+def test_rank1_rejects_non_real(bad_dtype: type) -> None:
+    with pytest.raises(ValueError, match="m: b must be a real numeric array"):
+        rank1("m", np.ones(OUT).astype(bad_dtype), _ONES_IN)
+    with pytest.raises(ValueError, match="m: a must be a real numeric array"):
+        rank1("m", _ONES_OUT, np.ones(IN).astype(bad_dtype))
+
+
+@pytest.mark.parametrize("bad", [np.array(1.0), np.ones((2, 3))])
+def test_rank1_rejects_wrong_ndim(bad: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="1-D"):
+        rank1("m", bad, _ONES_IN)
+    with pytest.raises(ValueError, match="1-D"):
+        rank1("m", _ONES_OUT, bad)
+
+
+@pytest.mark.parametrize("bad_dtype", [np.complex128, np.str_, object])
+def test_masked_rank1_rejects_bad_dtypes(bad_dtype: type) -> None:
+    w0 = _w0()
+    ok_u, ok_mask = np.ones(OUT), np.ones(IN)
+    with pytest.raises(ValueError, match="m: u must be a real numeric array"):
+        masked_rank1("m", w0, ok_u.astype(bad_dtype), ok_mask, 1.0)
+    with pytest.raises(ValueError, match="m: mask must be a numeric array"):
+        masked_rank1("m", w0, ok_u, ok_mask.astype(bad_dtype), 1.0)
+
+
+def test_masked_rank1_bool_mask_still_works() -> None:
+    mask = np.arange(IN) % 2 == 0
+    d = masked_rank1("m", _w0(), np.ones(OUT), mask, 1.0)
+    assert not np.abs(d.dense())[:, ~mask].any()
+
+
+def test_masked_rank1_wrong_ndim() -> None:
+    with pytest.raises(ValueError, match="shape mismatch"):
+        masked_rank1("m", _w0(), np.ones(OUT), np.array(1.0), 1.0)
+
+
+@pytest.mark.parametrize("bad_dtype", [bool, np.complex128, np.str_, object])
+def test_project_out_rejects_bad_dtypes(bad_dtype: type) -> None:
+    with pytest.raises(ValueError, match="m: v must be a real numeric array"):
+        project_out("m", _w0(), np.ones(OUT).astype(bad_dtype))
+
+
+def test_project_out_wrong_ndim() -> None:
+    with pytest.raises(ValueError, match="shape mismatch"):
+        project_out("m", _w0(), np.array(1.0))
+
+
+@pytest.mark.parametrize("bad_dtype", [np.complex128, np.str_, object])
+def test_top_k_mask_rejects_bad_dtypes(bad_dtype: type) -> None:
+    with pytest.raises(ValueError, match="scores must be a real numeric array"):
+        top_k_mask(np.ones(4).astype(bad_dtype), 2)
+
+
+@pytest.mark.parametrize("scores", [np.array(1.0), np.ones((2, 3))])
+def test_top_k_mask_rejects_wrong_ndim(scores: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="1-D"):
+        top_k_mask(scores, 1)
+
+
+@pytest.mark.parametrize("k", [1.5, True, "2"])
+def test_top_k_mask_k_must_be_int(k: object) -> None:
+    with pytest.raises(ValueError, match="k must be an int"):
+        top_k_mask(np.ones(4), k)  # type: ignore[arg-type]
+
+
+def test_orthogonal_random_rejects_bad_u() -> None:
+    with pytest.raises(ValueError, match="u must be a real numeric array"):
+        orthogonal_random(np.ones(4, dtype=np.complex128), 0)
+    with pytest.raises(ValueError, match="1-D"):
+        orthogonal_random(np.array(1.0), 0)
+
+
+def test_non_array_input_is_value_error() -> None:
+    with pytest.raises(ValueError, match="m: b must be a numpy array, got list"):
+        rank1("m", [1.0, 2.0], _ONES_IN)  # type: ignore[arg-type]

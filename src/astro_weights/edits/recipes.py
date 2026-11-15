@@ -17,13 +17,36 @@ def _check_index(module: str, name: str, x: object) -> None:
         raise ValueError(f"{module}: {name} must be an int, got {x!r}")  # noqa: TRY004 (spec: ValueError)
 
 
+_REAL = ("iuf", "a real numeric array")  # bool and complex are not real here
+_INTEGER = ("iu", "an integer array")
+_NUMERIC = ("biuf", "a numeric array")  # bool allowed (masks)
+
+
+def _check_array(
+    module: str, name: str, x: object, kind: tuple[str, str], *, ndim: int | None = 1
+) -> None:
+    """Raise ValueError unless x is a numpy array of the given dtype kinds (and ndim)."""
+    if not isinstance(x, np.ndarray | np.generic):
+        raise ValueError(  # noqa: TRY004 (spec: ValueError)
+            f"{module}: {name} must be a numpy array, got {type(x).__name__}"
+        )
+    if ndim is not None and x.ndim != ndim:
+        raise ValueError(f"{module}: {name} must be {ndim}-D, got {x.ndim}-D")
+    if x.dtype.kind not in kind[0]:
+        raise ValueError(f"{module}: {name} must be {kind[1]}, got dtype {x.dtype}")
+
+
 def rank1(module: str, b: np.ndarray, a: np.ndarray) -> LowRankDelta:
     """dW = outer(b, a)."""
+    _check_array(module, "b", b, _REAL)
+    _check_array(module, "a", a, _REAL)
     return LowRankDelta(module, b[:, None], a[None, :])
 
 
 def top_k_mask(scores: np.ndarray, k: int) -> np.ndarray:
     """float32 0/1 vector with ones at the k largest scores."""
+    _check_array("top_k_mask", "scores", scores, _REAL)
+    _check_index("top_k_mask", "k", k)
     mask = np.zeros(len(scores), dtype=np.float32)
     if k > 0:
         mask[np.argsort(scores)[-k:]] = 1.0
@@ -38,6 +61,8 @@ def masked_rank1(
         raise ValueError(
             f"{module}: shape mismatch, W0 {W0.shape}, u {u.shape}, mask {mask.shape}"
         )
+    _check_array(module, "u", u, _REAL)
+    _check_array(module, "mask", mask, _NUMERIC)
     u64 = u.astype(np.float64)
     a = -alpha * mask.astype(np.float64) * (u64 @ W0.astype(np.float64))
     return LowRankDelta(module, u64[:, None], a[None, :])
@@ -47,6 +72,10 @@ def column_shift(
     module: str, shift: np.ndarray, idx: np.ndarray, coef: np.ndarray, n_in: int
 ) -> LowRankDelta:
     """Bake a constant shift into input columns: W = W0 + outer(shift, c), c[idx] = coef."""
+    _check_index(module, "n_in", n_in)
+    _check_array(module, "shift", shift, _REAL, ndim=None)
+    _check_array(module, "idx", idx, _INTEGER, ndim=None)
+    _check_array(module, "coef", coef, _REAL, ndim=None)
     if shift.ndim != 1 or idx.ndim != 1 or coef.shape != idx.shape:
         raise ValueError(
             f"{module}: shift must be 1-D; idx and coef must be 1-D, same length"
@@ -62,6 +91,7 @@ def column_shift(
 
 def orthogonal_random(u: np.ndarray, seed: int) -> np.ndarray:
     """Seeded unit vector orthogonal to u (random-edit control)."""
+    _check_array("orthogonal_random", "u", u, _REAL)
     u64 = u.astype(np.float64)
     r = np.random.default_rng(seed).standard_normal(len(u64))
     r -= (r @ u64) / (u64 @ u64) * u64
@@ -74,6 +104,7 @@ def project_out(
     """Remove direction v from the layer's output: W = W0 - strength * outer(vhat, vhat @ W0)."""
     if W0.ndim != 2 or v.shape != (W0.shape[0],):
         raise ValueError(f"{module}: shape mismatch, W0 {W0.shape}, v {v.shape}")
+    _check_array(module, "v", v, _REAL)
     v64 = v.astype(np.float64)
     _check_finite(module, "strength", strength)
     norm = np.linalg.norm(v64)
