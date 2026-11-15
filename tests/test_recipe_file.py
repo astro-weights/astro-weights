@@ -2,8 +2,10 @@ import copy
 import hashlib
 import io
 import json
+import os
 import struct
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -410,6 +412,31 @@ def test_npy_over_size_cap_rejected_unread(
     _build_rank1(tmp_path, **{"b.npy": small, "a.npy": small})  # at or under the cap
     with pytest.raises(ValueError, match="over the 200 limit"):
         _build_rank1(tmp_path, **{"b.npy": big, "a.npy": small})
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_fifo_npy_is_value_error_not_hang(tmp_path: Path) -> None:
+    os.mkfifo(tmp_path / "b.npy")
+    good = _npy_bytes(np.ones(1, np.float32))
+    with pytest.raises(ValueError, match="not a regular file"):
+        _build_rank1(tmp_path, **{"a.npy": good})
+
+
+def test_npy_growing_past_cap_after_fstat_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read itself is bounded, not just the fstat size."""
+    path = tmp_path / "x.npy"
+    path.write_bytes(b"x" * 300)
+    monkeypatch.setattr(recipe_file, "MAX_NPY_BYTES", 200)
+    real = os.fstat
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda fd: SimpleNamespace(st_mode=real(fd).st_mode, st_size=0),
+    )
+    with pytest.raises(ValueError, match="over the 200 limit"):
+        recipe_file._read_capped(path)
 
 
 def test_huge_int_param_is_value_error(tmp_path: Path) -> None:

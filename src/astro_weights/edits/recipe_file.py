@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import math
+import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,6 +97,23 @@ def _check_npy_header(data: bytes) -> None:
         raise ValueError("truncated .npy data")
 
 
+def _read_capped(path: Path) -> bytes:
+    """Read a regular file of at most MAX_NPY_BYTES; never blocks on a FIFO."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("not a regular file")
+        if st.st_size > MAX_NPY_BYTES:
+            raise ValueError(
+                f"file is {st.st_size} bytes, over the {MAX_NPY_BYTES} limit"
+            )
+        data = fh.read(MAX_NPY_BYTES + 1)  # the file may have grown since fstat
+    if len(data) > MAX_NPY_BYTES:
+        raise ValueError(f"file is over the {MAX_NPY_BYTES} limit")
+    return data
+
+
 def _load_array(directory: Path, where: str, key: str, name: str) -> tuple[bytes, Any]:
     """Read one .npy file confined to `directory`; any failure is a ValueError."""
     path = directory / name
@@ -102,10 +121,7 @@ def _load_array(directory: Path, where: str, key: str, name: str) -> tuple[bytes
     try:
         if not path.resolve().is_relative_to(directory.resolve()):
             raise ValueError("escapes the recipe directory")
-        size = path.stat().st_size
-        if size > MAX_NPY_BYTES:
-            raise ValueError(f"file is {size} bytes, over the {MAX_NPY_BYTES} limit")
-        data = path.read_bytes()
+        data = _read_capped(path)
         _check_npy_header(data)
         arr = np.load(io.BytesIO(data), allow_pickle=False)
         if not isinstance(arr, np.ndarray):
