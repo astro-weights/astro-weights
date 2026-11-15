@@ -9,6 +9,7 @@ from safetensors import SafetensorError
 
 from astro_weights import __version__
 from astro_weights.edits import LowRankDelta
+from astro_weights.eval import compare, format_report, read_jsonl
 from astro_weights.export import read_peft
 from astro_weights.export.peft import CONFIG, MANIFEST, WEIGHTS
 
@@ -54,6 +55,16 @@ def _inspect(directory: Path) -> int:
     return 0
 
 
+def _eval(base: Path, edit: Path, boot: int, seed: int) -> int:
+    try:
+        result = compare(read_jsonl(base), read_jsonl(edit), n_boot=boot, seed=seed)
+    except (ValueError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(format_report(result))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="astro-weights")
     parser.add_argument(
@@ -62,8 +73,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     p = sub.add_parser("inspect", help="summarize and verify a saved PEFT adapter")
     p.add_argument("directory", metavar="DIR", type=Path)
+    p = sub.add_parser("eval", help="compare two eval arms from per-item records")
+    p.add_argument("base", metavar="BASE.jsonl", type=Path)
+    p.add_argument("edit", metavar="EDIT.jsonl", type=Path)
+    p.add_argument("--boot", type=int, default=10000, help="bootstrap resamples")
+    p.add_argument("--seed", type=int, default=0, help="bootstrap seed")
     args = parser.parse_args(argv)
     if args.command == "inspect":
         return _inspect(args.directory)
+    if args.command == "eval":
+        return _eval(args.base, args.edit, args.boot, args.seed)
     parser.print_help()
     return 0

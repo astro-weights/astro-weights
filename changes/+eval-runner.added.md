@@ -1,0 +1,1 @@
+Added `astro_weights.eval` graders (`grade_choice`, `grade_math`, `grade_exact`), `runners.generate` to produce per-item eval records with fixed greedy settings, and an `astro-weights eval BASE.jsonl EDIT.jsonl` command.
