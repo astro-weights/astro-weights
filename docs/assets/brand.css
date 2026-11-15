@@ -42,3 +42,22 @@
 
 /* The one gold accent: focus ring. */
 a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 2px solid #FFA70B; outline-offset: 2px; border-radius: 4px; }
+
+/* Galaxy, dark scheme only: one fixed layer behind the page (sparse stars, one gold, faint violet corners).
+   Static CSS, no images or JS; text keeps the plain #0D1117 background, so contrast is unchanged. */
+[data-md-color-scheme="slate"]::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+
+    radial-gradient(1px 1px at 12% 18%, rgb(242 244 248 / 0.55), transparent),
+    radial-gradient(1px 1px at 78% 9%, rgb(242 244 248 / 0.45), transparent),
+    radial-gradient(1.5px 1.5px at 91% 34%, rgb(168 130 255 / 0.6), transparent),
+    radial-gradient(1px 1px at 4% 62%, rgb(242 244 248 / 0.35), transparent),
+    radial-gradient(1px 1px at 96% 71%, rgb(242 244 248 / 0.4), transparent),
+    radial-gradient(1.5px 1.5px at 7% 88%, rgb(168 130 255 / 0.5), transparent),
+    radial-gradient(1px 1px at 30% 95%, rgb(242 244 248 / 0.35), transparent),
+    radial-gradient(1px 1px at 62% 4%, rgb(242 244 248 / 0.4), transparent),
+    radial-gradient(2px 2px at 88% 86%, rgb(255 167 11 / 0.6), transparent),
+    radial-gradient(60% 45% at 100% 0%, rgb(138 92 245 / 0.10), transparent 70%),
+    radial-gradient(45% 35% at 0% 100%, rgb(120 82 238 / 0.07), transparent 70%);
+}
+[data-md-color-scheme="slate"] .md-header { background-color: rgb(13 17 23 / 0.85); backdrop-filter: saturate(140%) blur(8px); }

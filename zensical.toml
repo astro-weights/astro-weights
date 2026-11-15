@@ -30,19 +30,20 @@ logo = "assets/logo.svg"
 favicon = "assets/logo.svg"
 features = ["content.code.copy", "navigation.sections", "navigation.footer", "content.action.edit"]
 
-[[project.theme.palette]]
-scheme = "default"
-primary = "custom"
-accent = "custom"
-toggle.icon = "lucide/sun"
-toggle.name = "Switch to dark mode"
-
+# Dark first: the default for new visitors (first entry wins); the toggle remembers a choice.
 [[project.theme.palette]]
 scheme = "slate"
 primary = "custom"
 accent = "custom"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
 
 [project.plugins.mkdocstrings.handlers.python]
 paths = ["src"]
