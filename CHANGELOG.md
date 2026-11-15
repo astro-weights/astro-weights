@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.0.5] - 2026-11-15
+
+### Added
+
+- Add `astro_weights.directions`: difference-of-means directions (`direction_from_means`, `directions_from_pairs`, `neuron_scores`, `stability`) and `direction_gate`, a split-half and shuffled-sign check that a direction is real.
+
 ## [0.0.4] - 2026-11-15
 
 ### Added
@@ -47,6 +53,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.0.5]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.5
 [0.0.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.4
 [0.0.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.3
 [0.0.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.2
