@@ -1,0 +1,1 @@
+`compare` now uses cluster-robust standard errors when records carry `cluster_id`: the score SE, CI and MDEs and the token SE and MDE use the clustered SE (with a G/(G-1) factor), the token bootstrap resamples clusters, and `PairedResult.n_clusters` and the report show the cluster count. Records without `cluster_id` give the same results as before.

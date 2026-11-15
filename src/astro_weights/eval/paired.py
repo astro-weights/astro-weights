@@ -19,7 +19,12 @@ _Z_POWER = 0.84  # 80% power
 
 @dataclass(frozen=True)
 class PairedResult:
-    """Paired statistics; scores and token counts are per-item means over seeds."""
+    """Paired statistics; scores and token counts are per-item means over seeds.
+
+    `n_clusters` is the number of distinct `cluster_id`s, or None when records carry none.
+    When set, `se`, `ci95`, `tokens_se`, both MDEs and `tokens_ci95` account for clustering,
+    and `small_n` also flags fewer than 100 clusters. McNemar always treats items as independent.
+    """
 
     n_items: int
     mean_base: float
@@ -44,6 +49,7 @@ class PairedResult:
     )
     tokens_se: float
     tokens_mde: float
+    n_clusters: int | None = None
 
 
 def _index(records: Sequence[Record], arm: str) -> dict[_Key, Record]:
@@ -92,10 +98,75 @@ def _per_item(
     return arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3]
 
 
+def _clusters(pairs: list[tuple[Record, Record]]) -> list[str] | None:
+    """Cluster id per item in sorted item order; None when no record has one."""
+    recs = [r for p in pairs for r in p]
+    if all(r.cluster_id is None for r in recs):
+        return None
+    out: dict[str, str] = {}
+    for r in recs:
+        if r.cluster_id is None:
+            raise ValueError(
+                "cluster_id is set on some records but not all "
+                f"(missing on item_id {r.item_id!r}, seed {r.seed}, {r.arm!r} arm); "
+                "set it on every record of both arms or on none"
+            )
+        prev = out.setdefault(r.item_id, r.cluster_id)
+        if prev != r.cluster_id:
+            raise ValueError(
+                f"item_id {r.item_id!r} has conflicting cluster_id "
+                f"({prev!r} vs {r.cluster_id!r}) across arms or seeds"
+            )
+    return [out[k] for k in sorted(out)]
+
+
 def _paired_se(d: npt.NDArray[np.float64]) -> float:
     if d.size < 2:
         return math.nan
     return float(d.std(ddof=1) / math.sqrt(d.size))
+
+
+def _clustered_se(
+    d: npt.NDArray[np.float64], g: npt.NDArray[np.intp], n_g: int
+) -> float:
+    """Cluster-robust SE of mean(d); `g` maps each item to a cluster in 0..n_g-1.
+
+    sqrt(G / (G - 1) * sum_c (sum_{i in c} (d_i - dbar))^2) / n, with G = n_g clusters
+    (Miller 2024, arXiv 2411.00640, plus the usual G / (G - 1) small-sample factor). With one
+    item per cluster this is exactly std(d, ddof=1) / sqrt(n). NaN for G < 2.
+    """
+    if n_g < 2:
+        return math.nan
+    s = np.bincount(g, weights=d - d.mean(), minlength=n_g)
+    return float(math.sqrt(n_g / (n_g - 1) * float(s @ s)) / d.size)
+
+
+def _boot_means(
+    x: npt.NDArray[np.float64],
+    g: npt.NDArray[np.intp] | None,
+    n_g: int,
+    n_boot: int,
+    rng: np.random.Generator,
+) -> npt.NDArray[np.float64]:
+    """Bootstrap means of x, resampling items (g None) or whole clusters."""
+    if g is None:
+        n = x.size
+        # Seed fixes the result for a given _BOOT_CHUNK (draws are made chunk by chunk).
+        return np.concatenate(
+            [
+                x[rng.integers(0, n, size=(min(_BOOT_CHUNK, n_boot - i), n))].mean(
+                    axis=1
+                )
+                for i in range(0, n_boot, _BOOT_CHUNK)
+            ]
+        )
+    sums = np.bincount(g, weights=x, minlength=n_g)
+    sizes = np.bincount(g, minlength=n_g).astype(np.float64)
+    chunks = []
+    for i in range(0, n_boot, _BOOT_CHUNK):
+        idx = rng.integers(0, n_g, size=(min(_BOOT_CHUNK, n_boot - i), n_g))
+        chunks.append(sums[idx].sum(axis=1) / sizes[idx].sum(axis=1))
+    return np.concatenate(chunks)
 
 
 def _pearson(x: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> float:
@@ -131,12 +202,19 @@ def _mcnemar_exact(b: int, c: int) -> float:
 def compare(
     base: Sequence[Record], edit: Sequence[Record], n_boot: int = 10000, seed: int = 0
 ) -> PairedResult:
-    """Paired comparison of two arms; scores and tokens are averaged over seeds per item first."""
+    """Paired comparison of two arms; scores and tokens are averaged over seeds per item first.
+
+    If records carry `cluster_id` (every record of both arms, the same id for an item across
+    arms and seeds), SEs, the score CI and the MDEs use the cluster-robust SE (see
+    `_clustered_se`) and the token bootstrap resamples clusters. With fewer than 2 clusters
+    these are NaN. Without `cluster_id` items are treated as independent.
+    """
     if n_boot < 1:
         raise ValueError("n_boot must be >= 1")
     pairs = pair(base, edit)
     if not pairs:
         raise ValueError("no records to compare")
+    labels = _clusters(pairs)
     sb, se_, tb, te = _per_item(pairs)
     if not (np.isfinite(sb).all() and np.isfinite(se_).all()):
         raise ValueError(
@@ -145,25 +223,26 @@ def compare(
     n = sb.size
     d = se_ - sb
     diff = float(d.mean())
-    se = _paired_se(d)
+    g: npt.NDArray[np.intp] | None = None
+    n_g = n
+    if labels is not None:
+        uniq, g = np.unique(np.array(labels), return_inverse=True)
+        n_g = uniq.size
+    se = _paired_se(d) if g is None else _clustered_se(d, g, n_g)
 
     binary = bool(np.isin(np.concatenate([sb, se_]), (0.0, 1.0)).all())
     n_base_only = int(((sb == 1) & (se_ == 0)).sum()) if binary else 0
     n_edit_only = int(((sb == 0) & (se_ == 1)).sum()) if binary else 0
 
     dt = te - tb
-    rng = np.random.default_rng(seed)
-    # Seed fixes the result for a given _BOOT_CHUNK (draws are made chunk by chunk).
-    boot = np.concatenate(
-        [
-            dt[rng.integers(0, n, size=(min(_BOOT_CHUNK, n_boot - i), n))].mean(axis=1)
-            for i in range(0, n_boot, _BOOT_CHUNK)
-        ]
-    )
-    lo, hi = np.percentile(boot, [2.5, 97.5])
+    boot = _boot_means(dt, g, n_g, n_boot, np.random.default_rng(seed))
+    if g is not None and n_g < 2:
+        lo = hi = math.nan  # one cluster: no between-cluster spread to resample
+    else:
+        lo, hi = np.percentile(boot, [2.5, 97.5])
     tokens_base = float(tb.mean())
     tokens_diff = float(dt.mean())
-    tokens_se = _paired_se(dt)
+    tokens_se = _paired_se(dt) if g is None else _clustered_se(dt, g, n_g)
 
     return PairedResult(
         n_items=n,
@@ -183,10 +262,11 @@ def compare(
         tokens_ci95=(float(lo), float(hi)),
         cap_hit_base=sum(b.hit_cap for b, _ in pairs) / len(pairs),
         cap_hit_edit=sum(e.hit_cap for _, e in pairs) / len(pairs),
-        small_n=n < _SMALL_N,
+        small_n=min(n, n_g) < _SMALL_N,
         score_mde=(_Z + _Z_POWER) * se,
         tokens_se=tokens_se,
         tokens_mde=(_Z + _Z_POWER) * tokens_se,
+        n_clusters=None if g is None else n_g,
     )
 
 
@@ -232,8 +312,9 @@ def _floor_line(
 
 def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
     """A few plain lines summarising a `PairedResult`; `floor` adds noise-floor verdicts."""
+    clusters = "" if r.n_clusters is None else f" in {r.n_clusters} clusters"
     lines = [
-        f"n={r.n_items} items  base={r.mean_base:.4f}  edit={r.mean_edit:.4f}",
+        f"n={r.n_items} items{clusters}  base={r.mean_base:.4f}  edit={r.mean_edit:.4f}",
         f"score diff={r.diff:+.4f}  SE={r.se:.4f}  95% CI [{r.ci95[0]:+.4f}, {r.ci95[1]:+.4f}]"
         + _mde_note(r.ci95, r.score_mde, ".4f"),
     ]
@@ -241,6 +322,7 @@ def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
         lines.append(
             f"McNemar exact p={r.mcnemar_p:.4g}  "
             f"(base-only right={r.n_base_only}, edit-only right={r.n_edit_only})"
+            + ("; ignores clustering" if r.n_clusters is not None else "")
         )
     lines += [
         (
@@ -267,7 +349,10 @@ def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
             )
         )
     if r.small_n:
-        lines.append(
-            f"WARNING: only {r.n_items} items (<{_SMALL_N}); intervals are unreliable"
+        few = (
+            f"{r.n_items} items"
+            if r.n_clusters is None or r.n_items <= r.n_clusters
+            else f"{r.n_clusters} clusters"
         )
+        lines.append(f"WARNING: only {few} (<{_SMALL_N}); intervals are unreliable")
     return "\n".join(lines)

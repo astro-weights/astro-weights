@@ -30,7 +30,7 @@
   "zero_head": "(module: str, W0: numpy.ndarray, head: int, n_heads: int) -> astro_weights.edits.core.LowRankDelta"
  },
  "astro_weights.eval": {
-  "PairedResult": "(n_items: int, mean_base: float, mean_edit: float, diff: float, se: float, ci95: tuple[float, float], correlation: float, mcnemar_p: float | None, n_base_only: int, n_edit_only: int, tokens_base: float, tokens_edit: float, tokens_diff: float, tokens_diff_pct: float, tokens_ci95: tuple[float, float], cap_hit_base: float, cap_hit_edit: float, small_n: bool, score_mde: float, tokens_se: float, tokens_mde: float) -> None",
+  "PairedResult": "(n_items: int, mean_base: float, mean_edit: float, diff: float, se: float, ci95: tuple[float, float], correlation: float, mcnemar_p: float | None, n_base_only: int, n_edit_only: int, tokens_base: float, tokens_edit: float, tokens_diff: float, tokens_diff_pct: float, tokens_ci95: tuple[float, float], cap_hit_base: float, cap_hit_edit: float, small_n: bool, score_mde: float, tokens_se: float, tokens_mde: float, n_clusters: int | None = None) -> None",
   "Record": "(item_id: str, seed: int, arm: str, prompt_hash: str, output: str, score: float, n_output_tokens: int, hit_cap: bool, cluster_id: str | None = None) -> None",
   "answer_part": "(text: str) -> str",
   "check_headers": "(base: dict[str, Any], edit: dict[str, Any], ignore: collections.abc.Collection[str] = ('device',)) -> None",
