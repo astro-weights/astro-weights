@@ -33,11 +33,11 @@ This section says what the library checks when it reads a file or a reply it did
   - `MAX_NPY_BYTES` = 256 MiB per `.npy` file, checked before reading (`_read_capped`). Only regular files are read: the file is opened non-blocking, then checked with `fstat`, so a FIFO cannot block.
   - `MAX_N_IN` = 2^20 for `column_shift`.
   - `MAX_HEADER` = 100,000,000 bytes for a safetensors header in `read_tensor`. Offsets and byte counts are checked against the shape and the file size.
-  - `_MAX_ARRAY_ITEMS` = 2^21 total GGUF kv array items, and `_MAX_DEPTH` = 8 levels of nested arrays. The GGUF header counts and every length must fit in the file (`_check_layout`). Test: `test_array_cap_allows_real_size_tokenizer`. GGUF paths are checked with `stat` before opening, and only regular files are opened. Test: `test_fifo_is_refused_without_blocking`.
+  - `_MAX_ARRAY_ITEMS` = 2^21 total GGUF kv array items, and `_MAX_DEPTH` = 8 levels of nested arrays. The GGUF header counts and every length must fit in the file (`_check_layout`). Tests: `test_array_cap_allows_real_size_tokenizer` (allowed side), `test_malformed_gguf_raises_value_error_fast[arrays_total_over_cap]` (rejected side). GGUF paths are checked with `stat` before opening, and only regular files are opened. Test: `test_fifo_is_refused_without_blocking`.
   - Deeply nested JSON is turned into `ValueError` (`_load_object`, `_parse`).
 - The eval API key is never put in an error, a log line or a run header. It must match a safe character set (`_check_key`), error text goes through `_scrub`, and redirects are refused so `Authorization` is not forwarded (`_NoRedirect`). Tests: `test_api_key_sent_but_never_leaks`, `test_redirect_refused_and_key_not_forwarded`, `test_bad_api_key_rejected_without_echo`.
 
-The `ValueError` rule covers file parsing. `generate_records_http` also raises `RuntimeError` when the server is unreachable or returns an HTTP error. A non-JSON body or a reply without `choices` also raises `RuntimeError`. A reply missing `message.content` or `usage.completion_tokens` raises `ValueError`.
+The `ValueError` rule covers file parsing. `generate_records_http` also raises `RuntimeError` when the server is unreachable or returns an HTTP error. A non-JSON body or a reply without `choices` also raises `RuntimeError`. A reply with no `message` object (`_content`), a non-string `content`, or no integer `usage.completion_tokens` (`_tokens`) raises `ValueError`. A missing or null `content` counts as an empty answer.
 
 ### What is not guaranteed
 
