@@ -12,6 +12,7 @@ import contextlib
 import gc
 import hashlib
 import os
+import weakref
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -219,13 +220,39 @@ def body_generate(model: Any, tok: Any, edit: Edit) -> None:
     assert result.n_items == len(ITEMS)
 
 
+def _lora_cycle(
+    model: Any, tok: Any, edit: Edit, hold: list[Any] | None = None
+) -> list[weakref.ref[Any]]:
+    """One apply/forward/remove; weakrefs to every LoRA layer it created.
+
+    `hold` keeps strong references on purpose, to prove the leak check fails.
+    """
+    with _applied(model, edit) as peft_model:
+        _logits(peft_model, tok)
+        layers = [
+            m
+            for m in peft_model.modules()
+            if isinstance(m, BaseTunerLayer) or hasattr(m, "lora_A")
+        ]
+        assert layers
+        refs = [weakref.ref(m) for m in layers]
+        if hold is not None:
+            hold.extend(layers)
+        del layers
+    del peft_model
+    return refs
+
+
+def _assert_freed(refs: list[weakref.ref[Any]]) -> None:
+    gc.collect()
+    alive = sum(r() is not None for r in refs)
+    assert alive == 0, f"{alive} of {len(refs)} LoRA layers still alive"
+
+
 def body_memory(model: Any, tok: Any, edit: Edit) -> None:
     baseline = _footprint(model)
     for _ in range(3):
-        peft_model = apply(model, edit)
-        _logits(peft_model, tok)
-        remove(peft_model)
-        del peft_model
+        _assert_freed(_lora_cycle(model, tok, edit))
         assert not _has_adapter(model)
         assert _footprint(model) - baseline <= 64 * MIB
 
@@ -318,6 +345,18 @@ def test_cpu_smoke(body: Body, tiny_llama: Any, tok: Any, tiny_edit: Edit) -> No
 def test_cpu_smoke_rounding_bf16(tiny_llama: Any, tok: Any, tiny_edit: Edit) -> None:
     # a float32 model rounds nothing, so the max_rounding_error guard needs bf16
     body_rounding(tiny_llama.to(torch.bfloat16), tok, tiny_edit)
+
+
+def test_cpu_smoke_leak_check_catches_held_layer(
+    tiny_llama: Any, tok: Any, tiny_edit: Edit
+) -> None:
+    held: list[Any] = []
+    refs = _lora_cycle(tiny_llama, tok, tiny_edit, hold=held)
+    with pytest.raises(AssertionError, match="still alive"):
+        _assert_freed(refs)
+    held.clear()
+    _assert_freed(refs)
+    assert not _has_adapter(tiny_llama)
 
 
 def test_skip_reason_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
