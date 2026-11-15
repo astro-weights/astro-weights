@@ -1,0 +1,12 @@
+/* Brand palette: Decision D19 (violet + visor gold). */
+:root, [data-md-color-scheme="default"] {
+  --md-primary-fg-color: #7852EE;
+  --md-primary-fg-color--light: #8A5CF5;
+  --md-primary-fg-color--dark: #6A44E0;
+  --md-accent-fg-color: #FFA70B;
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #8A5CF5;
+  --md-accent-fg-color: #FFA70B;
+  --md-typeset-a-color: #A882FF;
+}

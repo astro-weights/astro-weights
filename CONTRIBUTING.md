@@ -22,6 +22,8 @@ uv run mypy src
 uv run pytest
 ```
 
+Docs changes: `uv run --only-group docs zensical build --strict` must pass; preview with `uv run --only-group docs zensical serve`.
+
 CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release.
 
 ## Pull requests
