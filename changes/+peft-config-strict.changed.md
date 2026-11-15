@@ -1,1 +1,0 @@
-`read_peft`, `load_peft` and `verify_peft` now reject adapters they cannot represent (non-positive or non-integer `r`, `rank_pattern`, `alpha_pattern`, `modules_to_save`, `bias` other than `none`, tensors outside a list-form `target_modules`, malformed JSON or manifest fields) with a `ValueError`, and `verify_peft` never raises.

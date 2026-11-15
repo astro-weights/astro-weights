@@ -1,1 +1,0 @@
-`generate_records` takes `out`, `resume` and `batch_size`: records are written to a JSONL file as they are made, a crashed run resumes from that file, and items can be generated in left-padded batches. `run_header` records `batch_size`.
