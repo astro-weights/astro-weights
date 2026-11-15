@@ -107,7 +107,8 @@ jobs:
       - name: Core, lowest direct dependencies
         run: uv run --resolution lowest-direct pytest -m "not gpu"
       - name: All extras, lowest direct dependencies
-        run: uv run --resolution lowest-direct --extra hf --extra eval --extra gguf pytest -m "not gpu"
+        # --no-sources: torch from PyPI; the CPU index has no plain 2.4.0 Linux wheel (only 2.4.0+cpu)
+        run: uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf pytest -m "not gpu"
 
   test-os:
     runs-on: ${{ matrix.os }}
