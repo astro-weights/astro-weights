@@ -200,3 +200,40 @@ def test_scale_head_errors() -> None:
             zero_head("m", w0, head, 4)
     with pytest.raises(ValueError, match="m: W0 must be 2-D"):
         scale_head("m", w0[0], 0, 4, 2.0)
+
+
+def test_project_out_rejects_non_finite() -> None:
+    w0 = RNG.standard_normal((OUT, IN))
+    for bad in (np.nan, np.inf):
+        v = np.ones(OUT)
+        v[0] = bad
+        with pytest.raises(ValueError, match="finite"):
+            project_out("m", w0, v)
+    with pytest.raises(ValueError, match="finite"):
+        project_out("m", w0, np.ones(OUT), strength=float("nan"))
+
+
+@pytest.mark.parametrize("s", [float("nan"), float("inf"), -float("inf")])
+def test_scale_recipes_reject_non_finite_s(s: float) -> None:
+    w0 = RNG.standard_normal((OUT, IN))
+    with pytest.raises(ValueError, match="finite"):
+        scale_column("m", w0, 1, s)
+    with pytest.raises(ValueError, match="finite"):
+        scale_head("m", w0, 0, 2, s)
+
+
+@pytest.mark.parametrize("bad", [1.5, True, "1", None])
+def test_scale_recipes_reject_non_int_indices(bad: object) -> None:
+    w0 = RNG.standard_normal((OUT, IN))
+    with pytest.raises(ValueError, match="must be an int"):
+        scale_column("m", w0, bad, 2.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="must be an int"):
+        scale_head("m", w0, bad, 2, 2.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="must be an int"):
+        scale_head("m", w0, 0, bad, 2.0)  # type: ignore[arg-type]
+
+
+def test_scale_recipes_accept_numpy_int_index() -> None:
+    w0 = RNG.standard_normal((OUT, IN))
+    assert scale_column("m", w0, np.int64(2), 2.0).shape == (OUT, IN)  # type: ignore[arg-type]
+    assert scale_head("m", w0, np.int32(1), 2, 2.0).shape == (OUT, IN)  # type: ignore[arg-type]

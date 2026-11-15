@@ -95,3 +95,73 @@ def test_gate_errors() -> None:
         direction_gate(np.ones((3, 8)))
     with pytest.raises(ValueError, match=r"\[P, H\]"):
         direction_gate(np.ones(8))
+
+
+def test_gate_rejects_bad_draws() -> None:
+    _, diffs = _planted()
+    for draws in (0, -3):
+        with pytest.raises(ValueError, match="draws must be >= 1"):
+            direction_gate(diffs, draws=draws)
+    assert isinstance(direction_gate(diffs, draws=1), GateResult)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_gate_rejects_non_finite(bad: float) -> None:
+    _, diffs = _planted()
+    diffs[3, 5] = bad
+    with pytest.raises(ValueError, match="finite"):
+        direction_gate(diffs)
+
+
+def test_gate_zero_half_mean_is_nan() -> None:
+    diffs = np.zeros((8, 5))
+    r = direction_gate(diffs)
+    for v in (r.split_half_cos, r.null_975, r.heldout_auc, r.per_pair_cos):
+        assert np.isnan(v)
+
+
+def test_gate_zero_half_a_only_is_nan() -> None:
+    v = np.arange(1.0, 6.0)
+    diffs = np.stack([v, v, -v, -v] + [2 * v] * 4)
+    # find a seed whose half A is balanced (mean exactly 0) and half B is not
+    for seed in range(200):
+        perm = np.random.default_rng(seed).permutation(8)
+        a, b = diffs[perm[:4]], diffs[perm[4:]]
+        if not a.mean(axis=0).any() and b.mean(axis=0).any():
+            break
+    else:
+        pytest.fail("no seed gives a cancelling half A")
+    r = direction_gate(diffs, seed=seed)
+    assert np.isnan(r.split_half_cos)
+    assert np.isnan(r.heldout_auc)
+    assert np.isnan(r.per_pair_cos)
+
+
+def test_from_means_shape_checks() -> None:
+    with pytest.raises(ValueError, match="1-D and equal shape"):
+        direction_from_means(np.ones(4), np.ones(1))
+    with pytest.raises(ValueError, match="1-D and equal shape"):
+        direction_from_means(np.ones((2, 2)), np.zeros((2, 2)))
+
+
+def test_neuron_scores_shape_checks() -> None:
+    w = np.ones((4, 6))
+    with pytest.raises(ValueError, match="act_contrast"):
+        neuron_scores(np.ones(4), w, np.ones(1))
+    with pytest.raises(ValueError, match="hidden"):
+        neuron_scores(np.ones(3), w, np.ones(6))
+
+
+def test_directions_from_pairs_errors_name_layer() -> None:
+    res_a = np.random.default_rng(0).standard_normal((3, 4, 5))
+    res_b = res_a - 1.0
+    res_b[:, 2] = res_a[:, 2]  # layer 2 has equal means
+    with pytest.raises(ValueError, match="layer 2"):
+        directions_from_pairs(res_a, res_b)
+    with pytest.raises(ValueError, match="at least 1 pair"):
+        directions_from_pairs(np.zeros((0, 4, 5)), np.zeros((0, 4, 5)))
+
+
+def test_direction_from_means_unit_for_tiny_difference() -> None:
+    u = direction_from_means(np.array([1e-14, 0.0]), np.zeros(2))
+    assert np.isclose(np.linalg.norm(u), 1.0)

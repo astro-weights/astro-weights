@@ -299,3 +299,54 @@ def test_merged_weights_rejects_peft_model(tiny_llama: Any) -> None:
     edit = make_edit(tiny_llama)
     with pytest.raises(ValueError, match="plain base model"):
         merged_weights(apply(tiny_llama, edit), edit)
+
+
+def test_merged_weights_bf16_exact(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import merged_weights
+
+    edit = make_edit(tiny_llama)
+    model = copy.deepcopy(tiny_llama).to(torch.bfloat16)
+    before = {k: v.clone() for k, v in model.state_dict().items()}
+    merged = merged_weights(model, edit)
+    w0 = model.get_submodule(MODULE).weight.detach()
+    dense = torch.from_numpy(edit.deltas[0].dense())
+    assert merged[MODULE].dtype == torch.bfloat16
+    assert torch.equal(merged[MODULE], (w0.float() + dense).to(torch.bfloat16))
+    after = model.state_dict()
+    assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+def test_merged_weights_float64_keeps_precision(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import merged_weights
+
+    edit = make_edit(tiny_llama)
+    model = copy.deepcopy(tiny_llama).to(torch.float64)
+    w0 = model.get_submodule(MODULE).weight.detach()
+    dense = torch.from_numpy(edit.deltas[0].dense()).double()
+    merged = merged_weights(model, edit)[MODULE]
+    assert merged.dtype == torch.float64
+    assert torch.equal(merged, w0 + dense)
+
+
+def test_swap_bad_edit_leaves_model_usable(tiny_llama: Any, input_ids: Any) -> None:
+    from astro_weights.runners.hf import swap
+
+    peft_model = apply(tiny_llama, make_edit(tiny_llama))
+    before = logits(peft_model, input_ids)
+    bad = renamed(make_edit(tiny_llama), "model.layers.9.mlp.down_proj")
+    with pytest.raises(ValueError, match=r"no nn\.Linear"):
+        swap(peft_model, bad)
+    assert len(lora_modules(peft_model)) == 1
+    assert torch.equal(logits(peft_model, input_ids), before)
+    # the survivor still swaps normally
+    other = second_edit(tiny_llama, "model.layers.0.mlp.down_proj")
+    assert len(lora_modules(swap(peft_model, other))) == 1
+
+
+def test_swap_resolves_other_layout(tiny_qwen_text: Any, input_ids: Any) -> None:
+    from astro_weights.runners.hf import swap
+
+    first = edit_for(tiny_qwen_text, TEXT)
+    peft_model = apply(tiny_qwen_text, first)
+    second = renamed(second_edit(tiny_qwen_text, TEXT), VL)
+    assert len(lora_modules(swap(peft_model, second))) == 1
