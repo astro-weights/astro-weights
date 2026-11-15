@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import math
 import time
@@ -435,3 +436,236 @@ def test_exceeds_floor_nan_is_false() -> None:
     r = compare(base, edit, n_boot=50)
     assert exceeds_floor(r, nan_r) == {"score": False, "tokens": False}
     assert exceeds_floor(nan_r, r) == {"score": False, "tokens": False}
+
+
+# --- clustered standard errors ---------------------------------------------------------
+
+
+def _golden_arms(binary: bool) -> tuple[list[Record], list[Record]]:
+    rng = np.random.default_rng(7)
+    base, edit = [], []
+    for k in range(37):
+        for s in range(1 if binary else 2):
+            if binary:
+                b, e = float(rng.integers(0, 2)), float(rng.integers(0, 2))
+            else:
+                b, e = float(rng.random()), float(rng.random())
+            tb, te = int(rng.integers(50, 500)), int(rng.integers(50, 500))
+            base.append(Record(f"i{k}", s, "base", f"p{k}", "o", b, tb, tb > 450))
+            edit.append(Record(f"i{k}", s, "edit", f"p{k}", "o", e, te, te > 450))
+    return base, edit
+
+
+# Captured from compare() before cluster support was added; must not drift.
+_GOLDEN = {
+    True: PairedResult(
+        n_items=37,
+        mean_base=0.5945945945945946,
+        mean_edit=0.5405405405405406,
+        diff=-0.05405405405405406,
+        se=0.11589802099341087,
+        ci95=(-0.28121417520113934, 0.17310606709303125),
+        correlation=0.011941628680530631,
+        mcnemar_p=0.8145294189453137,
+        n_base_only=10,
+        n_edit_only=8,
+        tokens_base=282.0,
+        tokens_edit=263.3783783783784,
+        tokens_diff=-18.62162162162162,
+        tokens_diff_pct=-6.603411922560858,
+        tokens_ci95=(-79.78175675675675, 40.41621621621616),
+        cap_hit_base=0.13513513513513514,
+        cap_hit_edit=0.08108108108108109,
+        small_n=True,
+        score_mde=0.32451445878155044,
+        tokens_se=30.772031862910826,
+        tokens_mde=86.16168921615031,
+    ),
+    False: PairedResult(
+        n_items=37,
+        mean_base=0.45059862551470625,
+        mean_edit=0.553578546965348,
+        diff=0.10297992145064187,
+        se=0.03982564718293352,
+        ci95=(0.024921652972092173, 0.18103818992919157),
+        correlation=0.2290555006288351,
+        mcnemar_p=None,
+        n_base_only=0,
+        n_edit_only=0,
+        tokens_base=263.7432432432432,
+        tokens_edit=280.3783783783784,
+        tokens_diff=16.635135135135137,
+        tokens_diff_pct=6.307321822001334,
+        tokens_ci95=(-20.37162162162162, 51.50844594594594),
+        cap_hit_base=0.08108108108108109,
+        cap_hit_edit=0.0945945945945946,
+        small_n=True,
+        score_mde=0.11151181211221385,
+        tokens_se=18.939781772154085,
+        tokens_mde=53.031388962031436,
+    ),
+}
+
+
+@pytest.mark.parametrize("binary", [True, False])
+def test_unclustered_results_bit_identical_to_before(binary: bool) -> None:
+    r = compare(*_golden_arms(binary), n_boot=1234, seed=5)
+    assert r == _GOLDEN[binary]  # exact float equality, field by field
+    assert r.n_clusters is None
+
+
+def _with_clusters(recs: list[Record], cluster: dict[str, str]) -> list[Record]:
+    return [dataclasses.replace(r, cluster_id=cluster[r.item_id]) for r in recs]
+
+
+def _three_clusters() -> tuple[list[Record], list[Record]]:
+    # d per item: A = [1, 1], B = [0], C = [0, 1, 0]; tokens follow 10 * d.
+    d = {"a1": 1, "a2": 1, "b1": 0, "c1": 0, "c2": 1, "c3": 0}
+    cl = {k: k[0].upper() for k in d}
+    base = [rec(k, "base", 0.0, tokens=100) for k in d]
+    edit = [rec(k, "edit", float(v), tokens=100 + 10 * v) for k, v in d.items()]
+    return _with_clusters(base, cl), _with_clusters(edit, cl)
+
+
+def test_clustered_hand_computed_three_clusters() -> None:
+    r = compare(*_three_clusters(), n_boot=200)
+    # dbar = 1/2; cluster residual sums A = 1, B = -1/2, C = -1/2; sum of squares 3/2.
+    # SE = sqrt(3/2 * 3/2) / 6 = 1/4 (G = 3, factor G/(G-1) = 3/2).
+    assert r.n_clusters == 3
+    assert r.n_items == 6
+    assert r.diff == pytest.approx(0.5, abs=1e-12)
+    assert r.se == pytest.approx(0.25, abs=1e-12)
+    assert r.ci95 == pytest.approx((0.5 - 1.96 * 0.25, 0.5 + 1.96 * 0.25), abs=1e-12)
+    assert r.score_mde == pytest.approx(2.8 * 0.25, abs=1e-12)
+    assert r.tokens_se == pytest.approx(2.5, abs=1e-12)
+    assert r.tokens_mde == pytest.approx(2.8 * 2.5, abs=1e-12)
+    # McNemar is still reported on items: 0 base-only, 3 edit-only.
+    assert (r.n_base_only, r.n_edit_only) == (0, 3)
+    assert r.mcnemar_p == pytest.approx(0.25)
+    assert r.small_n
+
+
+def test_clustered_singletons_match_unclustered_se() -> None:
+    rng = np.random.default_rng(11)
+    n = 150
+    sb, sd = rng.normal(0.5, 0.2, n), rng.normal(0.05, 0.3, n)
+    tb, td = rng.integers(100, 900, n), rng.integers(-80, 80, n)
+    base = [rec(f"i{k}", "base", float(sb[k]), tokens=int(tb[k])) for k in range(n)]
+    edit = [
+        rec(f"i{k}", "edit", float(sb[k] + sd[k]), tokens=int(tb[k] + td[k]))
+        for k in range(n)
+    ]
+    own = {f"i{k}": f"c{k}" for k in range(n)}
+    u = compare(base, edit, n_boot=50)
+    c = compare(_with_clusters(base, own), _with_clusters(edit, own), n_boot=50)
+    assert c.n_clusters == n
+    assert u.n_clusters is None
+    for name in ("se", "score_mde", "tokens_se", "tokens_mde"):
+        assert abs(getattr(c, name) - getattr(u, name)) < 1e-12, name
+    assert np.allclose(c.ci95, u.ci95, rtol=0, atol=1e-12)
+    assert c.diff == u.diff
+    assert c.small_n == u.small_n
+
+
+def test_clustered_bootstrap_resamples_clusters() -> None:
+    # Cluster X: one item with token diff 0; cluster Y: nine items with diff 10.
+    # Resampling 2 clusters gives a mean in {0, 9, 10} only.
+    ids = [f"i{k}" for k in range(10)]
+    cl = {i: ("X" if i == "i0" else "Y") for i in ids}
+    base = [rec(i, "base", 0.0, tokens=100) for i in ids]
+    edit = [rec(i, "edit", 0.0, tokens=100 if i == "i0" else 110) for i in ids]
+    r = compare(_with_clusters(base, cl), _with_clusters(edit, cl), n_boot=4000)
+    assert r.tokens_ci95 == (0.0, 10.0)
+    u = compare(base, edit, n_boot=4000)
+    assert u.tokens_ci95[0] > 0  # item bootstrap: some draws include i0, most don't
+
+
+def test_single_cluster_gives_nan() -> None:
+    base, edit = arms([0, 1, 1, 0], [1, 1, 0, 1])
+    one = {r.item_id: "only" for r in base}
+    r = compare(_with_clusters(base, one), _with_clusters(edit, one), n_boot=20)
+    assert r.n_clusters == 1
+    for v in (r.se, *r.ci95, r.score_mde, r.tokens_se, r.tokens_mde, *r.tokens_ci95):
+        assert math.isnan(v)
+
+
+def test_partial_cluster_id_rejected() -> None:
+    base, edit = arms([0, 1, 1], [1, 1, 0])
+    base = _with_clusters(base, {"i0": "a", "i1": "a", "i2": "b"})
+    with pytest.raises(ValueError, match="some records but not all"):
+        compare(base, edit)
+    edit = _with_clusters(edit, {"i0": "a", "i1": "a", "i2": "b"})
+    edit[2] = dataclasses.replace(edit[2], cluster_id=None)
+    with pytest.raises(ValueError, match="'i2'"):
+        compare(base, edit)
+
+
+def test_arms_disagreeing_on_cluster_rejected() -> None:
+    base, edit = arms([0, 1, 1], [1, 1, 0])
+    base = _with_clusters(base, {"i0": "a", "i1": "a", "i2": "b"})
+    edit = _with_clusters(edit, {"i0": "a", "i1": "b", "i2": "b"})
+    with pytest.raises(ValueError, match="item_id 'i1' has conflicting cluster_id"):
+        compare(base, edit)
+
+
+def test_seeds_disagreeing_on_cluster_rejected() -> None:
+    base = [
+        dataclasses.replace(rec("i0", "base", 1, seed=s), cluster_id=c)
+        for s, c in ((0, "a"), (1, "b"))
+    ]
+    edit = [dataclasses.replace(r, arm="edit") for r in base]
+    with pytest.raises(ValueError, match="item_id 'i0' has conflicting cluster_id"):
+        compare(base, edit)
+
+
+def test_format_report_clustered() -> None:
+    text = format_report(compare(*_three_clusters(), n_boot=50))
+    assert "n=6 items in 3 clusters" in text
+    assert "McNemar exact p=" in text
+    assert "ignores clustering" in text
+    assert "WARNING: only 3 clusters" in text
+    plain = format_report(compare(*arms([0, 1, 1, 0], [1, 1, 1, 0]), n_boot=50))
+    assert "clusters" not in plain
+    assert "ignores clustering" not in plain
+
+
+def test_small_n_counts_clusters() -> None:
+    n = 120
+    base, edit = arms([float(k % 2) for k in range(n)], [1.0] * n)
+    pairs_of = {f"i{k}": f"c{k // 2}" for k in range(n)}  # 60 clusters of 2
+    r = compare(_with_clusters(base, pairs_of), _with_clusters(edit, pairs_of))
+    assert r.small_n
+    assert not compare(base, edit).small_n
+    assert "WARNING: only 60 clusters" in format_report(r)
+
+
+def _sim_arms(
+    rng: np.random.Generator, n_clusters: int, size: int
+) -> tuple[list[Record], list[Record]]:
+    # True difference 0; d = cluster effect (var 1) + item noise (var 1), ICC 0.5.
+    d = np.repeat(rng.normal(0, 1, n_clusters), size) + rng.normal(
+        0, 1, n_clusters * size
+    )
+    base, edit = [], []
+    for k, dk in enumerate(d):
+        c = f"c{k // size}"
+        base.append(Record(f"i{k}", 0, "base", "p", "o", 0.0, 100, False, c))
+        edit.append(Record(f"i{k}", 0, "edit", "p", "o", float(dk), 100, False, c))
+    return base, edit
+
+
+def test_clustered_ci_coverage_simulation() -> None:
+    rng = np.random.default_rng(2024)
+    reps, covered_c, covered_u = 400, 0, 0
+    t0 = time.perf_counter()
+    for _ in range(reps):
+        base, edit = _sim_arms(rng, 200, 5)
+        c = compare(base, edit, n_boot=1)
+        covered_c += c.ci95[0] <= 0 <= c.ci95[1]
+        nb = [dataclasses.replace(r, cluster_id=None) for r in base]
+        ne = [dataclasses.replace(r, cluster_id=None) for r in edit]
+        u = compare(nb, ne, n_boot=1)
+        covered_u += u.ci95[0] <= 0 <= u.ci95[1]
+    assert time.perf_counter() - t0 < 30
+    assert 0.92 <= covered_c / reps <= 0.98
+    assert covered_u / reps < 0.90
