@@ -1,0 +1,1 @@
+`apply` now finds the edit's layers when the model was loaded under a different class than the adapter was built with: `model.layers.N...` (text-only) and `model.language_model.layers.N...` (multimodal) name the same layers. An ambiguous or missing match raises instead of guessing, and `apply` raises if the adapter did not attach to every layer.
