@@ -103,6 +103,7 @@ Only these recipes allowed in a step. Same names as keyword arguments of functio
 
 - Unknown or missing key in `params` or `arrays`: `ValueError`. Second step on same module: `ValueError`.
 - `.npy` loads with `allow_pickle=False`; path resolving outside recipe directory: `ValueError`.
+- Recipe from someone else is untrusted input: size caps, no pickle, no code run; full list in [SECURITY.md](https://github.com/astro-weights/astro-weights/blob/main/SECURITY.md#untrusted-input).
 - Built edit keeps recipe plus sha256 of every array (`meta["recipe"]["arrays_sha256"]`) in `astro_manifest.json`.
 
 ## Base weights

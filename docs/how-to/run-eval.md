@@ -187,6 +187,7 @@ for arm, name in [("base", "base-model"), ("edit", "edit-model")]:
 - `chat=True` (default) wraps prompt in tokenizer's chat template when tokenizer has one. Without template, prompt goes in as is.
 - Model runs in eval mode; previous train/eval mode comes back afterwards.
 - `n_output_tokens` counts tokens up to and including first EOS.
+- Records leave `cluster_id` unset. For clustered items set it yourself before `compare`; see [compare arms](compare-arms.md#clustered-items).
 - `scorer(gold, output)` sees full decoded output. For models that think first, wrap scorer with `answer_part` (text after last `</think>`), or `\boxed{}` inside thinking can get graded.
 - `hit_cap` is `True` when output used all `max_new_tokens` and last token is not EOS.
 

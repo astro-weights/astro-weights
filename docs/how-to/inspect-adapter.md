@@ -1,6 +1,6 @@
 # Inspect and verify adapter
 
-Check saved adapter before shipping or after download.
+Check saved adapter before shipping or after download. Downloaded adapter is untrusted input: what reading checks and what it does not (hash is not signature) in [SECURITY.md](https://github.com/astro-weights/astro-weights/blob/main/SECURITY.md#untrusted-input).
 
 ## Command line
 
