@@ -549,3 +549,42 @@ def test_save_into_symlinked_empty_dir(tmp_path: Path) -> None:
     assert link.is_symlink()
     assert verify_peft(real) == []
     assert sorted(p.name for p in tmp_path.iterdir()) == ["link", "real"]
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_save_into_cwd_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: bool
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    save_peft(make_edit(), ".", overwrite=overwrite)
+    assert verify_peft(tmp_path) == []
+    assert Path.cwd().exists()
+
+
+def test_save_into_cwd_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    save_peft(make_edit(), tmp_path)
+    (tmp_path / "README.md").write_text("keep")
+    monkeypatch.chdir(tmp_path)
+    save_peft(other_edit(), ".", overwrite=True)
+    assert load_peft(tmp_path).base_model == "org/other"
+    assert (tmp_path / "README.md").read_text() == "keep"
+
+
+def test_save_into_dotdot_path(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    save_peft(make_edit(), tmp_path / "a" / ".." / "out")
+    assert verify_peft(tmp_path / "out") == []
+
+
+def test_save_into_empty_dir_keeps_inode_and_mode(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    out.chmod(0o750)
+    before = out.stat()
+    save_peft(make_edit(), out)
+    after = out.stat()
+    assert (after.st_ino, after.st_mode) == (before.st_ino, before.st_mode)
+    assert verify_peft(out) == []
+    assert [p.name for p in tmp_path.iterdir()] == ["out"]

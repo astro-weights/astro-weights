@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import os
 import secrets
 import shutil
 from importlib.metadata import version
@@ -82,7 +83,8 @@ def save_peft(edit: Edit, out_dir: Path | str, *, overwrite: bool = False) -> No
     with `overwrite` only the three adapter files are replaced and any other
     file in `out_dir` stays. On any failure the temp directory is removed.
     """
-    out = Path(out_dir)
+    # abspath, not resolve(): '.' gets a real name, a symlinked out_dir stays one
+    out = Path(os.path.abspath(out_dir))  # noqa: PTH100
     exists = out.exists() or out.is_symlink()
     if exists and not out.is_dir():
         raise NotADirectoryError(f"{out} exists and is not a directory")
@@ -97,11 +99,13 @@ def save_peft(edit: Edit, out_dir: Path | str, *, overwrite: bool = False) -> No
     tmp.mkdir()
     try:
         _write_adapter(edit, tmp)
-        if not out.is_symlink() and (not exists or not any(out.iterdir())):
-            tmp.rename(out)  # atomic; replaces an empty directory on POSIX
+        if not exists:
+            tmp.rename(out)  # atomic
         else:
-            # replace() swaps the directory entry, so a symlinked adapter file
-            # is replaced itself and its target is never written through.
+            # An existing directory (even empty) is filled, never swapped, so
+            # its inode, mode and mount point survive. replace() swaps the
+            # entry, so a symlinked adapter file is replaced itself and its
+            # target is never written through.
             for name in _REPLACE_ORDER:
                 (tmp / name).replace(out / name)
     except BaseException:
