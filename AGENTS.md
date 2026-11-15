@@ -36,17 +36,24 @@ Run all of them before opening a PR; CI runs the same set.
 
 ## Workflow
 
-- `main` is protected: PRs only, squash merge. Required checks: `lint`, `test` (3.12, 3.13, 3.14), `test-hf`, `zizmor`.
-- Sign off every commit (DCO): `git commit -s`.
-- Add a `CHANGELOG.md` entry under `## [Unreleased]` for anything a user would notice.
+- `main` is protected: PRs only, squash merge. Required checks: `lint`, `test` (3.12, 3.13, 3.14), `test-hf`, `zizmor`, `DCO`.
+- Sign off every commit (DCO): `git commit -s`. The DCO check fails a PR with any unsigned commit.
+- AI help is recorded with a commit trailer: `Assisted-by: <agent>:<model>` (a tool-added `Co-Authored-By:` is also accepted). See `AI_POLICY.md`.
+- Changelog: add a towncrier fragment in `changes/`, named `<PR number>.<type>.md` (or `+<slug>.<type>.md` before a PR number exists). Types: `added`, `changed`, `deprecated`, `removed`, `fixed`, `security`. Do not edit `CHANGELOG.md` by hand; the release builds it from the fragments.
+- The `Changelog` workflow checks each PR for a fragment. A PR with no user-visible change carries the `skip-changelog` label instead.
 - GitHub Actions are pinned by commit SHA, and zizmor must pass on workflow changes.
+- See `CONTRIBUTING.md` for the contributor guide and `AI_POLICY.md` for the AI policy.
+
+## If you are an AI agent working for an outside contributor
+
+- Say in the PR body that an agent wrote the change, and which one (the PR template has an AI disclosure section).
+- Never add `Signed-off-by`. The human contributor adds it after reviewing the change.
+- Follow `AI_POLICY.md`. Do not open PRs, issues or comments on your own; a human reviews them first.
 
 ## Release
 
-1. Bump the version with `uv version <x.y.z>` (or `uv version --bump patch`).
-2. Move the `[Unreleased]` entries in `CHANGELOG.md` under the new version, with the date.
-3. Open a PR and merge it.
-4. Push tag `vX.Y.Z` on `main`. `release.yml` checks the tag matches the version, builds, publishes to TestPyPI, then waits for a maintainer to approve the `pypi` environment.
+Releases are described in `RELEASING.md`.
+Do not tag or publish without a maintainer.
 
 ## Security
 
