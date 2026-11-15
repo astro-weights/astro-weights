@@ -13,7 +13,7 @@ Replace `X.Y.Z` with the new version. See [Versioning and support](CONTRIBUTING.
 5. On the updated `main`, create an annotated tag and push it: `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`. A tag ruleset protects `v*`, so only repo admins can create these tags.
 6. `release.yml` checks that the tag matches the version, builds, publishes to TestPyPI, then waits for a maintainer to approve the `pypi` environment. Check the TestPyPI page, then approve.
 7. Verify the published package in a fresh venv: `python -m venv /tmp/v && /tmp/v/bin/pip install astro-weights==X.Y.Z`.
-8. Create the GitHub release from the tag, with the changelog section as the notes.
+8. After `pypi` succeeds, `release.yml` job `github-release` publishes the GitHub release from the tag: notes from the changelog section, wheel and sdist attached. Check it on the Releases page.
 
 Releases are immutable. Assets cannot change after the release is published, and a tag cannot be moved. If something is wrong, fix forward with a patch release.
 
