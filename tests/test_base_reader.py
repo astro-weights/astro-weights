@@ -146,3 +146,39 @@ def test_reads_only_needed_range(tmp_path: Path) -> None:
     np.testing.assert_array_equal(read_tensor(f, "good"), good)
     with pytest.raises(ValueError, match="truncated"):
         read_tensor(f, "huge")
+
+
+def test_nested_header_is_value_error(tmp_path: Path) -> None:
+    f = tmp_path / "n.safetensors"
+    blob = b"[" * 200_000
+    f.write_bytes(struct.pack("<Q", len(blob)) + blob)
+    with pytest.raises(ValueError, match="JSON"):
+        read_tensor(f, "w")
+
+
+def test_unsafe_shard_names(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.safetensors"
+    save_file({"w": np.zeros(2, dtype=np.float32)}, str(outside))
+    model = tmp_path / "model"
+    model.mkdir()
+    for name in ("../outside.safetensors", str(outside), "sub/x.safetensors", ".."):
+        index = {"weight_map": {"w": name}}
+        (model / "model.safetensors.index.json").write_text(json.dumps(index))
+        with pytest.raises(ValueError, match="unsafe shard name"):
+            read_base_weight(model, "w")
+
+
+def test_bad_index_vs_missing_key(tmp_path: Path) -> None:
+    idx = tmp_path / "model.safetensors.index.json"
+    idx.write_text("not json")
+    with pytest.raises(ValueError, match="invalid index file"):
+        read_base_weight(tmp_path, "w")
+    idx.write_text(json.dumps({"metadata": {}}))
+    with pytest.raises(ValueError, match="invalid index file"):
+        read_base_weight(tmp_path, "w")
+    idx.write_text("[" * 200_000)
+    with pytest.raises(ValueError, match="invalid index file"):
+        read_base_weight(tmp_path, "w")
+    idx.write_text(json.dumps({"weight_map": {}}))
+    with pytest.raises(ValueError, match="not in weight_map"):
+        read_base_weight(tmp_path, "w")

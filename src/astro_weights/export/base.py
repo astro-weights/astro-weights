@@ -36,7 +36,7 @@ def _locate(file: Path, key: str) -> tuple[str, tuple[int, ...], int, int]:
         raise _fail(file, key, "truncated header")
     try:
         header = json.loads(blob)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         raise _fail(file, key, "invalid header JSON") from e
     entry = (
         header.get(key) if isinstance(header, dict) and key != "__metadata__" else None
@@ -105,11 +105,15 @@ def _shard(model_dir: Path, key: str) -> Path:
         return model_dir / SINGLE
     try:
         weight_map = json.loads(index.read_text())["weight_map"]
-        name = weight_map[key]
-    except (OSError, ValueError, KeyError, TypeError) as e:
-        raise ValueError(f"{index}: key {key!r} not in weight_map") from e
+    except (OSError, ValueError, RecursionError, KeyError, TypeError) as e:
+        raise ValueError(f"{index}: invalid index file: {e!r}") from e
+    if not isinstance(weight_map, dict) or key not in weight_map:
+        raise ValueError(f"{index}: key {key!r} not in weight_map")
+    name = weight_map[key]
     if not isinstance(name, str):
         raise ValueError(f"{index}: bad shard name for {key!r}")  # noqa: TRY004
+    if name in ("", ".", "..") or Path(name).name != name or "\\" in name:
+        raise ValueError(f"{index}: unsafe shard name {name!r} for {key!r}")
     return model_dir / name
 
 
