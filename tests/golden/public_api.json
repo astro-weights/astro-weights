@@ -70,8 +70,8 @@
   "verify_splice": "(base: pathlib.Path | str, out: pathlib.Path | str, names: list[str], seed: int = 0) -> list[str]"
  },
  "astro_weights.runners.generate": {
-  "generate_records": "(model: Any, tokenizer: Any, items: collections.abc.Sequence[collections.abc.Mapping[str, typing.Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, seed: int = 0, chat: bool = True) -> list[astro_weights.eval.records.Record]",
-  "run_header": "(model: Any, tokenizer: Any, max_new_tokens: int, seed: int, chat: bool) -> dict[str, typing.Any]"
+  "generate_records": "(model: Any, tokenizer: Any, items: collections.abc.Sequence[collections.abc.Mapping[str, typing.Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, seed: int = 0, chat: bool = True, *, out: pathlib.Path | str | None = None, resume: bool = False, batch_size: int = 1) -> list[astro_weights.eval.records.Record]",
+  "run_header": "(model: Any, tokenizer: Any, max_new_tokens: int, seed: int, chat: bool, *, batch_size: int = 1) -> dict[str, typing.Any]"
  },
  "astro_weights.runners.hf": {
   "apply": "(model: torch.nn.modules.module.Module, edit: astro_weights.edits.core.Edit, adapter_name: str = 'astro', *, max_rounding_error: float | None = None) -> peft.peft_model.PeftModel",
