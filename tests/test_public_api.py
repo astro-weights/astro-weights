@@ -23,6 +23,7 @@ MODULES = [
     "astro_weights.directions",
     "astro_weights.export.gguf",
     "astro_weights.runners.hf",
+    "astro_weights.runners.endpoint",
     "astro_weights.runners.generate",
 ]
 HF = ("torch", "transformers", "peft")
@@ -55,7 +56,8 @@ def _describe(obj: object) -> str | None:
     try:
         sig = str(inspect.signature(obj))
         # Python 3.13 moved Path to pathlib._local; keep the snapshot version-independent
-        return sig.replace("pathlib._local.", "pathlib.")
+        # 3.14 prints `Any` inside `X[..., Any] | None` without the typing. prefix
+        return sig.replace("pathlib._local.", "pathlib.").replace("typing.Any", "Any")
     except (TypeError, ValueError):
         return None
 

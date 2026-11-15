@@ -10,6 +10,7 @@ from astro_weights.eval import (
     PairedResult,
     Record,
     compare,
+    exceeds_floor,
     format_report,
     pair,
     prompt_hash,
@@ -364,3 +365,73 @@ def test_mcnemar_exact_large_is_fast_and_close_to_normal_approximation() -> None
 def test_mcnemar_exact_extremes_stay_in_unit_interval() -> None:
     assert _mcnemar_exact(0, 100000) == 0.0
     assert _mcnemar_exact(50000, 50000) == 1.0
+
+
+def test_mde_is_2_8_se() -> None:
+    base, edit = arms([1, 1, 0, 0, 1, 0], [1, 0, 1, 1, 1, 1])
+    r = compare(base, edit, n_boot=50)
+    assert r.score_mde == pytest.approx(2.8 * r.se)
+    assert r.tokens_mde == pytest.approx(2.8 * r.tokens_se)
+
+
+def test_mde_nan_for_single_item() -> None:
+    base, edit = arms([1], [0])
+    r = compare(base, edit, n_boot=10)
+    assert math.isnan(r.score_mde)
+    assert math.isnan(r.tokens_mde)
+
+
+def test_report_mde_only_when_ci_contains_zero() -> None:
+    base, edit = arms([1, 1, 0, 0, 1, 0], [1, 0, 1, 1, 1, 1])
+    r = compare(base, edit, n_boot=50)
+    assert "not significant; smallest detectable difference at this n is" in (
+        format_report(r)
+    )
+    n = 40
+    base = [rec(f"i{k}", "base", float(k % 2), tokens=100 + k) for k in range(n)]
+    edit = [
+        rec(f"i{k}", "edit", float(k % 2) + 1.0 + 0.01 * (k % 3), tokens=300 + k)
+        for k in range(n)
+    ]
+    text = format_report(compare(base, edit, n_boot=50))
+    assert "not significant" not in text
+
+
+def _noisy(shift: float, wiggle: float, n: int = 60) -> list[Record]:
+    return [
+        rec(f"i{k}", "x", 0.5 + shift + wiggle * ((k * 7) % 5 - 2), tokens=100 + k)
+        for k in range(n)
+    ]
+
+
+def test_exceeds_floor_true_and_false() -> None:
+    base = _noisy(0.0, 0.0)
+    big = _noisy(0.5, 0.05)
+    small = _noisy(0.0, 0.05)
+    floor = compare(_noisy(0.0, 0.1), _noisy(0.0, 0.11), n_boot=50)
+    assert exceeds_floor(compare(base, big, n_boot=50), floor)["score"]
+    assert not exceeds_floor(compare(base, small, n_boot=50), floor)["score"]
+    out = format_report(compare(base, big, n_boot=50), floor=floor)
+    assert "noise floor (score)" in out
+    assert "noise floor (tokens)" in out
+    assert "does not exceed" in out  # tokens did not move
+
+
+def test_exceeds_floor_requires_significance_and_size() -> None:
+    base, edit = arms([1, 1, 0, 0, 1, 0], [1, 0, 1, 1, 1, 1])
+    r = compare(base, edit, n_boot=50)  # CI contains 0
+    zero_floor = compare(base, base_copy(base), n_boot=50)
+    assert not exceeds_floor(r, zero_floor)["score"]
+
+
+def base_copy(recs: list[Record]) -> list[Record]:
+    return [rec(r.item_id, "base2", r.score, ph="p") for r in recs]
+
+
+def test_exceeds_floor_nan_is_false() -> None:
+    b1, e1 = arms([1], [0])
+    nan_r = compare(b1, e1, n_boot=10)
+    base, edit = arms([0] * 30, [1] * 30)
+    r = compare(base, edit, n_boot=50)
+    assert exceeds_floor(r, nan_r) == {"score": False, "tokens": False}
+    assert exceeds_floor(nan_r, r) == {"score": False, "tokens": False}
