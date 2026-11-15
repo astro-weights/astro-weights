@@ -49,6 +49,8 @@ dev = [
     "mypy>=1.15",
     "import-linter>=2.16",
     "towncrier>=26.9.0",
+    "hypothesis>=6.170.15",
+    "pytest-cov>=7.1.0",
 ]
 docs = [
     "mkdocstrings-python==2.0.11",

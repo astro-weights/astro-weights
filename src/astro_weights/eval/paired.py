@@ -102,8 +102,23 @@ def _mcnemar_exact(b: int, c: int) -> float:
     n = b + c
     if n == 0:
         return 1.0
-    tail = sum(math.comb(n, k) for k in range(min(b, c) + 1))
-    return float(min(1.0, 2 * tail / 2**n))
+    m = min(b, c)
+    # Sum P(X = k), k <= m, downward from k = m: terms shrink geometrically, so stop once negligible.
+    term = math.exp(
+        math.lgamma(n + 1)
+        - math.lgamma(m + 1)
+        - math.lgamma(n - m + 1)
+        - n * math.log(2)
+    )
+    tail = 0.0
+    for k in range(m, 0, -1):
+        tail += term
+        term *= k / (n - k + 1)
+        if term < tail * 1e-18:
+            break
+    else:
+        tail += term
+    return float(min(1.0, 2 * tail))
 
 
 def compare(

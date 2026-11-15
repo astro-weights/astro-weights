@@ -62,8 +62,9 @@ At release time the maintainer runs towncrier, which writes the fragments into `
 
 astro-weights follows [SemVer](https://semver.org/) with 0.x rules:
 
-- A minor bump (0.1 to 0.2) is a breaking change or a new feature.
-- A patch bump (0.1.0 to 0.1.1) is fixes only.
+- A minor bump (0.1 to 0.2) is a milestone or a breaking change.
+- A patch bump (0.1.0 to 0.1.1) may carry any backward-compatible change, including new features.
+- From 1.0, a patch bump is fixes only.
 - Public API is deprecated with a `DeprecationWarning` for at least one minor release before it is removed.
 - The version is set by hand with `uv version`. There are no nightly releases.
 

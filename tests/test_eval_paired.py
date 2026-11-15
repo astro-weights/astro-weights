@@ -1,5 +1,6 @@
 import json
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ from astro_weights.eval import (
     read_jsonl,
     write_jsonl,
 )
+from astro_weights.eval.paired import _mcnemar_exact
 
 
 def rec(
@@ -324,3 +326,41 @@ def test_uneven_seed_counts_per_item() -> None:
     assert r.mean_base == pytest.approx(0.25)  # a: 0.5, b: 0
     assert r.mean_edit == pytest.approx(0.5)  # a: 0, b: 1
     assert r.diff == pytest.approx(0.25)  # d = [-0.5, 1]
+
+
+def _mcnemar_reference(b: int, c: int) -> float:
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, k) for k in range(min(b, c) + 1))
+    return float(min(1.0, 2 * tail / 2**n))
+
+
+def test_mcnemar_exact_matches_reference_small() -> None:
+    for b in range(31):
+        for c in range(31):
+            assert _mcnemar_exact(b, c) == pytest.approx(
+                _mcnemar_reference(b, c), abs=1e-12
+            )
+
+
+def test_mcnemar_exact_known_values() -> None:
+    assert _mcnemar_exact(3, 3) == 1.0
+    assert _mcnemar_exact(0, 5) == pytest.approx(0.0625)
+    assert _mcnemar_exact(0, 0) == 1.0
+
+
+def test_mcnemar_exact_large_is_fast_and_close_to_normal_approximation() -> None:
+    b, c = 20000, 20800
+    start = time.perf_counter()
+    p = _mcnemar_exact(b, c)
+    assert time.perf_counter() - start < 1.0
+    z = (abs(b - c) - 1) / math.sqrt(b + c)
+    approx = math.erfc(z / math.sqrt(2))
+    assert 0.0 <= p <= 1.0
+    assert p == pytest.approx(approx, rel=0.05)
+
+
+def test_mcnemar_exact_extremes_stay_in_unit_interval() -> None:
+    assert _mcnemar_exact(0, 100000) == 0.0
+    assert _mcnemar_exact(50000, 50000) == 1.0
