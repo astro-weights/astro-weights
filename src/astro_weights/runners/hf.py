@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model, set_peft_model_state_dict
+from peft.tuners.tuners_utils import BaseTunerLayer
 from torch import nn
 
 from astro_weights.edits import Edit
@@ -22,6 +23,18 @@ def _tail(name: str) -> tuple[str, ...] | None:
     return None
 
 
+def _check_plain(model: nn.Module) -> None:
+    """Raise if `model` already carries an adapter (a PeftModel or tuner layers)."""
+    if isinstance(model, PeftModel) or any(
+        isinstance(m, BaseTunerLayer) for m in model.modules()
+    ):
+        msg = (
+            "an adapter is already applied to this model; use swap() to replace "
+            "it, or remove() to get the plain base model back"
+        )
+        raise ValueError(msg)
+
+
 def resolve_modules(model: nn.Module, edit: Edit) -> dict[str, str]:
     """Map each edit module name to the model's name for the same linear layer.
 
@@ -29,11 +42,15 @@ def resolve_modules(model: nn.Module, edit: Edit) -> dict[str, str]:
     `model.language_model.layers.N...` depending on the class that loads it.
     An exact name wins. Otherwise the name is matched from its last
     `layers.<int>` onward, among linear layers of the edit's shape. No match,
-    or more than one, raises: a wrong guess would edit the wrong layer.
+    or more than one, raises: a wrong guess would edit the wrong layer. A model
+    that already carries an adapter raises too.
     """
+    _check_plain(model)
     # named_modules() yields a module registered under two names only once
-    live = {n: m for n, m in model.named_modules() if isinstance(m, nn.Linear)}
-    return _resolve(live, edit)
+    modules = dict(model.named_modules())
+    live = {n: m for n, m in modules.items() if isinstance(m, nn.Linear)}
+    others = {n: m for n, m in modules.items() if n and n not in live}
+    return _resolve(live, edit, others)
 
 
 def _base_linears(peft_model: PeftModel) -> dict[str, nn.Linear]:
@@ -57,7 +74,20 @@ def _base_linears(peft_model: PeftModel) -> dict[str, nn.Linear]:
     return live
 
 
-def _resolve(live: dict[str, nn.Linear], edit: Edit) -> dict[str, str]:
+def _matches(name: str, module: str, tail: tuple[str, ...] | None) -> bool:
+    """True if `name` is `module` or ends with its `layers.<int>` tail."""
+    if name == module:
+        return True
+    return tail is not None and tuple(name.split(".")[-len(tail) :]) == tail
+
+
+def _resolve(
+    live: dict[str, nn.Linear],
+    edit: Edit,
+    others: dict[str, nn.Module] | None = None,
+) -> dict[str, str]:
+    """Map edit names to `live` names; `others` (non-linear modules) only
+    sharpen the error when nothing in `live` matches."""
     resolved: dict[str, str] = {}
     for d in edit.deltas:
         if d.module in live:
@@ -72,6 +102,18 @@ def _resolve(live: dict[str, nn.Linear], edit: Edit) -> dict[str, str]:
                 and tuple(m.weight.shape) == d.shape
             ]
             if not found:
+                kinds = sorted(
+                    {
+                        type(m).__name__
+                        for n, m in (others or {}).items()
+                        if _matches(n, d.module, tail)
+                    }
+                )
+                if kinds:
+                    raise ValueError(
+                        f"{d.module}: module is {' or '.join(kinds)}, "
+                        "only nn.Linear is supported"
+                    )
                 raise ValueError(
                     f"{d.module}: no nn.Linear matches in the model (shape {d.shape})"
                 )
@@ -92,13 +134,52 @@ def _resolve(live: dict[str, nn.Linear], edit: Edit) -> dict[str, str]:
     return resolved
 
 
-def apply(model: nn.Module, edit: Edit, adapter_name: str = "astro") -> PeftModel:
-    """Wrap only the edit's modules in LoRA layers carrying the edit's factors.
+def rounding_error(model: nn.Module, edit: Edit) -> dict[str, float]:
+    """Relative error of each delta after its factors are cast to the weight dtype.
 
-    Edit module names map to model names through `resolve_modules`. Raises
-    `RuntimeError` if the adapter did not wrap every edit module.
+    Per edit module name, `|cast(B) @ cast(A) - B @ A|_F / |B @ A|_F`, where
+    `cast` rounds to that module's weight dtype (what `apply` loads); the math
+    is float64. A float32 or float64 model gives 0.0, as does a zero delta.
+    The model is not modified.
     """
     names = resolve_modules(model, edit)
+    modules = dict(model.named_modules())
+    errors: dict[str, float] = {}
+    for d in edit.deltas:
+        dtype = modules[names[d.module]].weight.dtype
+        b, a = torch.from_numpy(d.B), torch.from_numpy(d.A)
+        exact = b.double() @ a.double()
+        cast = b.to(dtype).double() @ a.to(dtype).double()
+        norm = float(torch.linalg.norm(exact))
+        errors[d.module] = (
+            float(torch.linalg.norm(cast - exact)) / norm if norm else 0.0
+        )
+    return errors
+
+
+def apply(
+    model: nn.Module,
+    edit: Edit,
+    adapter_name: str = "astro",
+    *,
+    max_rounding_error: float | None = None,
+) -> PeftModel:
+    """Wrap only the edit's modules in LoRA layers carrying the edit's factors.
+
+    Edit module names map to model names through `resolve_modules`. The
+    factors are cast to each weight's dtype; with `max_rounding_error` set, a
+    module whose `rounding_error` exceeds it raises `ValueError`. Every
+    `ValueError` is raised before the model is touched. Raises `RuntimeError`
+    (after unwrapping again) if the adapter did not wrap every edit module.
+    """
+    names = resolve_modules(model, edit)
+    if max_rounding_error is not None:
+        for module, err in rounding_error(model, edit).items():
+            if err > max_rounding_error:
+                raise ValueError(
+                    f"{module}: rounding error {err:.3g} of the factors in the "
+                    f"model dtype exceeds max_rounding_error {max_rounding_error:.3g}"
+                )
     modules = dict(model.named_modules())
     state: dict[str, torch.Tensor] = {}
     for d in edit.deltas:
@@ -123,6 +204,7 @@ def apply(model: nn.Module, edit: Edit, adapter_name: str = "astro") -> PeftMode
         n.endswith(f".lora_A.{adapter_name}") for n, _ in peft_model.named_modules()
     )
     if result.unexpected_keys or wrapped != len(edit.deltas):
+        peft_model.unload()
         raise RuntimeError(
             f"adapter did not load cleanly: {wrapped} of {len(edit.deltas)} modules "
             f"wrapped, unexpected keys {list(result.unexpected_keys)}"
@@ -149,19 +231,19 @@ def swap(peft_model: PeftModel, edit: Edit, adapter_name: str = "astro") -> Peft
 def merged_weights(model: nn.Module, edit: Edit) -> dict[str, torch.Tensor]:
     """Edited weights `W0 + B @ A` per module, keyed by the model's module name.
 
-    `model` must be the plain base model. The sum is done in at least float32
-    (float64 weights stay float64) and cast back to the weight's dtype; results
-    live on CPU. The model is not modified.
+    `model` must be the plain base model with floating-point weights. The sum
+    is done in at least float32 (float64 weights stay float64) and cast back
+    to the weight's dtype; results live on CPU. The model is not modified.
     """
-    if isinstance(model, PeftModel):
-        msg = "merged_weights needs the plain base model, not a PeftModel"
-        raise ValueError(msg)  # noqa: TRY004 (spec: ValueError)
     names = resolve_modules(model, edit)
     modules = dict(model.named_modules())
     merged: dict[str, torch.Tensor] = {}
     for d in edit.deltas:
         name = names[d.module]
         w0 = modules[name].weight.detach().cpu()
+        if not w0.is_floating_point():
+            msg = f"{name}: weight dtype {w0.dtype} is not floating point"
+            raise ValueError(msg)
         dense = torch.from_numpy(d.B) @ torch.from_numpy(d.A)
         acc = torch.promote_types(w0.dtype, torch.float32)
         merged[name] = (w0.to(acc) + dense.to(acc)).to(w0.dtype)

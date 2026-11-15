@@ -350,3 +350,196 @@ def test_swap_resolves_other_layout(tiny_qwen_text: Any, input_ids: Any) -> None
     peft_model = apply(tiny_qwen_text, first)
     second = renamed(second_edit(tiny_qwen_text, TEXT), VL)
     assert len(lora_modules(swap(peft_model, second))) == 1
+
+
+def snapshot(model: Any) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+    types = [(n, type(m).__name__) for n, m in model.named_modules()]
+    weights = {k: v.clone() for k, v in model.state_dict().items()}
+    return types, weights
+
+
+def assert_untouched(model: Any, before: tuple[list[Any], dict[str, Any]]) -> None:
+    types, weights = snapshot(model)
+    assert types == before[0]
+    assert weights.keys() == before[1].keys()
+    assert all(torch.equal(weights[k], before[1][k]) for k in weights)
+
+
+def test_reapply_raises_already_applied(tiny_llama: Any) -> None:
+    edit = make_edit(tiny_llama)
+    peft_model = apply(tiny_llama, edit)
+    # apply wraps in place: the original object now carries LoRA layers too
+    for target in (tiny_llama, peft_model):
+        with pytest.raises(ValueError, match=r"already applied.*swap\(\).*remove\(\)"):
+            apply(target, edit)
+        with pytest.raises(ValueError, match="already applied"):
+            resolve_modules(target, edit)
+    assert len(lora_modules(peft_model)) == 1
+
+
+def test_merged_weights_rejects_lora_layers(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import merged_weights
+
+    edit = make_edit(tiny_llama)
+    apply(tiny_llama, edit)
+    with pytest.raises(ValueError, match="already applied"):
+        merged_weights(tiny_llama, edit)
+
+
+def test_swap_after_reapply_guard(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import swap
+
+    peft_model = apply(tiny_llama, make_edit(tiny_llama))
+    other = second_edit(tiny_llama, "model.layers.0.mlp.down_proj")
+    assert len(lora_modules(swap(peft_model, other))) == 1
+
+
+class ConvLayers(nn.Module):  # type: ignore[misc]
+    def __init__(self) -> None:
+        super().__init__()
+        from transformers.pytorch_utils import Conv1D
+
+        conv: Any = Conv1D
+        self.layers = nn.ModuleList([conv(6, 4)])
+
+
+def test_non_linear_tail_names_type() -> None:
+    with pytest.raises(
+        ValueError, match=r"lm\.layers\.0: module is Conv1D, only nn\.Linear"
+    ):
+        resolve_modules(ConvLayers(), tower_edit("lm.layers.0"))
+
+
+def test_non_linear_exact_name_names_type() -> None:
+    transformers = pytest.importorskip("transformers")
+    config = transformers.GPT2Config(
+        vocab_size=64, n_positions=16, n_embd=8, n_layer=1, n_head=2
+    )
+    model = transformers.GPT2LMHeadModel(config)
+    module = "transformer.h.0.attn.c_attn"
+    delta = LowRankDelta(module, np.ones((24, 1)), np.ones((1, 8)))
+    before = snapshot(model)
+    with pytest.raises(ValueError, match=r"module is Conv1D, only nn\.Linear"):
+        apply(model, Edit((delta,), "gpt2"))
+    assert_untouched(model, before)
+
+
+def test_no_match_message_unchanged(tiny_llama: Any) -> None:
+    edit = renamed(make_edit(tiny_llama), "model.layers.9.mlp.down_proj")
+    with pytest.raises(ValueError, match=r"no nn\.Linear matches") as info:
+        resolve_modules(tiny_llama, edit)
+    assert "module is" not in str(info.value)
+
+
+def bf16_edit(module: str = MODULE) -> Edit:
+    rng = np.random.default_rng(3)
+    b = rng.standard_normal((32, 1)).astype(np.float32)
+    a = rng.standard_normal((1, 64)).astype(np.float32)
+    return Edit((LowRankDelta(module, b, a),), "tiny-llama")
+
+
+def test_rounding_error_zero_for_float32_and_float64(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import rounding_error
+
+    edit = bf16_edit()
+    assert rounding_error(tiny_llama, edit) == {MODULE: 0.0}
+    assert rounding_error(tiny_llama.to(torch.float64), edit) == {MODULE: 0.0}
+
+
+def test_rounding_error_bf16_matches_formula(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import rounding_error
+
+    model = tiny_llama.to(torch.bfloat16)
+    edit = bf16_edit()
+    before = snapshot(model)
+    got = rounding_error(model, edit)
+    assert_untouched(model, before)
+
+    d = edit.deltas[0]
+    b = torch.from_numpy(d.B).to(torch.bfloat16).double().numpy()
+    a = torch.from_numpy(d.A).to(torch.bfloat16).double().numpy()
+    exact = d.B.astype(np.float64) @ d.A.astype(np.float64)
+    want = np.linalg.norm(b @ a - exact) / np.linalg.norm(exact)
+    assert list(got) == [MODULE]
+    assert got[MODULE] == pytest.approx(want, rel=1e-12)
+    assert 1e-4 < got[MODULE] < 1e-2
+
+
+def test_rounding_error_zero_delta(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import rounding_error
+
+    zero = LowRankDelta(MODULE, np.zeros((32, 1)), np.zeros((1, 64)))
+    model = tiny_llama.to(torch.bfloat16)
+    assert rounding_error(model, Edit((zero,), "x")) == {MODULE: 0.0}
+
+
+def test_rounding_error_key_is_edit_name(tiny_qwen_text: Any) -> None:
+    from astro_weights.runners.hf import rounding_error
+
+    edit = renamed(edit_for(tiny_qwen_text, TEXT), VL)
+    assert rounding_error(tiny_qwen_text, edit) == {VL: 0.0}
+
+
+def test_max_rounding_error_rejects_before_touching(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import rounding_error
+
+    model = tiny_llama.to(torch.bfloat16)
+    edit = bf16_edit()
+    err = rounding_error(model, edit)[MODULE]
+    before = snapshot(model)
+    with pytest.raises(ValueError, match=rf"{MODULE}.*rounding error.*1e-06") as info:
+        apply(model, edit, max_rounding_error=1e-6)
+    assert f"{err:.3g}" in str(info.value)
+    assert_untouched(model, before)
+    assert len(lora_modules(apply(model, edit, max_rounding_error=1e-2))) == 1
+
+
+def test_max_rounding_error_float32_passes_zero(tiny_llama: Any) -> None:
+    edit = make_edit(tiny_llama)
+    assert len(lora_modules(apply(tiny_llama, edit, max_rounding_error=0.0))) == 1
+
+
+@pytest.mark.parametrize(
+    ("module", "match"),
+    [
+        ("model.layers.9.mlp.down_proj", r"no nn\.Linear matches"),
+        ("model.layers.0.mlp", "module is LlamaMLP"),
+    ],
+)
+def test_failed_apply_leaves_model_untouched(
+    tiny_llama: Any, module: str, match: str
+) -> None:
+    edit = renamed(make_edit(tiny_llama), module)
+    before = snapshot(tiny_llama)
+    with pytest.raises(ValueError, match=match):
+        apply(tiny_llama, edit)
+    assert_untouched(tiny_llama, before)
+
+
+def test_unloaded_adapter_rolls_back(tiny_llama: Any, monkeypatch: Any) -> None:
+    from astro_weights.runners import hf
+
+    class Result:
+        unexpected_keys = ("base_model.model.x.lora_A.weight",)
+
+    monkeypatch.setattr(hf, "set_peft_model_state_dict", lambda *a, **k: Result())
+    before = snapshot(tiny_llama)
+    with pytest.raises(RuntimeError, match="did not load cleanly"):
+        apply(tiny_llama, make_edit(tiny_llama))
+    assert snapshot(tiny_llama)[0] == before[0]
+
+
+def test_merged_weights_rejects_integer_weight(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import merged_weights
+
+    layer = tiny_llama.get_submodule(MODULE)
+    layer.weight = nn.Parameter(
+        torch.zeros_like(layer.weight, dtype=torch.int8), requires_grad=False
+    )
+    with pytest.raises(ValueError, match=r"int8.*not floating point"):
+        merged_weights(tiny_llama, make_edit_shape(tiny_llama))
+
+
+def make_edit_shape(model: Any) -> Edit:
+    out, inn = model.get_submodule(MODULE).weight.shape
+    return Edit((LowRankDelta(MODULE, np.ones((out, 1)), np.ones((1, inn))),), "x")
