@@ -189,3 +189,31 @@ def test_unloaded_adapter_raises(tiny_llama: Any, monkeypatch: Any) -> None:
     monkeypatch.setattr(hf, "set_peft_model_state_dict", lambda *a, **k: Result())
     with pytest.raises(RuntimeError, match="did not load cleanly"):
         apply(tiny_llama, make_edit(tiny_llama))
+
+
+def test_from_deltas_mixed_rank_apply(tiny_llama: Any, input_ids: Any) -> None:
+    m1, m0 = MODULE, "model.layers.0.mlp.down_proj"
+    rng = np.random.default_rng(1)
+    deltas = []
+    for module, rank in ((m1, 1), (m0, 2)):
+        out, inn = tiny_llama.get_submodule(module).weight.shape
+        deltas.append(
+            LowRankDelta(
+                module,
+                0.1 * rng.standard_normal((out, rank)),
+                0.1 * rng.standard_normal((rank, inn)),
+            )
+        )
+    edit = Edit.from_deltas(deltas, "tiny-llama")
+    assert edit.rank == 2
+
+    ref = copy.deepcopy(tiny_llama)
+    with torch.no_grad():
+        for d in deltas:
+            ref.get_submodule(d.module).weight += torch.from_numpy(d.dense())
+    expected = logits(ref, input_ids)
+    assert not torch.allclose(expected, logits(tiny_llama, input_ids), atol=1e-5)
+
+    peft_model = apply(tiny_llama, edit)
+    assert torch.allclose(logits(peft_model, input_ids), expected, atol=1e-5)
+    assert len(lora_modules(peft_model)) == 2
