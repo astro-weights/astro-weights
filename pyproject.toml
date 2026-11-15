@@ -1,6 +1,6 @@
 [project]
 name = "astro-weights"
-version = "0.0.5"
+version = "0.0.6"
 description = "Agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters."
 readme = "README.md"
 license = "Apache-2.0"
