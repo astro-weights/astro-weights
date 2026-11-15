@@ -45,7 +45,7 @@ Run all of them before opening a PR; CI runs the same set.
 
 ## Workflow
 
-- `main` is protected: PRs only, squash merge. Required checks: `lint`, `test` (3.12, 3.13, 3.14), `test-hf`, `zizmor`, `DCO`, `changelog`. CI jobs `wheel-smoke`, `test-lowest` and `test-os` also run on every PR but are not required; see `CONTRIBUTING.md`.
+- `main` is protected: PRs only, squash merge. Required checks: `lint`, `test` (3.12, 3.13, 3.14), `test-hf`, `zizmor`, `DCO`, `changelog`, `wheel-smoke`, `test-lowest`, `test-os` (macOS, Windows); see `CONTRIBUTING.md`.
 - Sign off every commit (DCO): `git commit -s`. The DCO check fails a PR with any unsigned commit.
 - AI help is recorded with a commit trailer: `Assisted-by: <agent>:<model>` (a tool-added `Co-Authored-By:` is also accepted). See `AI_POLICY.md`.
 - Changelog: add a towncrier fragment in `changes/`, named `<PR number>.<type>.md` (or `+<slug>.<type>.md` before a PR number exists). Types: `added`, `changed`, `deprecated`, `removed`, `fixed`, `security`. Do not edit `CHANGELOG.md` by hand; the release builds it from the fragments.
