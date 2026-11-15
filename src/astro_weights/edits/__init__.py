@@ -5,8 +5,12 @@ from astro_weights.edits.recipes import (
     column_shift,
     masked_rank1,
     orthogonal_random,
+    project_out,
     rank1,
+    scale_column,
+    scale_head,
     top_k_mask,
+    zero_head,
 )
 
 __all__ = [
@@ -15,6 +19,10 @@ __all__ = [
     "column_shift",
     "masked_rank1",
     "orthogonal_random",
+    "project_out",
     "rank1",
+    "scale_column",
+    "scale_head",
     "top_k_mask",
+    "zero_head",
 ]

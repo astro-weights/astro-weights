@@ -7,8 +7,12 @@ from astro_weights.edits import (
     column_shift,
     masked_rank1,
     orthogonal_random,
+    project_out,
     rank1,
+    scale_column,
+    scale_head,
     top_k_mask,
+    zero_head,
 )
 
 RNG = np.random.default_rng(0)
@@ -117,3 +121,82 @@ def test_edit_validation() -> None:
         Edit((a, a), "base")
     with pytest.raises(ValueError, match="mixed ranks"):
         Edit((a, c), "base")
+
+
+def _w0_heads() -> np.ndarray:
+    return RNG.standard_normal((6, 8)).astype(np.float32)
+
+
+def test_project_out_matches_direct() -> None:
+    w0, v = _w0_heads(), RNG.standard_normal(6).astype(np.float32)
+    vh = v.astype(np.float64) / np.linalg.norm(v.astype(np.float64))
+    for strength in (1.0, 0.4):
+        d = project_out("m", w0, v, strength)
+        direct = w0 - strength * np.outer(vh, vh @ w0.astype(np.float64))
+        np.testing.assert_allclose(w0 + d.dense(), direct, atol=1e-6)
+        assert d.rank == 1
+    d = project_out("m", w0, v)
+    np.testing.assert_allclose(vh @ (w0 + d.dense()), 0.0, atol=1e-5)
+
+
+def test_project_out_errors() -> None:
+    w0 = _w0_heads()
+    with pytest.raises(ValueError, match="m: shape mismatch"):
+        project_out("m", w0, np.ones(5, dtype=np.float32))
+    with pytest.raises(ValueError, match="m: shape mismatch"):
+        project_out("m", w0[0], np.ones(6, dtype=np.float32))
+    with pytest.raises(ValueError, match="m: v must be non-zero"):
+        project_out("m", w0, np.zeros(6, dtype=np.float32))
+
+
+def test_scale_column_matches_direct() -> None:
+    w0 = _w0_heads()
+    d = scale_column("m", w0, 3, 2.5)
+    direct = w0.copy()
+    direct[:, 3] *= 2.5
+    np.testing.assert_allclose(w0 + d.dense(), direct, atol=1e-6)
+    assert d.rank == 1
+    assert not scale_column("m", w0, 3, 1.0).dense().any()
+
+
+def test_scale_column_errors() -> None:
+    w0 = _w0_heads()
+    for j in (-1, 8):
+        with pytest.raises(ValueError, match="m: column"):
+            scale_column("m", w0, j, 2.0)
+    with pytest.raises(ValueError, match="m: W0 must be 2-D"):
+        scale_column("m", w0[0], 0, 2.0)
+
+
+def test_scale_head_matches_direct() -> None:
+    w0 = _w0_heads()
+    d = scale_head("m", w0, 2, 4, 1.7)
+    direct = w0.copy()
+    direct[:, 4:6] *= 1.7
+    np.testing.assert_allclose(w0 + d.dense(), direct, atol=1e-6)
+    assert d.rank == 2
+    assert not scale_head("m", w0, 2, 4, 1.0).dense().any()
+
+
+def test_zero_head_matches_direct() -> None:
+    w0 = _w0_heads()
+    d = zero_head("m", w0, 1, 4)
+    direct = w0.copy()
+    direct[:, 2:4] = 0.0
+    np.testing.assert_allclose(w0 + d.dense(), direct, atol=1e-6)
+    assert d.rank == 2
+
+
+def test_scale_head_errors() -> None:
+    w0 = _w0_heads()
+    with pytest.raises(ValueError, match="m: n_in=8 not divisible"):
+        scale_head("m", w0, 0, 3, 2.0)
+    with pytest.raises(ValueError, match="m: n_in=8 not divisible"):
+        scale_head("m", w0, 0, 0, 2.0)
+    for head in (-1, 4):
+        with pytest.raises(ValueError, match="m: head"):
+            scale_head("m", w0, head, 4, 2.0)
+        with pytest.raises(ValueError, match="m: head"):
+            zero_head("m", w0, head, 4)
+    with pytest.raises(ValueError, match="m: W0 must be 2-D"):
+        scale_head("m", w0[0], 0, 4, 2.0)
