@@ -81,3 +81,22 @@ def test_works_in_edit_from_deltas() -> None:
     d2, _ = from_dense("b", rng.standard_normal((6, 8)), 3)
     edit = Edit.from_deltas([d1, d2], "base")
     assert edit.rank == 3
+
+
+def test_residual_equal_to_threshold_is_accepted() -> None:
+    rng = np.random.default_rng(3)
+    dW = rng.standard_normal((10, 8))
+    _, rel = from_dense("m", dW, 2)
+    from_dense("m", dW, 2, max_rel_residual=rel)  # not strictly greater: no raise
+    with pytest.raises(ValueError, match="exceeds max_rel_residual"):
+        from_dense("m", dW, 2, max_rel_residual=rel * 0.999)
+
+
+def test_float32_input_residual_is_measured_in_float64() -> None:
+    # Large float32 entries: a float32 norm overflows to inf and the residual reads 0.
+    rng = np.random.default_rng(4)
+    dW = (1e20 * rng.standard_normal((6, 5))).astype(np.float32)
+    s = np.linalg.svd(dW.astype(np.float64), compute_uv=False)
+    expected = np.sqrt(np.sum(s[2:] ** 2)) / np.linalg.norm(s)
+    _, rel = from_dense("m", dW, 2)
+    assert rel == pytest.approx(expected, rel=1e-4)

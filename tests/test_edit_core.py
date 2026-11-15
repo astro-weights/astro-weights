@@ -91,3 +91,24 @@ def test_float32_overflow_rejected_without_warning() -> None:
         warnings.simplefilter("error")
         with pytest.raises(ValueError, match=r"mod\.x.*finite"):
             LowRankDelta("mod.x", b, a)
+
+
+def test_empty_module_name_message() -> None:
+    with pytest.raises(ValueError, match=r"^module name must be non-empty$"):
+        LowRankDelta("", np.ones((2, 1)), np.ones((1, 2)))
+
+
+def test_edit_without_deltas_message() -> None:
+    with pytest.raises(ValueError, match=r"^an edit needs at least one delta$"):
+        Edit((), "base")
+
+
+def test_from_deltas_without_deltas_message() -> None:
+    with pytest.raises(ValueError, match=r"^an edit needs at least one delta$"):
+        Edit.from_deltas([], "base")
+
+
+def test_duplicate_module_names_message() -> None:
+    d = rand_delta("m", 1)
+    with pytest.raises(ValueError, match=r"^duplicate module names in edit$"):
+        Edit((d, d), "base")
