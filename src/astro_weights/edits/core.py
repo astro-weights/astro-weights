@@ -1,5 +1,6 @@
 """Edit types: a set of rank-r deltas on named linear modules."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -40,6 +41,19 @@ class LowRankDelta:
     def dense(self) -> np.ndarray:
         return np.asarray(self.B @ self.A, dtype=np.float32)
 
+    def padded(self, rank: int) -> "LowRankDelta":
+        """Return this delta at `rank` by appending zero columns/rows (dense unchanged)."""
+        if rank < self.rank:
+            raise ValueError(
+                f"{self.module}: cannot pad rank {self.rank} down to {rank}"
+            )
+        if rank == self.rank:
+            return self
+        extra = rank - self.rank
+        b = np.pad(self.B, ((0, 0), (0, extra)))
+        a = np.pad(self.A, ((0, extra), (0, 0)))
+        return LowRankDelta(self.module, b, a)
+
 
 @dataclass(frozen=True)
 class Edit:
@@ -62,6 +76,26 @@ class Edit:
             raise ValueError(
                 f"mixed ranks {sorted(ranks)}; all deltas must share one rank"
             )
+
+    @classmethod
+    def from_deltas(
+        cls,
+        deltas: Iterable[LowRankDelta],
+        base_model: str,
+        base_sha256: dict[str, str] | None = None,
+        meta: dict[str, object] | None = None,
+    ) -> "Edit":
+        """Build an edit, zero-padding every delta to the largest rank."""
+        items = tuple(deltas)
+        if not items:
+            raise ValueError("an edit needs at least one delta")
+        rank = max(d.rank for d in items)
+        return cls(
+            tuple(d.padded(rank) for d in items),
+            base_model,
+            dict(base_sha256 or {}),
+            dict(meta or {}),
+        )
 
     @property
     def rank(self) -> int:
