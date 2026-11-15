@@ -9,6 +9,7 @@ from safetensors.numpy import load_file, save_file
 from astro_weights import __version__
 from astro_weights.edits import Edit, LowRankDelta
 from astro_weights.export import load_peft, save_peft, verify_peft
+from astro_weights.export.peft import read_peft
 
 MOD_A = "model.layers.1.mlp.down_proj"
 MOD_B = "model.layers.2.mlp.down_proj"
@@ -614,3 +615,36 @@ def test_save_into_existing_dir_with_read_only_parent(tmp_path: Path) -> None:
         assert [p.name for p in parent.iterdir()] == ["out"]
     finally:
         parent.chmod(0o755)
+
+
+@pytest.mark.parametrize("field", ["r", "lora_alpha"])
+def test_read_peft_config_missing_field_is_value_error(
+    tmp_path: Path, field: str
+) -> None:
+    save_peft(make_edit(), tmp_path)
+    cfg_path = tmp_path / "adapter_config.json"
+    cfg = json.loads(cfg_path.read_text())
+    del cfg[field]
+    cfg_path.write_text(json.dumps(cfg))
+    with pytest.raises(ValueError, match=f"missing key .{field}."):
+        read_peft(tmp_path)
+    (problem,) = verify_peft(tmp_path)
+    assert f"missing key {field!r}" in problem
+
+
+def test_read_peft_corrupt_safetensors_is_value_error(tmp_path: Path) -> None:
+    save_peft(make_edit(), tmp_path)
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"\x00" * 4)
+    with pytest.raises(ValueError, match="not valid safetensors") as exc:
+        read_peft(tmp_path)
+    assert exc.value.__cause__ is not None
+    (problem,) = verify_peft(tmp_path)
+    assert "not valid safetensors" in problem
+
+
+def test_read_peft_missing_weights_is_os_error(tmp_path: Path) -> None:
+    save_peft(make_edit(), tmp_path)
+    (tmp_path / "adapter_model.safetensors").unlink()
+    with pytest.raises(FileNotFoundError):
+        read_peft(tmp_path)
+    assert len(verify_peft(tmp_path)) == 1

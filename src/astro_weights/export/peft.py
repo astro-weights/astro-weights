@@ -135,7 +135,10 @@ def _load_object(path: Path) -> dict[str, object]:
 
 
 def _scaling(cfg: dict[str, object]) -> np.float32:
-    r, alpha = cfg["r"], cfg["lora_alpha"]  # KeyError when absent
+    for field in ("r", "lora_alpha"):
+        if field not in cfg:
+            raise ValueError(f"adapter config: missing key {field!r}")
+    r, alpha = cfg["r"], cfg["lora_alpha"]
     if not isinstance(r, int) or isinstance(r, bool) or r < 1:
         raise ValueError(
             f"unsupported adapter config: r must be an int >= 1, got {r!r}"
@@ -208,14 +211,9 @@ def _check_manifest(manifest: dict[str, object], path: Path) -> None:
         raise ValueError(f"{path}: meta must be an object")  # noqa: TRY004
 
 
-def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
-    """Parse an adapter; ValueError on structural problems, hash problems returned."""
-    directory = Path(directory)
-    cfg = _load_object(directory / CONFIG)
-    scaling = _check_config(cfg)
-    r = cfg["r"]
-
-    with safe_open(str(directory / WEIGHTS), framework="numpy") as f:
+def _read_tensors(path: Path) -> dict[str, np.ndarray]:
+    """All tensors as contiguous float32; SafetensorError on a corrupt file."""
+    with safe_open(str(path), framework="numpy") as f:
         keys = list(f.keys())
         dtypes = {k: f.get_slice(k).get_dtype() for k in keys}
         bad = {k: t for k, t in dtypes.items() if t not in FLOAT_DTYPES}
@@ -226,7 +224,22 @@ def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
                 f"{hint if 'BF16' in bad.values() else ''}"
             )
         # contiguous float32 is what _sha256 and the manifest hashes assume
-        raw = {k: np.ascontiguousarray(f.get_tensor(k), dtype=np.float32) for k in keys}
+        return {
+            k: np.ascontiguousarray(f.get_tensor(k), dtype=np.float32) for k in keys
+        }
+
+
+def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
+    """Parse an adapter; ValueError on structural problems, hash problems returned."""
+    directory = Path(directory)
+    cfg = _load_object(directory / CONFIG)
+    scaling = _check_config(cfg)
+    r = cfg["r"]
+
+    try:
+        raw = _read_tensors(directory / WEIGHTS)
+    except SafetensorError as e:
+        raise ValueError(f"{WEIGHTS}: not valid safetensors ({e})") from e
 
     a_of: dict[str, np.ndarray] = {}
     b_of: dict[str, np.ndarray] = {}
@@ -272,7 +285,7 @@ def verify_peft(directory: Path | str) -> list[str]:
     """Human-readable problems with an adapter directory; empty when fine."""
     try:
         _, problems = read_peft(directory)
-    except (ValueError, KeyError, OSError, SafetensorError) as e:
+    except (ValueError, OSError) as e:
         return [str(e)]
     return problems
 

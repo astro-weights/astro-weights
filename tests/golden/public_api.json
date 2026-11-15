@@ -52,7 +52,7 @@
   "read_peft": "(directory: pathlib.Path | str) -> tuple[astro_weights.edits.core.Edit, list[str]]",
   "read_tensor": "(file: pathlib.Path | str, key: str) -> numpy.ndarray",
   "save_merged_tensors": "(tensors: dict[str, numpy.ndarray], path: pathlib.Path | str, base_model: str, edit_manifest_sha256: str | None = None) -> None",
-  "save_peft": "(edit: astro_weights.edits.core.Edit, out_dir: pathlib.Path | str) -> None",
+  "save_peft": "(edit: astro_weights.edits.core.Edit, out_dir: pathlib.Path | str, *, overwrite: bool = False) -> None",
   "tensor_sha256": "(file: pathlib.Path | str, key: str) -> str",
   "verify_peft": "(directory: pathlib.Path | str) -> list[str]",
   "write_card": "(directory: pathlib.Path | str, text: str, *, overwrite: bool = True) -> pathlib.Path"

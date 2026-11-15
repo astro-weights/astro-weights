@@ -13,7 +13,6 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
-from safetensors import SafetensorError
 
 from astro_weights.edits import Edit, LowRankDelta
 from astro_weights.edits.recipe_file import build_edit, load_recipe
@@ -457,19 +456,19 @@ def _adapter_dir(root: Path, files: dict[str, bytes]) -> Path:
     return root
 
 
-def _read_peft_tolerating_known_bugs(path: Path) -> None:
-    """read_peft, ignoring the two leaks pinned by the xfail tests below."""
+def _read_peft_value_or_os_error(path: Path) -> None:
+    """read_peft may raise ValueError or OSError for bad content, nothing else."""
     try:
         read_peft(path)
-    except (ValueError, KeyError, SafetensorError):
+    except (ValueError, OSError):
         pass
 
 
 def _check_peft(path: Path) -> None:
-    """verify_peft never raises and returns strings; read_peft is ValueError-only."""
+    """verify_peft never raises and returns strings; read_peft is ValueError/OSError-only."""
     problems = verify_peft(path)
     assert all(isinstance(p, str) for p in problems)
-    _read_peft_tolerating_known_bugs(path)
+    _read_peft_value_or_os_error(path)
 
 
 def _fuzz_adapter(
@@ -530,35 +529,6 @@ def test_peft_mutated_safetensors_header(
     _fuzz_adapter(
         tmp_path_factory, adapter_files, WEIGHTS, _st_bytes(header, raw[8 + n :])
     )
-
-
-# peft.py is outside this task's files; these pin the read_peft leaks the fuzzers found.
-# They are strict: when peft.py is fixed they pass, and the xfail mark must go.
-
-
-@pytest.mark.xfail(strict=True, raises=KeyError, reason="read_peft: config without r")
-def test_read_peft_config_missing_r_is_value_error(
-    tmp_path_factory: pytest.TempPathFactory, adapter_files: dict[str, bytes]
-) -> None:
-    cfg = json.loads(adapter_files[CONFIG])
-    del cfg["r"]
-    path = _adapter_dir(
-        tmp_path_factory.mktemp("fuzz"),
-        {**adapter_files, CONFIG: json.dumps(cfg).encode()},
-    )
-    only_value_error(read_peft, path)
-
-
-@pytest.mark.xfail(
-    strict=True, raises=SafetensorError, reason="read_peft: corrupt safetensors"
-)
-def test_read_peft_corrupt_safetensors_is_value_error(
-    tmp_path_factory: pytest.TempPathFactory, adapter_files: dict[str, bytes]
-) -> None:
-    path = _adapter_dir(
-        tmp_path_factory.mktemp("fuzz"), {**adapter_files, WEIGHTS: b"\x00" * 4}
-    )
-    only_value_error(read_peft, path)
 
 
 # --- export.gguf: read_lora_gguf ---------------------------------------------
