@@ -570,3 +570,12 @@ def test_batch_with_chat_template(model: Any, tok: Any) -> None:
 def test_run_header_batch_size(model: Any, tok: Any) -> None:
     assert run_header(model, tok, 6, 0, False)["batch_size"] == 1
     assert run_header(model, tok, 6, 0, False, batch_size=8)["batch_size"] == 8
+
+
+def test_run_header_same_under_adapter(model: Any, tok: Any) -> None:
+    base = run_header(model, tok, 6, 0, False)
+    w = model.get_submodule(MODULE).weight
+    delta = rank1(MODULE, np.ones(w.shape[0]), np.ones(w.shape[1]))
+    edited = apply(model, Edit((delta,), "tiny"))
+    assert type(edited).__name__ == "PeftModel"
+    assert run_header(edited, tok, 6, 0, False) == base
