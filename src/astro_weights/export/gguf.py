@@ -12,6 +12,8 @@ reader shape [12288, 4096] ([intermediate, hidden]) -> numpy (4096, 12288) =
 
 import random
 import re
+import secrets
+import struct
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -33,6 +35,22 @@ OUT_TYPES = {"q8_0": Q.Q8_0, "f16": Q.F16, "bf16": Q.BF16}
 _MODULE = re.compile(r"(?:^|\.)layers\.(\d+)\.(mlp\.down_proj|self_attn\.o_proj)$")
 _BLK = re.compile(r"blk\.(\d+)\.")
 _SAMPLE = 20
+_ADAPTER_TYPES = (Q.F32, Q.F16)
+
+
+def _open(path: Path | str) -> gguf.GGUFReader:
+    """GGUFReader that raises ValueError naming the file on any read failure."""
+    try:
+        return gguf.GGUFReader(path)
+    except (IndexError, ValueError, struct.error, OSError) as e:
+        raise ValueError(f"cannot read GGUF file {str(path)!r}: {e}") from e
+
+
+def _make_tmp(out: Path) -> Path:
+    """Create a fresh, uniquely named temp file next to `out`; never reuses one."""
+    tmp = out.with_name(f"{out.name}.{secrets.token_hex(4)}.tmp")
+    tmp.open("xb").close()
+    return tmp
 
 
 def gguf_tensor_name(module: str) -> str:
@@ -57,7 +75,7 @@ def save_lora_gguf(
     names = {d.module: gguf_tensor_name(d.module) for d in edit.deltas}
     if len(set(names.values())) != len(names):
         raise ValueError("two modules map to the same GGUF tensor")
-    tmp = out.with_name(out.name + ".tmp")
+    tmp = _make_tmp(out)
     try:
         writer = gguf.GGUFWriter(tmp, architecture)
         writer.add_type(gguf.GGUFType.ADAPTER)
@@ -80,8 +98,13 @@ def save_lora_gguf(
 def read_lora_gguf(
     path: Path | str,
 ) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], dict[str, object]]:
-    """Read an adapter GGUF: ({base tensor name: (B, A)}, metadata)."""
-    reader = gguf.GGUFReader(path)
+    """Read an adapter GGUF: ({base tensor name: (B, A)}, metadata).
+
+    Only F32 and F16 tensors are accepted. B and A are the raw factors; the
+    LoRA scale is not applied: delta = (meta["alpha"] / rank) * B @ A, with
+    rank = A.shape[0].
+    """
+    reader = _open(path)
     meta: dict[str, object] = {}
     for key, name in (
         ("general.architecture", "architecture"),
@@ -97,16 +120,29 @@ def read_lora_gguf(
     a_of: dict[str, np.ndarray] = {}
     b_of: dict[str, np.ndarray] = {}
     for t in reader.tensors:
-        arr = np.array(t.data, dtype=np.float32)
+        if t.tensor_type not in _ADAPTER_TYPES:
+            raise ValueError(
+                f"{t.name}: adapter tensor type {t.tensor_type.name} not supported; "
+                "expected F32 or F16"
+            )
         if t.name.endswith(SUFFIX_A):
-            a_of[t.name.removesuffix(SUFFIX_A)] = arr
+            target, base = a_of, t.name.removesuffix(SUFFIX_A)
         elif t.name.endswith(SUFFIX_B):
-            b_of[t.name.removesuffix(SUFFIX_B)] = arr
+            target, base = b_of, t.name.removesuffix(SUFFIX_B)
         else:
             raise ValueError(f"unexpected tensor in adapter: {t.name}")
+        if base in target:
+            raise ValueError(f"duplicate tensor in adapter: {t.name}")
+        target[base] = np.array(t.data, dtype=np.float32)
     missing = sorted(set(a_of) ^ set(b_of))
     if missing:
         raise ValueError(f"tensors missing lora_a or lora_b: {missing}")
+    for n, a in a_of.items():
+        b = b_of[n]
+        if b.ndim != 2 or a.ndim != 2 or b.shape[1] != a.shape[0]:
+            raise ValueError(
+                f"{n}: lora_b {b.shape} and lora_a {a.shape} are not [out, r] x [r, in]"
+            )
     return {n: (b_of[n], a_of[n]) for n in sorted(a_of)}, meta
 
 
@@ -149,6 +185,19 @@ def _check_not_mtp(reader: gguf.GGUFReader, arch: str, names: list[str]) -> None
             )
 
 
+def _as_float_array(name: str, value: object) -> np.ndarray:
+    """Replacement as a finite floating-point ndarray, else ValueError."""
+    try:
+        arr = np.asarray(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{name}: replacement is not an array: {e}") from e
+    if arr.dtype.kind != "f":
+        raise ValueError(f"{name}: replacement must be floating point, got {arr.dtype}")
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{name}: replacement contains NaN/Inf")
+    return arr
+
+
 def splice_gguf(
     base: Path | str,
     out: Path | str,
@@ -169,17 +218,18 @@ def splice_gguf(
     base_p, out_p = Path(base), Path(out)
     if out_p.exists() and out_p.samefile(base_p):
         raise ValueError("out must not be the same file as base")
-    reader = gguf.GGUFReader(base_p)
-    arch = str(reader.get_field("general.architecture").contents())  # type: ignore[union-attr]
+    reader = _open(base_p)
+    field = reader.get_field("general.architecture")
+    if field is None:
+        raise ValueError(f"{str(base_p)!r} has no general.architecture")
+    arch = str(field.contents())
     missing = sorted(set(replace) - {t.name for t in reader.tensors})
     if missing:
         raise ValueError(f"tensors not in base: {missing}")
     _check_not_mtp(reader, arch, list(replace))
-    for n, arr in replace.items():
-        if not np.isfinite(arr).all():
-            raise ValueError(f"{n}: replacement contains NaN/Inf")
+    arrays = {n: _as_float_array(n, v) for n, v in replace.items()}
 
-    tmp = out_p.with_name(out_p.name + ".tmp")  # write aside, replace after checks
+    tmp = _make_tmp(out_p)  # write aside, replace after checks
     try:
         writer = gguf.GGUFWriter(tmp, arch)
         _copy_kv(reader, writer)
@@ -187,7 +237,7 @@ def splice_gguf(
             if t.name not in replace:
                 writer.add_tensor(t.name, t.data, raw_dtype=t.tensor_type)
                 continue
-            arr = np.asarray(replace[t.name])
+            arr = arrays[t.name]
             want = _np_shape(t)
             if arr.shape != want:
                 if arr.T.shape != want:
@@ -201,7 +251,7 @@ def splice_gguf(
         writer.write_kv_data_to_file()
         writer.write_tensors_to_file(progress=False)
         writer.close()
-        n_out = len(gguf.GGUFReader(tmp).tensors)
+        n_out = len(_open(tmp).tensors)
         if n_out != len(reader.tensors):
             raise ValueError(f"tensor count mismatch {len(reader.tensors)} vs {n_out}")
         tmp.replace(out_p)
@@ -218,7 +268,10 @@ def verify_splice(
     base: Path | str, out: Path | str, names: list[str], seed: int = 0
 ) -> list[str]:
     """Problems found comparing a spliced GGUF to its base; empty means ok."""
-    rb, ro = gguf.GGUFReader(base), gguf.GGUFReader(out)
+    try:
+        rb, ro = _open(base), _open(out)
+    except ValueError as e:
+        return [str(e)]
     tb = {t.name: t for t in rb.tensors}
     to = {t.name: t for t in ro.tensors}
     errs: list[str] = []

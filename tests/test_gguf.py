@@ -144,6 +144,162 @@ def test_adapter_overwrite_refused(tmp_path: Path) -> None:
     assert read_lora_gguf(path)[1]["type"] == "adapter"
 
 
+def _adapter_file(
+    path: Path,
+    tensors: dict[str, tuple[np.ndarray, "Q | None"]],
+) -> Path:
+    w = GGUFWriter(path, "qwen35")
+    w.add_type(gguf.GGUFType.ADAPTER)
+    w.add_string("adapter.type", "lora")
+    w.add_float32("adapter.lora.alpha", 2.0)
+    for n, (arr, dt) in tensors.items():
+        w.add_tensor(n, arr, raw_dtype=dt)
+    _finish(w)
+    return path
+
+
+_A = np.ones((2, 64), np.float32)
+_B = np.ones((4, 2), np.float32)
+_NAME = "blk.0.ffn_down.weight"
+
+
+def test_read_alpha_scale_documented() -> None:
+    doc = read_lora_gguf.__doc__ or ""
+    assert "alpha" in doc
+    assert "rank" in doc
+
+
+def test_read_f16_adapter(tmp_path: Path) -> None:
+    p = _adapter_file(
+        tmp_path / "f16.gguf",
+        {
+            _NAME + ".lora_a": (_A.astype(np.float16), None),
+            _NAME + ".lora_b": (_B.astype(np.float16), None),
+        },
+    )
+    ((b, a),) = read_lora_gguf(p)[0].values()
+    assert a.dtype == b.dtype == np.float32
+    assert (b @ a == 2).all()
+
+
+def test_read_quantized_adapter_refused(tmp_path: Path) -> None:
+    p = _adapter_file(
+        tmp_path / "q8.gguf",
+        {
+            _NAME + ".lora_a": (quantize(_A, Q.Q8_0), Q.Q8_0),
+            _NAME + ".lora_b": (_B, None),
+        },
+    )
+    with pytest.raises(ValueError, match="Q8_0"):
+        read_lora_gguf(p)
+    p = _adapter_file(
+        tmp_path / "bf16.gguf",
+        {
+            _NAME + ".lora_a": (quantize(_A, Q.BF16), Q.BF16),
+            _NAME + ".lora_b": (_B, None),
+        },
+    )
+    with pytest.raises(ValueError, match="BF16"):
+        read_lora_gguf(p)
+
+
+def test_read_rank_mismatch_refused(tmp_path: Path) -> None:
+    p = _adapter_file(
+        tmp_path / "rank.gguf",
+        {
+            _NAME + ".lora_a": (_A, None),  # rank 2
+            _NAME + ".lora_b": (np.ones((4, 3), np.float32), None),  # rank 3
+        },
+    )
+    with pytest.raises(ValueError, match="lora_b"):
+        read_lora_gguf(p)
+
+
+def test_read_not_2d_refused(tmp_path: Path) -> None:
+    p = _adapter_file(
+        tmp_path / "1d.gguf",
+        {
+            _NAME + ".lora_a": (np.ones(64, np.float32), None),
+            _NAME + ".lora_b": (_B, None),
+        },
+    )
+    with pytest.raises(ValueError, match="lora_b"):
+        read_lora_gguf(p)
+
+
+def test_read_duplicate_tensor_refused(tmp_path: Path) -> None:
+    p = _adapter_file(
+        tmp_path / "dup.gguf",
+        {
+            _NAME + ".lora_a": (_A, None),
+            _NAME + ".lora_x": (_A, None),
+            _NAME + ".lora_b": (_B, None),
+        },
+    )
+    # same-length rename, so the file now holds two ".lora_a" tensors
+    p.write_bytes(p.read_bytes().replace(b".lora_x", b".lora_a"))
+    with pytest.raises(ValueError, match="duplicate"):
+        read_lora_gguf(p)
+
+
+def _broken_files(tmp_path: Path, good: Path) -> dict[str, Path]:
+    raw = good.read_bytes()
+    cases = {
+        "empty": b"",
+        "garbage": b"x" * 100,
+        "trunc_header": raw[:20],
+        "trunc_data": raw[:-100],
+        "bad_version": raw[:4] + b"\xff\xff\xff\x7f" + raw[8:],
+    }
+    tmp_path.mkdir(exist_ok=True)
+    out = {}
+    for name, data in cases.items():
+        out[name] = tmp_path / f"{name}.gguf"
+        out[name].write_bytes(data)
+    out["missing"] = tmp_path / "missing.gguf"
+    return out
+
+
+def test_read_lora_broken_files_raise_value_error(tmp_path: Path) -> None:
+    good = tmp_path / "good.gguf"
+    save_lora_gguf(_edit(), good, "qwen35")
+    for p in _broken_files(tmp_path, good).values():
+        with pytest.raises(ValueError, match="cannot read GGUF"):
+            read_lora_gguf(p)
+
+
+def test_save_tmp_file_not_deleted(tmp_path: Path) -> None:
+    out = tmp_path / "a.gguf"
+    precious = tmp_path / "a.gguf.tmp"
+    precious.write_bytes(b"precious")
+    bad = Edit(
+        (LowRankDelta("model.layers.0.mlp.up_proj", np.ones((2, 1)), np.ones((1, 2))),),
+        "m",
+    )
+    with pytest.raises(ValueError, match="unsupported module"):
+        save_lora_gguf(bad, out, "qwen35")
+    save_lora_gguf(_edit(), out, "qwen35")
+    assert precious.read_bytes() == b"precious"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.gguf", "a.gguf.tmp"]
+
+
+def test_save_failure_cleans_only_own_tmp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "a.gguf"
+    precious = tmp_path / "a.gguf.tmp"
+    precious.write_bytes(b"precious")
+
+    def boom(self: object, **kw: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gguf.GGUFWriter, "write_tensors_to_file", boom)
+    with pytest.raises(OSError, match="disk full"):
+        save_lora_gguf(_edit(), out, "qwen35")
+    assert [p.name for p in tmp_path.iterdir()] == ["a.gguf.tmp"]
+    assert precious.read_bytes() == b"precious"
+
+
 # splice
 
 
@@ -255,7 +411,76 @@ def test_mtp_block_refused(base: Path, tmp_path: Path) -> None:
     assert (tmp_path / "ok1.gguf").exists()
 
 
+def test_splice_tmp_file_not_deleted(
+    base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "o.gguf"
+    precious = tmp_path / "o.gguf.tmp"
+    precious.write_bytes(b"precious")
+    with pytest.raises(ValueError, match="replacement shape"):
+        splice_gguf(base, out, {N0: np.zeros((10, 10), np.float32)})
+    assert precious.read_bytes() == b"precious"
+
+    def boom(self: object, **kw: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gguf.GGUFWriter, "write_tensors_to_file", boom)
+    with pytest.raises(OSError, match="disk full"):
+        splice_gguf(base, out, {N0: NEW})
+    assert [p.name for p in tmp_path.iterdir()] == ["o.gguf.tmp"]
+    assert precious.read_bytes() == b"precious"
+
+
+def test_splice_broken_base_raises_value_error(base: Path, tmp_path: Path) -> None:
+    for p in _broken_files(tmp_path / "x", base).values():
+        with pytest.raises(ValueError, match="cannot read GGUF"):
+            splice_gguf(p, tmp_path / "o.gguf", {N0: NEW})
+    assert not (tmp_path / "o.gguf").exists()
+
+
+def test_splice_base_without_architecture(tmp_path: Path) -> None:
+    p = tmp_path / "noarch.gguf"
+    w = GGUFWriter(p, "qwen35")
+    w.add_tensor("a.weight", np.ones((2, 32), np.float32))
+    _finish(w)
+    # same-length rename: the key is no longer general.architecture
+    p.write_bytes(
+        p.read_bytes().replace(b"general.architecture", b"general.archXtecture")
+    )
+    with pytest.raises(ValueError, match=r"no general\.architecture"):
+        splice_gguf(p, tmp_path / "o.gguf", {"a.weight": np.ones((2, 32), np.float32)})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        np.ones((32, 96), np.int32),
+        np.full((32, 96), "a"),
+        [["a"] * 96] * 32,
+    ],
+)
+def test_non_float_replacement_rejected(
+    base: Path, tmp_path: Path, bad: object
+) -> None:
+    with pytest.raises(ValueError, match=r"floating point|not an array"):
+        splice_gguf(base, tmp_path / "x.gguf", {N0: bad})  # type: ignore[dict-item]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_list_replacement_accepted(base: Path, tmp_path: Path) -> None:
+    out = tmp_path / "l.gguf"
+    splice_gguf(base, out, {N0: NEW.tolist()})
+    check_out(base, out, NEW)
+
+
 # verify_splice
+
+
+def test_verify_unreadable_files_reported(base: Path, tmp_path: Path) -> None:
+    for name, p in _broken_files(tmp_path / "v", base).items():
+        for problems in (verify_splice(base, p, [N0]), verify_splice(p, base, [N0])):
+            assert len(problems) == 1, name
+            assert "cannot read GGUF" in problems[0], name
 
 
 def rewrite(
