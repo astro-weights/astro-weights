@@ -330,3 +330,45 @@ def test_gate_orthogonal_pair_does_not_count_as_positive() -> None:
     diffs = np.stack([x, x, x, y])
     aucs = {direction_gate(diffs, seed=s).heldout_auc for s in range(20)}
     assert 0.5 in aucs  # half A = {x, x}, half B = {x, y}: y has zero projection
+
+
+def _f32_copy_pair(shape: tuple[int, ...], seed: int) -> tuple[np.ndarray, np.ndarray]:
+    x = np.random.default_rng(seed).standard_normal(shape).astype(np.float32)
+    return x, x.astype(np.float64)
+
+
+def test_gate_float32_input_equals_its_float64_copy() -> None:
+    x32, x64 = _f32_copy_pair((30, 12), 11)
+    assert direction_gate(x32, seed=3) == direction_gate(x64, seed=3)
+
+
+def test_unit_float32_input_is_float64_and_equals_its_copy() -> None:
+    x32, x64 = _f32_copy_pair((37,), 12)
+    out = core._unit(x32)
+    assert out.dtype == np.float64
+    np.testing.assert_array_equal(out, core._unit(x64))
+
+
+def test_direction_from_means_float32_input_equals_its_float64_copy() -> None:
+    a32, a64 = _f32_copy_pair((17,), 13)
+    b32, b64 = _f32_copy_pair((17,), 14)
+    np.testing.assert_array_equal(
+        direction_from_means(a32, b32), direction_from_means(a64, b64)
+    )
+    np.testing.assert_array_equal(
+        direction_from_means(a32, b64), direction_from_means(a64, b64)
+    )
+    np.testing.assert_array_equal(
+        direction_from_means(a64, b32), direction_from_means(a64, b64)
+    )
+
+
+def test_neuron_scores_float32_input_equals_its_float64_copy() -> None:
+    u32, u64 = _f32_copy_pair((6,), 15)
+    w32, w64 = _f32_copy_pair((6, 9), 16)
+    c32, c64 = _f32_copy_pair((9,), 17)
+    want = neuron_scores(u64, w64, c64)
+    np.testing.assert_array_equal(neuron_scores(u32, w32, c32), want)
+    np.testing.assert_array_equal(neuron_scores(u32, w64, c64), want)
+    np.testing.assert_array_equal(neuron_scores(u64, w32, c64), want)
+    np.testing.assert_array_equal(neuron_scores(u64, w64, c32), want)
