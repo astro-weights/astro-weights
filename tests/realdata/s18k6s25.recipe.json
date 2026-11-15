@@ -1,0 +1,18 @@
+{
+  "base_model": "realdata-9b-base",
+  "format": 1,
+  "steps": [
+    {
+      "arrays": {
+        "coef": "coef.npy",
+        "idx": "idx.npy",
+        "shift": "shift_l18.npy"
+      },
+      "module": "model.language_model.layers.18.mlp.down_proj",
+      "params": {
+        "n_in": 12288
+      },
+      "recipe": "column_shift"
+    }
+  ]
+}

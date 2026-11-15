@@ -80,7 +80,10 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers"]
-markers = ["gpu: needs a CUDA GPU; skipped in CI, run by hand before release"]
+markers = [
+    "gpu: needs a CUDA GPU; skipped in CI, run by hand before release",
+    "realdata: needs the real 9B files under $ASTRO_REALDATA; skipped without it",
+]
 
 [tool.importlinter]
 root_package = "astro_weights"
