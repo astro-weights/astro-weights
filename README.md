@@ -67,7 +67,7 @@ peft_model = apply(model, load_peft("my-edit"))  # model: a transformers causal 
 model = remove(peft_model)  # base weights were never modified
 ```
 
-`apply` matches the edit's layers to the model even when the two name them differently, as with a text-only and a multimodal load of the same checkpoint (`model.layers.N...` and `model.language_model.layers.N...`). It raises when a match is missing or ambiguous. `resolve_modules(model, edit)` shows the mapping without applying it.
+`apply` also finds layers named differently, as in text-only and multimodal loads of one checkpoint: see [How-to: apply across model classes](https://astro-weights.github.io/astro-weights/how-to/apply-across-model-classes/).
 
 ## Development
 
