@@ -108,7 +108,7 @@ The DCO check is enforced by a GitHub App and is a required status check. Every 
 AI tools are allowed, with rules. In short:
 
 - Disclose the tool and how much it did in the PR template. Add an `Assisted-by: <agent>:<model>` trailer to commits it helped with.
-- You must understand and be able to explain every change in your own words. Your agent must never add `Signed-off-by` for you.
+- You must understand and be able to explain every change in your own words. Unless you are a maintainer (see [AI policy](AI_POLICY.md)), your agent must never add `Signed-off-by` for you.
 - No autonomous agents. PRs, issues or comments opened by an agent without human review are closed.
 
 Read the full [AI_POLICY.md](AI_POLICY.md).
