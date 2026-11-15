@@ -1,6 +1,6 @@
 [project]
 site_name = "astro-weights"
-site_url = "https://astro-weights.github.io/astro-weights/"
+site_url = "https://astro-weights.dev/"
 site_description = "Agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters."
 repo_url = "https://github.com/astro-weights/astro-weights"
 repo_name = "astro-weights/astro-weights"

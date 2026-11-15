@@ -33,7 +33,8 @@ gguf = [
 astro-weights = "astro_weights.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/astro-weights/astro-weights"
+Homepage = "https://astro-weights.dev/"
+Documentation = "https://astro-weights.dev/"
 Source = "https://github.com/astro-weights/astro-weights"
 Issues = "https://github.com/astro-weights/astro-weights/issues"
 Changelog = "https://github.com/astro-weights/astro-weights/blob/main/CHANGELOG.md"
