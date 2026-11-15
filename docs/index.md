@@ -5,7 +5,7 @@
 Small course corrections for open LLMs. Agent proposes small low-rank edits to model weights; edits that hold up under paired tests get saved as plain PEFT LoRA adapters.
 
 !!! warning "Pre-alpha"
-    0.0.2 on PyPI. API changes without notice until 1.0.
+    0.0.5 on PyPI. API changes without notice until 1.0.
 
 Covers edit core (build low-rank edits, save and load as LoRA adapters, apply to transformers models), difference-of-means directions with gate, paired eval statistics.
 
