@@ -1,0 +1,1 @@
+Recipe loading now raises `ValueError` instead of `IndexError`, `OverflowError`, `tokenize.TokenError` or an out-of-memory crash on malformed `.npy` side files (wrong rank or dtype, a header claiming more data than the file holds, a file over 256 MiB), on integer parameters too large for a float, and on a `column_shift` `n_in` above 1048576.

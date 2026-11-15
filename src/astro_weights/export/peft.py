@@ -3,6 +3,9 @@
 import hashlib
 import json
 import math
+import os
+import secrets
+import shutil
 from importlib.metadata import version
 from pathlib import Path
 
@@ -30,17 +33,15 @@ def _sha256(arr: np.ndarray) -> str:
     return hashlib.sha256(arr.tobytes()).hexdigest()
 
 
-def save_peft(edit: Edit, out_dir: Path | str) -> None:
-    """Write edit as a PEFT LoRA adapter (scaling 1) with an astro manifest."""
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+def _write_adapter(edit: Edit, directory: Path) -> None:
+    """Write the three adapter files into an existing directory."""
     tensors: dict[str, np.ndarray] = {}
     for d in edit.deltas:
         tensors[f"{PREFIX}{d.module}{SUFFIX_A}"] = d.A
         tensors[f"{PREFIX}{d.module}{SUFFIX_B}"] = d.B
-    save_file(tensors, str(out / WEIGHTS))
+    save_file(tensors, str(directory / WEIGHTS))
     _write_json(
-        out / CONFIG,
+        directory / CONFIG,
         {
             "peft_type": "LORA",
             "task_type": "CAUSAL_LM",
@@ -54,7 +55,7 @@ def save_peft(edit: Edit, out_dir: Path | str) -> None:
         },
     )
     _write_json(
-        out / MANIFEST,
+        directory / MANIFEST,
         {
             "format": 1,
             "astro_weights_version": version("astro-weights"),
@@ -64,6 +65,60 @@ def save_peft(edit: Edit, out_dir: Path | str) -> None:
             "factors": {k: _sha256(v) for k, v in tensors.items()},
         },
     )
+
+
+# Replace order when overwriting. The manifest pins the weights hash, so putting
+# it first means every state before the final replace is either the untouched
+# old adapter (a failure before the first replace) or a directory whose new
+# manifest disagrees with the old weights, which verify_peft reports. The
+# weights go last and are the commit point.
+_REPLACE_ORDER = (MANIFEST, CONFIG, WEIGHTS)
+
+
+def save_peft(edit: Edit, out_dir: Path | str, *, overwrite: bool = False) -> None:
+    """Write edit as a PEFT LoRA adapter (scaling 1) with an astro manifest.
+
+    The files are written to a temp directory, then moved in: beside `out_dir`
+    when it is new, inside it when it exists (so its parent need not be writable
+    and a mount point works).
+    A non-empty `out_dir` raises FileExistsError unless `overwrite` is true;
+    with `overwrite` only the three adapter files are replaced and any other
+    file in `out_dir` stays. On any failure the temp directory is removed.
+    """
+    # abspath, not resolve(): '.' gets a real name, a symlinked out_dir stays one
+    out = Path(os.path.abspath(out_dir))  # noqa: PTH100
+    exists = out.exists() or out.is_symlink()
+    if exists and not out.is_dir():
+        raise NotADirectoryError(f"{out} exists and is not a directory")
+    if exists and not overwrite and any(out.iterdir()):
+        raise FileExistsError(f"{out} exists and is not empty; pass overwrite=True")
+    for name in _REPLACE_ORDER:
+        target = out / name
+        if target.is_dir() and not target.is_symlink():
+            raise IsADirectoryError(f"{target} is a directory")
+    if exists:
+        # inside out_dir: same filesystem and writable whenever out_dir is
+        tmp = out / f".astro-tmp-{secrets.token_hex(4)}"
+    else:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(f".{out.name}.{secrets.token_hex(4)}.tmp")
+    tmp.mkdir()
+    try:
+        _write_adapter(edit, tmp)
+        if not exists:
+            tmp.rename(out)  # atomic
+        else:
+            # An existing directory (even empty) is filled, never swapped, so
+            # its inode, mode and mount point survive; tmp is inside it, so the
+            # moves never cross a filesystem. replace() swaps the
+            # entry, so a symlinked adapter file is replaced itself and its
+            # target is never written through.
+            for name in _REPLACE_ORDER:
+                (tmp / name).replace(out / name)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    shutil.rmtree(tmp, ignore_errors=True)  # empty after file moves
 
 
 def _load_object(path: Path) -> dict[str, object]:
@@ -80,7 +135,10 @@ def _load_object(path: Path) -> dict[str, object]:
 
 
 def _scaling(cfg: dict[str, object]) -> np.float32:
-    r, alpha = cfg["r"], cfg["lora_alpha"]  # KeyError when absent
+    for field in ("r", "lora_alpha"):
+        if field not in cfg:
+            raise ValueError(f"adapter config: missing key {field!r}")
+    r, alpha = cfg["r"], cfg["lora_alpha"]
     if not isinstance(r, int) or isinstance(r, bool) or r < 1:
         raise ValueError(
             f"unsupported adapter config: r must be an int >= 1, got {r!r}"
@@ -153,14 +211,9 @@ def _check_manifest(manifest: dict[str, object], path: Path) -> None:
         raise ValueError(f"{path}: meta must be an object")  # noqa: TRY004
 
 
-def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
-    """Parse an adapter; ValueError on structural problems, hash problems returned."""
-    directory = Path(directory)
-    cfg = _load_object(directory / CONFIG)
-    scaling = _check_config(cfg)
-    r = cfg["r"]
-
-    with safe_open(str(directory / WEIGHTS), framework="numpy") as f:
+def _read_tensors(path: Path) -> dict[str, np.ndarray]:
+    """All tensors as contiguous float32; SafetensorError on a corrupt file."""
+    with safe_open(str(path), framework="numpy") as f:
         keys = list(f.keys())
         dtypes = {k: f.get_slice(k).get_dtype() for k in keys}
         bad = {k: t for k, t in dtypes.items() if t not in FLOAT_DTYPES}
@@ -171,7 +224,22 @@ def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
                 f"{hint if 'BF16' in bad.values() else ''}"
             )
         # contiguous float32 is what _sha256 and the manifest hashes assume
-        raw = {k: np.ascontiguousarray(f.get_tensor(k), dtype=np.float32) for k in keys}
+        return {
+            k: np.ascontiguousarray(f.get_tensor(k), dtype=np.float32) for k in keys
+        }
+
+
+def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
+    """Parse an adapter; ValueError on structural problems, hash problems returned."""
+    directory = Path(directory)
+    cfg = _load_object(directory / CONFIG)
+    scaling = _check_config(cfg)
+    r = cfg["r"]
+
+    try:
+        raw = _read_tensors(directory / WEIGHTS)
+    except SafetensorError as e:
+        raise ValueError(f"{WEIGHTS}: not valid safetensors ({e})") from e
 
     a_of: dict[str, np.ndarray] = {}
     b_of: dict[str, np.ndarray] = {}
@@ -217,7 +285,7 @@ def verify_peft(directory: Path | str) -> list[str]:
     """Human-readable problems with an adapter directory; empty when fine."""
     try:
         _, problems = read_peft(directory)
-    except (ValueError, KeyError, OSError, SafetensorError) as e:
+    except (ValueError, OSError) as e:
         return [str(e)]
     return problems
 

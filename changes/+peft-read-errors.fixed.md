@@ -1,0 +1,1 @@
+`read_peft` and `load_peft` now raise `ValueError` for an adapter config missing `r` or `lora_alpha` and for a weights file that is not valid safetensors, instead of leaking `KeyError` and `SafetensorError`.

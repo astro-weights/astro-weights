@@ -1,3 +1,6 @@
+import os
+import struct
+import time
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +14,7 @@ from gguf.quants import dequantize, quantize
 
 from astro_weights.edits import Edit, LowRankDelta
 from astro_weights.export.gguf import (
+    _open,
     gguf_tensor_name,
     read_lora_gguf,
     save_lora_gguf,
@@ -568,3 +572,195 @@ def test_verify_unlisted_type_change_fails_beyond_sample(tmp_path: Path) -> None
     )
     problems = verify_splice(b, o, ["x.6"])
     assert any("x.5: type/shape/size differs" in p for p in problems)
+
+
+# malformed files: ValueError, quickly
+
+
+def _str(b: bytes) -> bytes:
+    return struct.pack("<Q", len(b)) + b
+
+
+def _kv(key: bytes, vtype: int, value: bytes) -> bytes:
+    return _str(key) + struct.pack("<I", vtype) + value
+
+
+def _gguf(n_tensors: int, n_kv: int, body: bytes = b"", version: int = 3) -> bytes:
+    return b"GGUF" + struct.pack("<IQQ", version, n_tensors, n_kv) + body
+
+
+_U8, _STR, _ARR = 0, 8, 9
+_MALFORMED = {
+    "bad_magic": b"GGUX" + _gguf(0, 0)[4:],
+    "version_0": _gguf(0, 0, version=0),
+    "version_huge": _gguf(0, 0, version=2**31),
+    "header_cut": _gguf(0, 0)[:23],
+    "absurd_tensor_count": _gguf(2**63, 0),
+    "absurd_kv_count": _gguf(0, 2**64 - 1),
+    "counts_exceed_file": _gguf(1000, 0, b"x" * 100),
+    "kv_cut_in_key": _gguf(0, 1, struct.pack("<Q", 50) + b"short"),
+    "kv_huge_key": _gguf(0, 1, struct.pack("<Q", 2**64 - 1) + b"k" * 20),
+    "kv_unknown_type": _gguf(0, 1, _kv(b"k", 99, b"\0" * 8)),
+    "kv_huge_string": _gguf(0, 1, _kv(b"k", _STR, struct.pack("<Q", 2**62))),
+    "array_huge_u8": _gguf(
+        0, 1, _kv(b"k", _ARR, struct.pack("<IQ", _U8, 2**40) + b"\0" * 16)
+    ),
+    "array_huge_u8_small": _gguf(
+        0, 1, _kv(b"k", _ARR, struct.pack("<IQ", _U8, 2**25) + b"\0" * 16)
+    ),
+    "array_overflow_len": _gguf(
+        0, 1, _kv(b"k", _ARR, struct.pack("<IQ", 12, 2**64 - 1) + b"\0" * 16)
+    ),
+    "array_huge_strings": _gguf(
+        0, 1, _kv(b"k", _ARR, struct.pack("<IQ", _STR, 2**40) + b"\0" * 64)
+    ),
+    "array_unknown_item": _gguf(0, 1, _kv(b"k", _ARR, struct.pack("<IQ", 77, 1))),
+    # bytes really present: 4 MB of uint8 cost GGUFReader 15 s and 2.8 GB
+    "array_4m_u8": _gguf(
+        0, 1, _kv(b"k", _ARR, struct.pack("<IQ", _U8, 4_000_000) + bytes(4_000_000))
+    ),
+    "array_2m_empty_strings": _gguf(
+        0,
+        1,
+        _kv(b"k", _ARR, struct.pack("<IQ", _STR, 2_100_000)) + bytes(8 * 2_100_000),
+    ),
+    # the cap is on the total over all kvs, not per array
+    "arrays_total_over_cap": _gguf(
+        0,
+        3,
+        b"".join(
+            _kv(b"k%d" % i, _ARR, struct.pack("<IQ", _U8, 1_000_000) + bytes(1_000_000))
+            for i in range(3)
+        ),
+    ),
+    "array_nested_deep": _gguf(
+        0, 1, _kv(b"k", _ARR, struct.pack("<IQ", _ARR, 1) * 20 + b"\0" * 64)
+    ),
+    "tensor_cut": _gguf(1, 0, _str(b"w") + struct.pack("<I", 2)),
+    "tensor_huge_ndims": _gguf(
+        1, 0, _str(b"w") + struct.pack("<I", 2**32 - 1) + b"\0" * 64
+    ),
+    "tensor_huge_name": _gguf(1, 0, struct.pack("<Q", 2**63) + b"\0" * 64),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_MALFORMED))
+def test_malformed_gguf_raises_value_error_fast(tmp_path: Path, name: str) -> None:
+    p = tmp_path / "bad.gguf"
+    p.write_bytes(_MALFORMED[name])
+    t = time.monotonic()
+    with pytest.raises(ValueError, match="cannot read GGUF"):
+        read_lora_gguf(p)
+    with pytest.raises(ValueError, match="cannot read GGUF"):
+        splice_gguf(p, tmp_path / "o.gguf", {N0: NEW})
+    assert time.monotonic() - t < 1
+
+
+def test_duplicate_kv_key_raises_value_error(tmp_path: Path) -> None:
+    good = tmp_path / "good.gguf"
+    save_lora_gguf(_edit(), good, "qwen35")
+    # same-length rename: the file now holds two "general.type" keys
+    dup = tmp_path / "dup.gguf"
+    dup.write_bytes(good.read_bytes().replace(b"adapter.type", b"general.type"))
+    with pytest.raises(ValueError, match=r"cannot read GGUF.*Duplicate"):
+        read_lora_gguf(dup)
+    assert verify_splice(dup, good, [])[0].startswith("cannot read GGUF")
+
+
+@pytest.mark.parametrize("exc", [KeyError("k"), MemoryError(), OverflowError()])
+def test_open_wraps_library_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    good = tmp_path / "good.gguf"
+    save_lora_gguf(_edit(), good, "qwen35")
+
+    def boom(*_: object) -> None:
+        raise exc
+
+    monkeypatch.setattr(gguf, "GGUFReader", boom)
+    with pytest.raises(ValueError, match="cannot read GGUF"):
+        _open(good)
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+def test_open_does_not_swallow_interrupts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: type[BaseException]
+) -> None:
+    good = tmp_path / "good.gguf"
+    save_lora_gguf(_edit(), good, "qwen35")
+
+    def boom(*_: object) -> None:
+        raise exc
+
+    monkeypatch.setattr(gguf, "GGUFReader", boom)
+    with pytest.raises(exc):
+        _open(good)
+
+
+def test_valid_files_open(base: Path, tmp_path: Path) -> None:
+    """Adapter, base (kv arrays, quantized tensors) and spliced files all pass."""
+    adapter = tmp_path / "a.gguf"
+    save_lora_gguf(_edit(), adapter, "qwen35")
+    out = tmp_path / "s.gguf"
+    splice_gguf(base, out, {N0: NEW})
+    assert len(_open(adapter).tensors) == 4
+    assert len(_open(base).tensors) == 5
+    assert len(_open(out).tensors) == 5
+    assert set(read_lora_gguf(adapter)[0]) == {
+        "blk.3.ffn_down.weight",
+        "blk.5.attn_output.weight",
+    }
+
+
+def test_array_cap_allows_real_size_tokenizer(tmp_path: Path) -> None:
+    """A 152k-string array (a real vocab) plus scalar arrays still opens."""
+    n = 152_000
+    toks = _kv(b"tokenizer.ggml.tokens", _ARR, struct.pack("<IQ", _STR, n))
+    toks += b"".join(_str(b"t%d" % i) for i in range(n))
+    types = _kv(b"tokenizer.ggml.token_type", _ARR, struct.pack("<IQ", 5, n))
+    types += bytes(4 * n)
+    p = tmp_path / "vocab.gguf"
+    p.write_bytes(_gguf(0, 2, toks + types))
+    t = time.monotonic()
+    reader = _open(p)
+    assert reader.get_field("tokenizer.ggml.token_type") is not None
+    assert time.monotonic() - t < 10
+
+
+def test_unsupported_kv_type_is_named(tmp_path: Path) -> None:
+    p = tmp_path / "t.gguf"
+    p.write_bytes(_gguf(0, 1, _kv(b"k", 99, bytes(8))))
+    with pytest.raises(ValueError, match="unsupported kv value type 99"):
+        _open(p)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no mkfifo")
+def test_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe.gguf"
+    os.mkfifo(fifo)
+    t = time.monotonic()
+    with pytest.raises(ValueError, match="not a regular file"):
+        read_lora_gguf(fifo)
+    with pytest.raises(ValueError, match="not a regular file"):
+        splice_gguf(fifo, tmp_path / "o.gguf", {N0: NEW})
+    assert time.monotonic() - t < 1
+
+
+def test_directory_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="not a regular file"):
+        _open(tmp_path)
+
+
+def test_big_endian_file_still_opens(tmp_path: Path) -> None:
+    p = tmp_path / "be.gguf"
+    w = GGUFWriter(p, "qwen35", endianess=gguf.GGUFEndian.BIG)
+    w.add_array("k", ["a", "b"])
+    w.add_tensor("x", np.zeros((2, 2), dtype=np.float32))
+    _finish(w)
+    assert len(_open(p).tensors) == 1
+    # and the walk is endian-aware: a big-endian absurd kv count is rejected
+    bad = bytearray(p.read_bytes())
+    bad[16:24] = struct.pack(">Q", 2**60)
+    p.write_bytes(bytes(bad))
+    with pytest.raises(ValueError, match="cannot fit"):
+        _open(p)

@@ -221,6 +221,27 @@ def test_build_refuses_non_empty_dir(
     assert (out / "adapter_model.safetensors").exists()
 
 
+def test_build_force_replaces_existing_adapter(tmp_path: Path) -> None:
+    assert main(_build_args(tmp_path)) == 0
+    out = tmp_path / "out"
+    (out / "README.md").write_text("card")
+    assert main(_build_args(tmp_path)) == 2  # non-empty, no --force
+    assert main(_build_args(tmp_path, "--force")) == 0
+    assert (out / "README.md").read_text() == "card"
+    assert read_peft(out)[1] == []
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".")) == []
+
+
+def test_build_force_onto_file_fails_cleanly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "out"
+    out.write_text("x")
+    assert main(_build_args(tmp_path, "--force")) == 2
+    assert "not a directory" in capsys.readouterr().err
+    assert out.read_text() == "x"
+
+
 def test_build_bad_recipe(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     recipe = tmp_path / "bad.json"
     recipe.write_text('{"format": 1, "base_model": "x", "steps": [{"recipe": "nope"}]}')

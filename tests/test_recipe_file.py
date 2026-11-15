@@ -1,7 +1,11 @@
 import copy
 import hashlib
+import io
 import json
+import os
+import struct
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -12,6 +16,7 @@ from astro_weights.edits import (
     masked_rank1,
     project_out,
     rank1,
+    recipe_file,
     scale_column,
     scale_head,
     top_k_mask,
@@ -344,3 +349,168 @@ def test_deeply_nested_json_is_value_error(tmp_path: Path) -> None:
     path.write_text("[" * 200_000)
     with pytest.raises(ValueError, match=r"cannot read recipe.*deep\.json"):
         load_recipe(path)
+
+
+# --- regressions found by tests/test_fuzz.py ---------------------------------
+
+
+def _build_rank1(tmp_path: Path, **files: bytes) -> None:
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    recipe = {"format": 1, "base_model": "x", "steps": [_rank1_step()]}
+    build_edit(recipe, lambda _m: W0, tmp_path)
+
+
+def _npy_bytes(arr: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    return buf.getvalue()
+
+
+def test_malformed_npy_header_is_value_error(tmp_path: Path) -> None:
+    # numpy's header parser raises tokenize.TokenError on an unclosed bracket
+    header = b"{'descr': '<f4', 'fortran_order': False, 'shape': (4,"
+    header += b" " * (-(10 + len(header) + 1) % 64) + b"\n"
+    raw = b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header
+    good = _npy_bytes(np.ones(1, np.float32))
+    with pytest.raises(ValueError, match=r"invalid \.npy header"):
+        _build_rank1(tmp_path, **{"b.npy": raw, "a.npy": good})
+
+
+def test_npy_header_claiming_huge_shape_is_value_error(tmp_path: Path) -> None:
+    header = b"{'descr': '<f4', 'fortran_order': False, 'shape': (1000000000000,), }"
+    header += b" " * (-(10 + len(header) + 1) % 64) + b"\n"
+    raw = b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header
+    good = _npy_bytes(np.ones(1, np.float32))
+    with pytest.raises(ValueError, match=r"truncated \.npy data"):
+        _build_rank1(tmp_path, **{"b.npy": raw, "a.npy": good})
+
+
+@pytest.mark.parametrize(
+    ("arr", "match"),
+    [
+        (np.array(1.0, dtype=np.float32), "1-D"),
+        (np.ones((2, 2), dtype=np.float32), "1-D"),
+        (np.ones(4, dtype=np.complex64), "unsupported dtype"),
+        (np.array(["a", "b"]), "unsupported dtype"),
+    ],
+)
+def test_npy_must_be_1d_numeric(tmp_path: Path, arr: np.ndarray, match: str) -> None:
+    good = _npy_bytes(np.ones(1, np.float32))
+    with pytest.raises(ValueError, match=match):
+        _build_rank1(tmp_path, **{"b.npy": _npy_bytes(arr), "a.npy": good})
+
+
+def test_npy_over_size_cap_rejected_unread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recipe_file, "MAX_NPY_BYTES", 200)
+    small = _npy_bytes(np.ones(1, np.float32))
+    assert len(small) <= 200
+    big = _npy_bytes(np.ones(64, np.float32))
+    assert len(big) > 200
+    _build_rank1(tmp_path, **{"b.npy": small, "a.npy": small})  # at or under the cap
+    with pytest.raises(ValueError, match="over the 200 limit"):
+        _build_rank1(tmp_path, **{"b.npy": big, "a.npy": small})
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_fifo_npy_is_value_error_not_hang(tmp_path: Path) -> None:
+    os.mkfifo(tmp_path / "b.npy")
+    good = _npy_bytes(np.ones(1, np.float32))
+    with pytest.raises(ValueError, match="not a regular file"):
+        _build_rank1(tmp_path, **{"a.npy": good})
+
+
+def test_npy_growing_past_cap_after_fstat_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read itself is bounded, not just the fstat size."""
+    path = tmp_path / "x.npy"
+    path.write_bytes(b"x" * 300)
+    monkeypatch.setattr(recipe_file, "MAX_NPY_BYTES", 200)
+    real = os.fstat
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda fd: SimpleNamespace(st_mode=real(fd).st_mode, st_size=0),
+    )
+    with pytest.raises(ValueError, match="over the 200 limit"):
+        recipe_file._read_capped(path)
+
+
+def test_huge_int_param_is_value_error(tmp_path: Path) -> None:
+    step = {
+        "recipe": "masked_rank1",
+        "module": "m",
+        "params": {"alpha": 10**400},
+        "arrays": {"u": "u.npy", "mask": "mask.npy"},
+    }
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps({"format": 1, "base_model": "x", "steps": [step]}))
+    with pytest.raises(ValueError, match=r"alpha.*finite"):
+        load_recipe(path)
+
+
+def test_column_shift_n_in_capped(tmp_path: Path) -> None:
+    step = {
+        "recipe": "column_shift",
+        "module": "m",
+        "params": {"n_in": 10**12},
+        "arrays": {"shift": "s.npy", "idx": "i.npy", "coef": "c.npy"},
+    }
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps({"format": 1, "base_model": "x", "steps": [step]}))
+    with pytest.raises(ValueError, match="n_in must be at most"):
+        load_recipe(path)
+
+
+def test_npy_with_crlf_and_ctrl_z_bytes_read_verbatim(tmp_path: Path) -> None:
+    """Payload bytes 0d 0a 1a must survive the read (Windows text-mode guard)."""
+    payload = np.frombuffer(bytes([0x0D, 0x0A, 0x1A, 0x3F]) * OUT, dtype="<f4")
+    assert b"\r\n\x1a" in payload.tobytes()
+    a_payload = np.frombuffer(bytes([0x0D, 0x0A, 0x1A, 0x3F]) * IN, dtype="<f4")
+    raw_b, raw_a = _npy_bytes(payload), _npy_bytes(a_payload)
+    for name, raw in (("b.npy", raw_b), ("a.npy", raw_a)):
+        (tmp_path / name).write_bytes(raw)
+    recipe = {"format": 1, "base_model": "x", "steps": [_rank1_step()]}
+    edit = build_edit(recipe, lambda _m: W0, tmp_path)
+    got = edit.meta["recipe"]
+    assert isinstance(got, dict)
+    assert got["arrays_sha256"] == {
+        "b.npy": hashlib.sha256(raw_b).hexdigest(),
+        "a.npy": hashlib.sha256(raw_a).hexdigest(),
+    }
+    assert recipe_file._read_capped(tmp_path / "b.npy") == raw_b
+
+
+@pytest.mark.parametrize(
+    ("name", "key", "bad", "match"),
+    [
+        (
+            "column_shift",
+            "idx",
+            np.array([1, 5, 7], dtype=bool),
+            "idx must be an integer",
+        ),
+        ("column_shift", "idx", np.array([1.0, 5.0, 7.0]), "idx must be an integer"),
+        (
+            "column_shift",
+            "coef",
+            np.array([1, 0, 1], dtype=bool),
+            "coef must be a real",
+        ),
+        ("column_shift", "shift", np.ones(OUT, dtype=bool), "shift must be a real"),
+        ("rank1", "b", np.ones(OUT, dtype=bool), "b must be a real"),
+        ("project_out", "v", np.ones(OUT, dtype=bool), "v must be a real"),
+    ],
+)
+def test_wrong_dtype_array_is_value_error(
+    tmp_path: Path, name: str, key: str, bad: np.ndarray, match: str
+) -> None:
+    params, arrays, _ = _cases()[name]
+    arrays = {**arrays, key: bad}
+    step = _step(name, "m", params, arrays, tmp_path)
+    recipe = load_recipe(_write(tmp_path, [step]))
+    with pytest.raises(ValueError, match=match):
+        build_edit(recipe, lambda m: W0, tmp_path)

@@ -10,9 +10,11 @@ reader shape [12288, 4096] ([intermediate, hidden]) -> numpy (4096, 12288) =
 ([out, in]). So an HF [out, in] array is written and spliced as is, no transpose.
 """
 
+import mmap
 import random
 import re
 import secrets
+import stat
 import struct
 from collections.abc import Mapping
 from pathlib import Path
@@ -38,11 +40,145 @@ _SAMPLE = 20
 _ADAPTER_TYPES = (Q.F32, Q.F16)
 
 
+# Fixed sizes of GGUF scalar value types; STRING and ARRAY are variable.
+_SCALAR = {
+    VT.UINT8: 1,
+    VT.INT8: 1,
+    VT.BOOL: 1,
+    VT.UINT16: 2,
+    VT.INT16: 2,
+    VT.UINT32: 4,
+    VT.INT32: 4,
+    VT.FLOAT32: 4,
+    VT.UINT64: 8,
+    VT.INT64: 8,
+    VT.FLOAT64: 8,
+}
+_VERSIONS = (2, gguf.GGUF_VERSION)
+_HEADER = 24  # magic u32, version u32, tensor count u64, kv count u64
+# Smallest encodings, which bound the counts by the file size: a kv is a key
+# string (u64 length) + u32 type + at least a 1-byte value; a tensor info is a
+# name string (u64 length) + u32 n_dims + u32 type + u64 offset.
+_MIN_KV = 8 + 4 + 1
+_MIN_TENSOR = 8 + 4 + 4 + 8
+_MAX_DEPTH = 8  # nested arrays
+# Cap on kv array items summed over the whole file (nested arrays count every
+# level). gguf.GGUFReader builds Python and numpy objects per item, about 1 KB
+# each: a 4 MB uint8 array of 4M items took 15 s and 2.8 GB, so a crafted
+# 40-50 MB file could take minutes and over 25 GB. 2**21 = 2,097,152 items is
+# about 2 GB at worst. The largest real tokenizer metadata (a 262k vocab with
+# tokens, scores, token_type and merges) is about 1.05M items, and a 152k-vocab
+# 3B model has 455k, so real files stay under half the cap.
+_MAX_ARRAY_ITEMS = 1 << 21
+
+
+class _Walk:
+    """Walks the kv/tensor-info layout with bounds checks; `e` is the endianness."""
+
+    def __init__(self, buf: mmap.mmap, e: str) -> None:
+        self.buf = buf
+        self.e = e
+        self.items = 0
+
+    def take(self, off: int, n: int) -> int:
+        """Offset after `n` bytes at `off`; ValueError if they run past the end."""
+        if n < 0 or n > len(self.buf) - off:
+            raise ValueError(f"data runs past end of file at offset {off}")
+        return off + n
+
+    def u32(self, off: int) -> int:
+        self.take(off, 4)
+        return int(struct.unpack_from(f"{self.e}I", self.buf, off)[0])
+
+    def skip_string(self, off: int) -> int:
+        self.take(off, 8)
+        (n,) = struct.unpack_from(f"{self.e}Q", self.buf, off)
+        return self.take(off + 8, n)
+
+    def count_items(self, n: int) -> None:
+        self.items += n
+        if self.items > _MAX_ARRAY_ITEMS:
+            raise ValueError(
+                f"kv arrays hold more than {_MAX_ARRAY_ITEMS} items in total"
+            )
+
+    def skip_value(self, off: int, raw_type: int, depth: int) -> int:
+        """Offset after one kv value, checking every length against the file size."""
+        try:
+            vt = VT(raw_type)
+        except ValueError:
+            raise ValueError(f"unsupported kv value type {raw_type}") from None
+        if vt == VT.STRING:
+            return self.skip_string(off)
+        if vt != VT.ARRAY:
+            return self.take(off, _SCALAR[vt])
+        if depth >= _MAX_DEPTH:
+            raise ValueError("kv arrays nested too deeply")
+        end = self.take(off, 12)
+        item, n = struct.unpack_from(f"{self.e}IQ", self.buf, off)
+        try:
+            size = _SCALAR.get(VT(item))
+        except ValueError:
+            raise ValueError(f"unsupported kv array item type {item}") from None
+        self.count_items(n)
+        if size is not None:
+            return self.take(end, n * size)  # one bounds check, no per-item loop
+        # string items take >= 8 bytes, nested arrays >= 12: n is bounded by the
+        # file size (and the item cap) before looping, so a huge n cannot spin
+        self.take(end, n * 8)
+        for _ in range(n):
+            end = self.skip_value(end, item, depth + 1)
+        return end
+
+
+def _check_layout(path: Path | str) -> None:
+    """Reject a file gguf.GGUFReader would hang on or allocate for without bound.
+
+    GGUFReader trusts every count and length; walk the same layout with bounds
+    checks first: header, counts that cannot fit, lengths past the end of the
+    file, and the total array item cap. Only regular files are opened, so a FIFO
+    cannot block. Little- and big-endian files are both walked.
+    """
+    if not stat.S_ISREG(Path(path).stat().st_mode):
+        raise ValueError("not a regular file")
+    with Path(path).open("rb") as f:
+        if f.seek(0, 2) < _HEADER:
+            raise ValueError("file shorter than the GGUF header")
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+            (magic,) = struct.unpack_from("<I", buf)
+            if magic != gguf.GGUF_MAGIC:
+                raise ValueError("not a GGUF file (bad magic)")
+            # the version is below 2**16, so a zero low half means big-endian
+            e = ">" if struct.unpack_from("<I", buf, 4)[0] & 0xFFFF == 0 else "<"
+            version, n_tensors, n_kv = struct.unpack_from(f"{e}IQQ", buf, 4)
+            if version not in _VERSIONS:
+                raise ValueError(f"unsupported GGUF version {version}")
+            if n_kv * _MIN_KV + n_tensors * _MIN_TENSOR > len(buf) - _HEADER:
+                raise ValueError(
+                    f"header counts ({n_tensors} tensors, {n_kv} kv) cannot fit "
+                    "in the file"
+                )
+            walk = _Walk(buf, e)
+            off = _HEADER
+            for _ in range(n_kv):
+                off = walk.skip_string(off)
+                off = walk.skip_value(off + 4, walk.u32(off), 0)
+            for _ in range(n_tensors):
+                off = walk.skip_string(off)
+                off = walk.take(off + 4, walk.u32(off) * 8 + 12)  # dims, type, offset
+
+
 def _open(path: Path | str) -> gguf.GGUFReader:
-    """GGUFReader that raises ValueError naming the file on any read failure."""
+    """GGUFReader that raises ValueError naming the file on any read failure.
+
+    Library errors on bad content (KeyError for a duplicate key, IndexError,
+    struct.error, ...) are all turned into ValueError; so are OSErrors from
+    opening the file. KeyboardInterrupt and SystemExit pass through.
+    """
     try:
+        _check_layout(path)
         return gguf.GGUFReader(path)
-    except (IndexError, ValueError, struct.error, OSError) as e:
+    except Exception as e:
         raise ValueError(f"cannot read GGUF file {str(path)!r}: {e}") from e
 
 

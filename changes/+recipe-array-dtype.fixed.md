@@ -1,0 +1,1 @@
+Recipes now raise `ValueError` instead of `IndexError` or `TypeError` when an array has the wrong dtype or number of dimensions: `column_shift` needs an integer `idx` and real `shift` and `coef` (not bool or complex), and `rank1`, `masked_rank1` (a bool `mask` still works), `project_out`, `top_k_mask` and `orthogonal_random` need real 1-D arrays.

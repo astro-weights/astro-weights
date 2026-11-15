@@ -1,0 +1,1 @@
+GGUF reading now raises `ValueError` for any malformed file, including duplicate keys, and rejects absurd header counts, array lengths, files with more than 2,097,152 kv array items in total (the reader costs about 1 KB per item), and non-regular files such as FIFOs up front instead of hanging or exhausting memory.

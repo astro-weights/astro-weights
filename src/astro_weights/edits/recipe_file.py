@@ -5,12 +5,15 @@ import hashlib
 import io
 import json
 import math
+import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.lib import format as npformat
 
 from astro_weights.edits.core import Edit, LowRankDelta
 from astro_weights.edits.recipes import (
@@ -24,6 +27,8 @@ from astro_weights.edits.recipes import (
 )
 
 FORMAT = 1
+MAX_NPY_BYTES = 256 * 1024 * 1024  # larger .npy side files are rejected unread
+MAX_N_IN = 1 << 20  # column_shift allocates n_in floats; no linear layer is wider
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,49 @@ def _plain_name(name: str) -> bool:
     return name not in ("", ".", "..") and Path(name).name == name and "\\" not in name
 
 
+def _check_npy_header(data: bytes) -> None:
+    """Validate the .npy header (shape, dtype, size) before numpy allocates anything."""
+    fp = io.BytesIO(data)
+    try:
+        version = npformat.read_magic(fp)
+        if version == (1, 0):
+            shape, _, dtype = npformat.read_array_header_1_0(fp)
+        elif version == (2, 0):
+            shape, _, dtype = npformat.read_array_header_2_0(fp)
+        else:
+            raise ValueError(f"unsupported .npy version {version}")
+    except ValueError:
+        raise
+    except Exception as exc:  # numpy's header parser leaks e.g. tokenize.TokenError
+        raise ValueError(f"invalid .npy header: {exc!r}") from exc
+    if dtype.hasobject:
+        raise ValueError("object arrays need pickle, which is disabled")
+    if len(shape) != 1:
+        raise ValueError(f"expected a 1-D array, got shape {shape}")
+    if dtype.kind not in "biuf":
+        raise ValueError(f"unsupported dtype {dtype}")
+    if shape[0] * dtype.itemsize > len(data) - fp.tell():
+        raise ValueError("truncated .npy data")
+
+
+def _read_capped(path: Path) -> bytes:
+    """Read a regular file of at most MAX_NPY_BYTES; never blocks on a FIFO."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)  # O_BINARY: no CRLF/Ctrl-Z translation on Windows
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("not a regular file")
+        if st.st_size > MAX_NPY_BYTES:
+            raise ValueError(
+                f"file is {st.st_size} bytes, over the {MAX_NPY_BYTES} limit"
+            )
+        data = fh.read(MAX_NPY_BYTES + 1)  # the file may have grown since fstat
+    if len(data) > MAX_NPY_BYTES:
+        raise ValueError(f"file is over the {MAX_NPY_BYTES} limit")
+    return data
+
+
 def _load_array(directory: Path, where: str, key: str, name: str) -> tuple[bytes, Any]:
     """Read one .npy file confined to `directory`; any failure is a ValueError."""
     path = directory / name
@@ -74,16 +122,22 @@ def _load_array(directory: Path, where: str, key: str, name: str) -> tuple[bytes
     try:
         if not path.resolve().is_relative_to(directory.resolve()):
             raise ValueError("escapes the recipe directory")
-        data = path.read_bytes()
+        data = _read_capped(path)
+        _check_npy_header(data)
         arr = np.load(io.BytesIO(data), allow_pickle=False)
         if not isinstance(arr, np.ndarray):
-            close = getattr(arr, "close", None)
-            if close is not None:
-                close()
             raise ValueError("not a .npy array")  # noqa: TRY004
     except (OSError, ValueError, KeyError, EOFError) as exc:
         raise ValueError(f"{label}: {exc}") from exc
     return data, arr
+
+
+def _finite(value: float) -> bool:
+    """True when `value` converts to a finite float (huge ints do not)."""
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def _check_step(i: int, step: object) -> None:
@@ -108,8 +162,10 @@ def _check_step(i: int, step: object) -> None:
             raise ValueError(
                 f"{where}: param {key!r} must be a {spec.scalars[key].__name__}"
             )
-        if isinstance(value, float) and not math.isfinite(value):
+        if spec.scalars[key] is float and not _finite(value):
             raise ValueError(f"{where}: param {key!r} must be finite")
+    if name == "column_shift" and params["n_in"] > MAX_N_IN:
+        raise ValueError(f"{where}: n_in must be at most {MAX_N_IN}")
     arrays = _check_names(where, "arrays", step.get("arrays", {}), spec.arrays)
     for key, value in arrays.items():
         if not isinstance(value, str) or not _plain_name(value):
