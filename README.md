@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://astro-weights.github.io/astro-weights/">Docs</a> ·
+  <a href="https://astro-weights.dev/">Docs</a> ·
   <a href="https://pypi.org/project/astro-weights/">PyPI</a> ·
   <a href="https://github.com/astro-weights/astro-weights/blob/main/CHANGELOG.md">Changelog</a> ·
   <a href="https://github.com/astro-weights/astro-weights/blob/main/CONTRIBUTING.md">Contributing</a>
@@ -67,7 +67,7 @@ peft_model = apply(model, load_peft("my-edit"))  # model: a transformers causal 
 model = remove(peft_model)  # base weights were never modified
 ```
 
-`apply` also finds layers named differently, as in text-only and multimodal loads of one checkpoint: see [How-to: apply across model classes](https://astro-weights.github.io/astro-weights/how-to/apply-across-model-classes/).
+`apply` also finds layers named differently, as in text-only and multimodal loads of one checkpoint: see [How-to: apply across model classes](https://astro-weights.dev/how-to/apply-across-model-classes/).
 
 ## Development
 

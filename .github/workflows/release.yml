@@ -75,7 +75,7 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME#v}"
           {
-            echo "\`pip install astro-weights==$v\` · [PyPI](https://pypi.org/project/astro-weights/$v/) · [Docs](https://astro-weights.github.io/astro-weights/)"
+            echo "\`pip install astro-weights==$v\` · [PyPI](https://pypi.org/project/astro-weights/$v/) · [Docs](https://astro-weights.dev/)"
             echo
             awk -v v="$v" 'index($0, "## [" v "]") == 1 {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md | sed '/^\[.*\]: http/d'
           } > notes.md
