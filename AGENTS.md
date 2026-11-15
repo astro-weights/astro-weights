@@ -7,7 +7,7 @@ astro-weights: agent-driven weight-space edits for open LLMs, exported as standa
 ## Layout
 
 - `src/astro_weights/edits/`: `Edit` (`Edit.from_deltas` pads mixed ranks), `LowRankDelta` and the numpy recipes (`rank1`, `masked_rank1`, `column_shift`, `orthogonal_random`, `top_k_mask`, `project_out`, `scale_column`, `scale_head`, `zero_head`).
-- `src/astro_weights/export/`: PEFT LoRA adapter I/O (`save_peft`, `load_peft`, `read_peft`, `verify_peft`) and hash-checked merged weights (`save_merged_tensors`, `load_merged_tensors`).
+- `src/astro_weights/export/`: PEFT LoRA adapter I/O (`save_peft`, `load_peft`, `read_peft`, `verify_peft`) hash-checked merged weights (`save_merged_tensors`, `load_merged_tensors`), model card (`card.py`: `model_card`, `write_card`) and GGUF (`gguf.py`: `save_lora_gguf`, `read_lora_gguf`, `splice_gguf`, `verify_splice`; `gguf` extra, not re-exported from `export`).
 - `src/astro_weights/runners/`: apply edits to live models (`hf.py`: `apply`, `remove`, `swap`, `merged_weights`, `resolve_modules`) and generate one eval arm (`generate.py`: `generate_records`, `run_header`).
 - `src/astro_weights/directions/`: difference-of-means directions and `direction_gate`, numpy only.
 - `src/astro_weights/eval/`: per-item `Record` JSONL, paired comparison of two arms (`compare`, `format_report`) and answer graders (`grade_exact`, `grade_choice`, `grade_math`). Never runs a model. `grade_math` imports math-verify lazily, from the `eval` extra.
@@ -25,7 +25,7 @@ uv run ruff format       # format
 uv run mypy src tests    # type check (strict)
 uv run lint-imports      # layer contract
 uv run pytest            # core tests
-uv run --extra hf pytest # tests that need torch/transformers/peft
+uv run --extra hf --extra eval --extra gguf pytest  # tests that need optional extras (CI test-hf job)
 uv run --only-group docs zensical build --strict  # docs site; `zensical serve` to preview
 ```
 

@@ -14,6 +14,7 @@ nav = [
     "how-to/inspect-adapter.md",
     "how-to/apply-across-model-classes.md",
     "how-to/save-merged-weights.md",
+    "how-to/export-gguf.md",
     "how-to/find-direction.md",
     "how-to/compare-arms.md",
     "how-to/run-eval.md",

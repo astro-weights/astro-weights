@@ -7,7 +7,7 @@ Small course corrections for open LLMs. Agent proposes small low-rank edits to m
 !!! warning "Pre-alpha"
     0.0.7 on PyPI. API changes without notice until 1.0.
 
-Covers edit core (build low-rank edits, save and load as LoRA adapters, apply to transformers models), difference-of-means directions with gate, eval runner with graders, paired eval statistics.
+Covers edit core (build low-rank edits, save and load as LoRA adapters, apply to transformers models, export as GGUF with model card), difference-of-means directions with gate, eval runner with graders, paired eval statistics.
 
 ## Install
 
@@ -28,6 +28,7 @@ pip install "astro-weights[hf]"
 | First edit, start to finish | [Tutorial: first edit](tutorials/first-edit.md) |
 | Check adapter before shipping | [How-to: inspect adapter](how-to/inspect-adapter.md) |
 | Edited weights without adapter | [How-to: save merged weights](how-to/save-merged-weights.md) |
+| llama.cpp adapter, GGUF splice, model card | [How-to: export GGUF and model card](how-to/export-gguf.md) |
 | Direction from paired prompts | [How-to: find and gate direction](how-to/find-direction.md) |
 | Base vs edit on same items | [How-to: compare two eval arms](how-to/compare-arms.md) |
 | Generate and compare arms on model | [How-to: run eval end to end](how-to/run-eval.md) |

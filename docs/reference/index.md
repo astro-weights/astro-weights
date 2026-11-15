@@ -6,6 +6,8 @@ Built from docstrings on each docs build.
 
 ::: astro_weights.export
 
+::: astro_weights.export.gguf
+
 ::: astro_weights.runners.hf
 
 ::: astro_weights.runners.generate
