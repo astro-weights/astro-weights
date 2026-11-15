@@ -315,7 +315,8 @@ def run_header(
     """Settings that decide the outputs, for the run log."""
     template = getattr(tokenizer, "chat_template", None)
     return {
-        "model": type(model).__name__,
+        # the class under an applied adapter, so a base arm and an edit arm compare equal
+        "model": type(getattr(model, "get_base_model", lambda: model)()).__name__,
         "dtype": str(model.dtype),
         "device": str(model.device),
         "max_new_tokens": max_new_tokens,
