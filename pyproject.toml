@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-hf = ["torch", "transformers>=5.4", "peft>=0.21.3"]
+hf = ["torch>=2.4","transformers>=5.4", "peft>=0.21.3"]
 eval = [
     "math-verify>=0.9.0",
 ]

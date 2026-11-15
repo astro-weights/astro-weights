@@ -51,6 +51,79 @@ jobs:
           python-version: "3.12"
       - run: uv run --extra hf --extra eval --extra gguf pytest -m "not gpu" --cov=astro_weights --cov-branch --cov-fail-under=95
 
+  wheel-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist
+      - name: Check sdist and wheel contents
+        run: |
+          tar tzf dist/*.tar.gz | grep -E '(^|/)LICENSE$'
+          unzip -l dist/*.whl | grep 'astro_weights/py.typed'
+      - name: Install only the wheel in a clean venv
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/*.whl
+      - name: Import core and check optional extras are absent
+        run: |
+          "$RUNNER_TEMP/smoke/bin/python" -c "import astro_weights, astro_weights.edits, astro_weights.export, astro_weights.eval, astro_weights.directions"
+          "$RUNNER_TEMP/smoke/bin/python" - <<'PY'
+          import importlib.util
+          for name in ("torch", "transformers", "peft"):
+              assert importlib.util.find_spec(name) is None, f"{name} importable in core install"
+          PY
+      - name: CLI version matches the wheel
+        run: |
+          wheel_version=$(basename dist/*.whl | cut -d- -f2)
+          test "$("$RUNNER_TEMP/smoke/bin/astro-weights" --version)" = "astro-weights $wheel_version"
+      - name: Build and inspect a tiny adapter
+        run: |
+          "$RUNNER_TEMP/smoke/bin/python" - "$RUNNER_TEMP/adapter" <<'PY'
+          import sys
+          import numpy as np
+          from astro_weights.edits import Edit, rank1
+          from astro_weights.export import save_peft
+          rng = np.random.default_rng(0)
+          delta = rank1("model.layers.1.mlp.down_proj", rng.standard_normal(16), rng.standard_normal(48))
+          save_peft(Edit((delta,), "org/tiny"), sys.argv[1])
+          PY
+          "$RUNNER_TEMP/smoke/bin/astro-weights" inspect "$RUNNER_TEMP/adapter"
+
+  test-lowest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+      - name: Core, lowest direct dependencies
+        run: uv run --resolution lowest-direct pytest -m "not gpu"
+      - name: All extras, lowest direct dependencies
+        run: uv run --resolution lowest-direct --extra hf --extra eval --extra gguf pytest -m "not gpu"
+
+  test-os:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+      - run: uv run pytest -m "not gpu"
+
   zizmor:
     runs-on: ubuntu-latest
     permissions:
