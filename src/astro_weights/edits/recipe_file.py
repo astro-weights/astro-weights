@@ -4,6 +4,7 @@ import copy
 import hashlib
 import io
 import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,30 @@ def _check_names(
     return got
 
 
+def _plain_name(name: str) -> bool:
+    """True for a bare file name: no directories, no absolute path, no `.`/`..`."""
+    return name not in ("", ".", "..") and Path(name).name == name and "\\" not in name
+
+
+def _load_array(directory: Path, where: str, key: str, name: str) -> tuple[bytes, Any]:
+    """Read one .npy file confined to `directory`; any failure is a ValueError."""
+    path = directory / name
+    label = f"{where}: array {key!r} ({name})"
+    try:
+        if not path.resolve().is_relative_to(directory.resolve()):
+            raise ValueError("escapes the recipe directory")
+        data = path.read_bytes()
+        arr = np.load(io.BytesIO(data), allow_pickle=False)
+        if not isinstance(arr, np.ndarray):
+            close = getattr(arr, "close", None)
+            if close is not None:
+                close()
+            raise ValueError("not a .npy array")  # noqa: TRY004
+    except (OSError, ValueError, KeyError, EOFError) as exc:
+        raise ValueError(f"{label}: {exc}") from exc
+    return data, arr
+
+
 def _check_step(i: int, step: object) -> None:
     if not isinstance(step, dict):
         raise ValueError(f"step {i}: must be an object")  # noqa: TRY004
@@ -83,15 +108,22 @@ def _check_step(i: int, step: object) -> None:
             raise ValueError(
                 f"{where}: param {key!r} must be a {spec.scalars[key].__name__}"
             )
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"{where}: param {key!r} must be finite")
     arrays = _check_names(where, "arrays", step.get("arrays", {}), spec.arrays)
     for key, value in arrays.items():
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"{where}: array {key!r} must be a file name")
+        if not isinstance(value, str) or not _plain_name(value):
+            raise ValueError(
+                f"{where}: array {key!r} must be a plain file name in the recipe directory"
+            )
 
 
 def load_recipe(path: Path | str) -> dict[str, Any]:
     """Read and validate a recipe file; arrays are not loaded."""
-    recipe = json.loads(Path(path).read_text())
+    try:
+        recipe = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read recipe {str(path)!r}: {exc}") from exc
     if not isinstance(recipe, dict):
         raise ValueError("recipe must be a JSON object")  # noqa: TRY004
     if recipe.get("format") != FORMAT:
@@ -131,9 +163,10 @@ def build_edit(
         spec = _RECIPES[step["recipe"]]
         kwargs: dict[str, Any] = dict(step.get("params", {}))
         for key, name in step.get("arrays", {}).items():
-            data = (directory / name).read_bytes()
+            data, kwargs[key] = _load_array(
+                directory, f"step {i} ({step['recipe']})", key, name
+            )
             hashes[name] = hashlib.sha256(data).hexdigest()
-            kwargs[key] = np.load(io.BytesIO(data), allow_pickle=False)
         if spec.needs_w0:
             kwargs["W0"] = weights(module)
         deltas.append(spec.fn(module, **kwargs))

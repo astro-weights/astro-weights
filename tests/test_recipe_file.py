@@ -242,3 +242,98 @@ def test_bad_top_level_rejected(tmp_path: Path, doc: object, match: str) -> None
     path.write_text(json.dumps(doc))
     with pytest.raises(ValueError, match=match):
         load_recipe(path)
+
+
+def _rank1_step(b: str = "b.npy", a: str = "a.npy") -> dict[str, Any]:
+    return {
+        "recipe": "rank1",
+        "module": MOD.format(1),
+        "params": {},
+        "arrays": {"b": b, "a": a},
+    }
+
+
+@pytest.mark.parametrize(
+    "name", ["../x.npy", "/abs/x.npy", "a/../../x.npy", "d/x.npy", ".", ".."]
+)
+def test_array_name_must_be_plain(tmp_path: Path, name: str) -> None:
+    path = _write(tmp_path, [_rank1_step(b=name)])
+    with pytest.raises(ValueError, match=r"step 0.*array 'b'"):
+        load_recipe(path)
+
+
+def test_array_traversal_not_read_by_build_edit(tmp_path: Path) -> None:
+    root = tmp_path / "recipe"
+    root.mkdir()
+    np.save(tmp_path / "outside.npy", np.ones(OUT))
+    np.save(root / "a.npy", np.ones(IN))
+    recipe = {
+        "format": 1,
+        "base_model": "x",
+        "steps": [_rank1_step(b="../outside.npy")],
+    }
+    with pytest.raises(ValueError, match="array 'b'"):
+        build_edit(recipe, lambda m: W0, root)
+
+
+def test_symlink_escape_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "recipe"
+    root.mkdir()
+    np.save(tmp_path / "outside.npy", np.ones(OUT))
+    np.save(root / "a.npy", np.ones(IN))
+    (root / "b.npy").symlink_to(tmp_path / "outside.npy")
+    recipe = {"format": 1, "base_model": "x", "steps": [_rank1_step()]}
+    with pytest.raises(ValueError, match="escapes"):
+        build_edit(recipe, lambda m: W0, root)
+
+
+def test_missing_array_is_value_error(tmp_path: Path) -> None:
+    np.save(tmp_path / "a.npy", np.ones(IN))
+    recipe = load_recipe(_write(tmp_path, [_rank1_step()]))
+    with pytest.raises(ValueError, match=r"step 0 \(rank1\): array 'b' \(b.npy\)"):
+        build_edit(recipe, lambda m: W0, tmp_path)
+
+
+def test_npz_under_npy_name_is_value_error(tmp_path: Path) -> None:
+    with (tmp_path / "b.npy").open("wb") as f:
+        np.savez(f, x=np.ones(OUT))
+    np.save(tmp_path / "a.npy", np.ones(IN))
+    recipe = load_recipe(_write(tmp_path, [_rank1_step()]))
+    with pytest.raises(ValueError, match=r"array 'b'"):
+        build_edit(recipe, lambda m: W0, tmp_path)
+
+
+def test_garbage_array_is_value_error(tmp_path: Path) -> None:
+    (tmp_path / "b.npy").write_bytes(b"not numpy")
+    np.save(tmp_path / "a.npy", np.ones(IN))
+    recipe = load_recipe(_write(tmp_path, [_rank1_step()]))
+    with pytest.raises(ValueError, match=r"array 'b'"):
+        build_edit(recipe, lambda m: W0, tmp_path)
+
+
+def test_missing_recipe_file_is_value_error(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="cannot read recipe"):
+        load_recipe(tmp_path / "nope.json")
+
+
+def test_invalid_json_names_path(tmp_path: Path) -> None:
+    path = tmp_path / "r.json"
+    path.write_text("{oops")
+    with pytest.raises(ValueError, match=r"cannot read recipe.*r\.json"):
+        load_recipe(path)
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity", "1e999"])
+def test_non_finite_param_rejected(tmp_path: Path, bad: str) -> None:
+    step = json.dumps(
+        {
+            "recipe": "masked_rank1",
+            "module": "m",
+            "params": {"alpha": "@@"},
+            "arrays": {"u": "u.npy", "mask": "mask.npy"},
+        }
+    ).replace('"@@"', bad)
+    path = tmp_path / "r.json"
+    path.write_text(f'{{"format": 1, "base_model": "x", "steps": [{step}]}}')
+    with pytest.raises(ValueError, match=r"step 0.*alpha.*finite"):
+        load_recipe(path)
