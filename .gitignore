@@ -20,3 +20,6 @@ site/
 # Coverage data
 .coverage
 .coverage.*
+_site/
+landing/node_modules/
+landing/dist/
