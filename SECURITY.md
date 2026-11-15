@@ -25,19 +25,19 @@ This section says what the library checks when it reads a file or a reply it did
 
 ### What the library guarantees
 
-- Bad content raises `ValueError`, and a missing or unreadable file raises `OSError`. Nothing else escapes. `read_peft` may raise either one; `verify_peft` catches both and returns the message as a string. `read_tensor`, `read_jsonl`, `load_recipe`, `build_edit` and the GGUF readers raise `ValueError` only. The GGUF readers wrap `OSError` too (`_open`).
+- Bad content raises `ValueError`, and a missing or unreadable file raises `OSError`. Nothing else escapes. `read_peft` may raise either one; `verify_peft` catches both and returns the message as a string. `read_tensor`, `load_recipe`, `build_edit` and the GGUF readers raise `ValueError` only; they wrap `OSError` too (`_read_raw`, `_load_array`, `_open`). `read_jsonl` raises `ValueError` for bad content and `OSError` for a missing file.
 - No pickle is loaded. `.npy` files are read with `np.load(..., allow_pickle=False)`, object arrays are refused before numpy sees them (`_check_npy_header`), and weights go through safetensors. Tests: `test_pickled_array_refused`.
 - No code from a file is run. Recipe names pick from a fixed table (`_RECIPES`); a recipe cannot name a function or a module.
 - A recipe's `.npy` files must sit in the recipe directory. Names must be plain file names, and a symlink that points out is refused (`_plain_name`, `_load_array`). Test: `test_symlink_escape_rejected`. A shard name in `model.safetensors.index.json` gets the same check in `_shard`.
 - Size and count caps for parsing:
-  - `MAX_NPY_BYTES` = 256 MiB per `.npy` file, checked before reading (`_read_capped`). Only regular files are opened, so a FIFO cannot block.
+  - `MAX_NPY_BYTES` = 256 MiB per `.npy` file, checked before reading (`_read_capped`). Only regular files are read: the file is opened non-blocking, then checked with `fstat`, so a FIFO cannot block.
   - `MAX_N_IN` = 2^20 for `column_shift`.
   - `MAX_HEADER` = 100,000,000 bytes for a safetensors header in `read_tensor`. Offsets and byte counts are checked against the shape and the file size.
-  - `_MAX_ARRAY_ITEMS` = 2^21 total GGUF kv array items, and `_MAX_DEPTH` = 8 levels of nested arrays. The GGUF header counts and every length must fit in the file (`_check_layout`). Test: `test_fifo_is_refused_without_blocking`.
+  - `_MAX_ARRAY_ITEMS` = 2^21 total GGUF kv array items, and `_MAX_DEPTH` = 8 levels of nested arrays. The GGUF header counts and every length must fit in the file (`_check_layout`). Test: `test_array_cap_allows_real_size_tokenizer`. GGUF paths are checked with `stat` before opening, and only regular files are opened. Test: `test_fifo_is_refused_without_blocking`.
   - Deeply nested JSON is turned into `ValueError` (`_load_object`, `_parse`).
 - The eval API key is never put in an error, a log line or a run header. It must match a safe character set (`_check_key`), error text goes through `_scrub`, and redirects are refused so `Authorization` is not forwarded (`_NoRedirect`). Tests: `test_api_key_sent_but_never_leaks`, `test_redirect_refused_and_key_not_forwarded`, `test_bad_api_key_rejected_without_echo`.
 
-The `ValueError` rule covers file parsing. `generate_records_http` also raises `RuntimeError` when the server is unreachable or returns an HTTP error. A reply with the wrong shape raises `ValueError`.
+The `ValueError` rule covers file parsing. `generate_records_http` also raises `RuntimeError` when the server is unreachable or returns an HTTP error. A non-JSON body or a reply without `choices` also raises `RuntimeError`. A reply missing `message.content` or `usage.completion_tokens` raises `ValueError`.
 
 ### What is not guaranteed
 
