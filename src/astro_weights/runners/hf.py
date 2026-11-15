@@ -109,3 +109,28 @@ def remove(peft_model: PeftModel) -> nn.Module:
     """Drop the LoRA layers (no merge); base weights were never modified."""
     base: nn.Module = peft_model.unload()
     return base
+
+
+def swap(peft_model: PeftModel, edit: Edit, adapter_name: str = "astro") -> PeftModel:
+    """Replace the applied edit with another: remove, then apply on the base."""
+    return apply(remove(peft_model), edit, adapter_name)
+
+
+def merged_weights(model: nn.Module, edit: Edit) -> dict[str, torch.Tensor]:
+    """Edited weights `W0 + B @ A` per module, keyed by the model's module name.
+
+    `model` must be the plain base model. The sum is done in float32 and cast
+    back to the weight's dtype; results live on CPU. The model is not modified.
+    """
+    if isinstance(model, PeftModel):
+        msg = "merged_weights needs the plain base model, not a PeftModel"
+        raise ValueError(msg)  # noqa: TRY004 (spec: ValueError)
+    names = resolve_modules(model, edit)
+    modules = dict(model.named_modules())
+    merged: dict[str, torch.Tensor] = {}
+    for d in edit.deltas:
+        name = names[d.module]
+        w0 = modules[name].weight.detach().cpu()
+        dense = torch.from_numpy(d.B) @ torch.from_numpy(d.A)
+        merged[name] = (w0.float() + dense).to(w0.dtype)
+    return merged
