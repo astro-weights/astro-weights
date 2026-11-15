@@ -69,3 +69,25 @@ def test_padded_edit_peft_roundtrip(tmp_path: Path) -> None:
     assert load_peft(tmp_path).rank == 3
     assert np.array_equal(got[a.module].dense(), a.dense())
     assert np.array_equal(got[b.module].dense(), b.dense())
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_non_finite_factor_rejected(bad: float) -> None:
+    b = np.ones((4, 1))
+    a = np.ones((1, 3))
+    b[0, 0] = bad
+    with pytest.raises(ValueError, match=r"mod\.x.*finite"):
+        LowRankDelta("mod.x", b, a)
+    with pytest.raises(ValueError, match=r"mod\.x.*finite"):
+        LowRankDelta("mod.x", np.ones((4, 1)), b.reshape(1, 4))
+
+
+def test_float32_overflow_rejected_without_warning() -> None:
+    import warnings
+
+    b = np.full((4, 1), 1e300)
+    a = np.ones((1, 3))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match=r"mod\.x.*finite"):
+            LowRankDelta("mod.x", b, a)

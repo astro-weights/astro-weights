@@ -17,8 +17,11 @@ class LowRankDelta:
     def __post_init__(self) -> None:
         if not self.module:
             raise ValueError("module name must be non-empty")
-        b = np.ascontiguousarray(self.B, dtype=np.float32)
-        a = np.ascontiguousarray(self.A, dtype=np.float32)
+        with np.errstate(over="ignore", invalid="ignore"):
+            b = np.ascontiguousarray(self.B, dtype=np.float32)
+            a = np.ascontiguousarray(self.A, dtype=np.float32)
+        if not (np.isfinite(b).all() and np.isfinite(a).all()):
+            raise ValueError(f"{self.module}: B and A must be finite as float32")
         if b.ndim != 2 or a.ndim != 2:
             raise ValueError(
                 f"{self.module}: B and A must be 2-D, got {b.ndim}-D and {a.ndim}-D"
