@@ -13,8 +13,12 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 FILES = [
     "README.md",
-    *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "docs/tutorials").glob("*.md")),
-    *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "docs/how-to").glob("*.md")),
+    *sorted(
+        p.relative_to(ROOT).as_posix() for p in (ROOT / "docs/tutorials").glob("*.md")
+    ),
+    *sorted(
+        p.relative_to(ROOT).as_posix() for p in (ROOT / "docs/how-to").glob("*.md")
+    ),
 ]
 HF = ("torch", "transformers", "peft")
 # Optional modules a file needs; the whole file is skipped when one is missing.
