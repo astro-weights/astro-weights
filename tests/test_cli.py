@@ -419,3 +419,164 @@ def test_export_blank_arch(
     argv = ["export", str(adapter), "--gguf", str(tmp_path / "a.gguf"), "--arch", " "]
     assert main(argv) == 2
     assert "--arch" in capsys.readouterr().err
+
+
+# header check, floor, --json
+
+
+def _arm_files(tmp_path: Path) -> tuple[Path, Path]:
+    hashes = [f"h{k}" for k in range(6)]
+    _records(tmp_path / "b.jsonl", "base", hashes, [0, 1, 0, 1, 0, 1])
+    _records(tmp_path / "e.jsonl", "edit", hashes, [1, 1, 0, 1, 1, 1])
+    return tmp_path / "b.jsonl", tmp_path / "e.jsonl"
+
+
+def test_eval_header_mismatch_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from astro_weights.eval import write_header
+
+    b, e = _arm_files(tmp_path)
+    write_header(tmp_path / "b.header.json", {"seed": 0, "device": "cpu"})
+    write_header(tmp_path / "e.header.json", {"seed": 1, "device": "cuda"})
+    assert main(["eval", str(b), str(e), "--boot", "20"]) == 1
+    cap = capsys.readouterr()
+    assert "seed" in cap.err
+    assert "device" not in cap.err
+    assert cap.out == ""
+    assert main(["eval", str(b), str(e), "--boot", "20", "--ignore-header"]) == 0
+
+
+def test_eval_header_match_and_one_missing(tmp_path: Path) -> None:
+    from astro_weights.eval import write_header
+
+    b, e = _arm_files(tmp_path)
+    write_header(tmp_path / "b.header.json", {"seed": 0})
+    assert main(["eval", str(b), str(e), "--boot", "20"]) == 0
+    write_header(tmp_path / "e.header.json", {"seed": 0})
+    assert main(["eval", str(b), str(e), "--boot", "20"]) == 0
+
+
+def test_eval_bad_header_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    b, e = _arm_files(tmp_path)
+    (tmp_path / "b.header.json").write_text("{nope")
+    (tmp_path / "e.header.json").write_text("{}")
+    assert main(["eval", str(b), str(e)]) == 2
+    assert "invalid JSON" in capsys.readouterr().err
+
+
+def test_eval_floor(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    b, e = _arm_files(tmp_path)
+    _records(tmp_path / "f1.jsonl", "base", [f"h{k}" for k in range(6)], [0, 1] * 3)
+    _records(tmp_path / "f2.jsonl", "base", [f"h{k}" for k in range(6)], [0, 1] * 3)
+    argv = ["eval", str(b), str(e), "--boot", "20", "--floor"]
+    assert main([*argv, str(tmp_path / "f1.jsonl"), str(tmp_path / "f2.jsonl")]) == 0
+    assert "noise floor (score)" in capsys.readouterr().out
+    assert main([*argv, str(tmp_path / "f1.jsonl"), str(tmp_path / "nope")]) == 2
+    assert "error:" in capsys.readouterr().err
+    assert main([*argv, str(tmp_path / "f1.jsonl"), str(b)]) == 0
+    _records(tmp_path / "f3.jsonl", "base", ["x"], [0])
+    assert main([*argv, str(tmp_path / "f1.jsonl"), str(tmp_path / "f3.jsonl")]) == 2
+
+
+def test_eval_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+
+    b, e = _arm_files(tmp_path)
+    _records(tmp_path / "f1.jsonl", "base", [f"h{k}" for k in range(6)], [0, 1] * 3)
+    _records(tmp_path / "f2.jsonl", "base", [f"h{k}" for k in range(6)], [0, 1] * 3)
+    assert main(["eval", str(b), str(e), "--boot", "20", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["n_items"] == 6
+    assert out["ci95"] == pytest.approx([out["ci95"][0], out["ci95"][1]])
+    assert isinstance(out["ci95"], list)
+    assert out["floor"] is None
+    argv = ["eval", str(b), str(e), "--boot", "20", "--json", "--floor"]
+    assert main([*argv, str(tmp_path / "f1.jsonl"), str(tmp_path / "f2.jsonl")]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert set(out["floor"]["exceeds"]) == {"score", "tokens"}
+    assert out["floor"]["result"]["n_items"] == 6
+
+
+def test_eval_json_nonfinite_is_null(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    _records(tmp_path / "b.jsonl", "base", ["a"], [0])
+    _records(tmp_path / "e.jsonl", "edit", ["a"], [1])
+    assert (
+        main(["eval", str(tmp_path / "b.jsonl"), str(tmp_path / "e.jsonl"), "--json"])
+        == 0
+    )
+    out = json.loads(capsys.readouterr().out)  # strict parse: no NaN literals
+    assert out["se"] is None
+    assert out["score_mde"] is None
+
+
+def test_eval_json_error_keeps_stdout_empty(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["eval", str(tmp_path / "no"), str(tmp_path / "no2"), "--json"]) == 2
+    cap = capsys.readouterr()
+    assert cap.out == ""
+    assert "error:" in cap.err
+
+
+def test_inspect_json(adapter: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+
+    assert main(["inspect", str(adapter), "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["base_model"] == "org/tiny"
+    assert out["rank"] == 1
+    assert out["problems"] == []
+    (m,) = out["modules"]
+    assert m["module"] == MODULE
+    assert m["shape"] == [16, 48]
+    assert m["norm_BA"] > 0
+
+
+def test_inspect_json_problems(
+    adapter: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    path = adapter / "adapter_model.safetensors"
+    tensors = load_file(str(path))
+    key = next(k for k in tensors if k.endswith("lora_A.weight"))
+    tensors[key] = tensors[key] + 1.0
+    save_file(tensors, str(path))
+    assert main(["inspect", str(adapter), "--json"]) == 1
+    cap = capsys.readouterr()
+    assert "hash mismatch" in json.loads(cap.out)["problems"][0]
+    assert "hash mismatch" in cap.err
+
+
+def test_inspect_json_error_stdout_empty(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["inspect", str(tmp_path / "nope"), "--json"]) == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_build_export_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+
+    args = _build_args(tmp_path, "--card", "apache-2.0", "--json")
+    assert main(args) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["written"][0].endswith("out")
+    assert out["written"][1].endswith("README.md")
+    adapter_dir = Path(out["written"][0])
+    assert main(["export", str(adapter_dir), "--card", "mit", "--force", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [Path(p).name for p in out["written"]] == ["README.md"]
+
+
+def test_epilog_documents_exit_codes(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert "exit codes" in capsys.readouterr().out

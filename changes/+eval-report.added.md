@@ -1,0 +1,1 @@
+Eval reports now show the minimum detectable effect and a noise-floor check (`astro-weights eval --floor A.jsonl B.jsonl`), arms are checked against their `X.header.json` run headers (`--ignore-header` to skip), and every subcommand takes `--json`.

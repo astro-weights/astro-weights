@@ -13,6 +13,8 @@ from astro_weights.eval.records import Record
 _Key = tuple[str, int]
 _SMALL_N = 100
 _BOOT_CHUNK = 500  # bootstrap rows drawn at a time; bounds memory at chunk * n ints
+_Z = 1.96  # two-sided 5%
+_Z_POWER = 0.84  # 80% power
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,11 @@ class PairedResult:
     cap_hit_base: float
     cap_hit_edit: float
     small_n: bool
+    score_mde: (
+        float  # minimum detectable score difference at this n (5% test, 80% power)
+    )
+    tokens_se: float
+    tokens_mde: float
 
 
 def _index(records: Sequence[Record], arm: str) -> dict[_Key, Record]:
@@ -156,6 +163,7 @@ def compare(
     lo, hi = np.percentile(boot, [2.5, 97.5])
     tokens_base = float(tb.mean())
     tokens_diff = float(dt.mean())
+    tokens_se = _paired_se(dt)
 
     return PairedResult(
         n_items=n,
@@ -176,14 +184,58 @@ def compare(
         cap_hit_base=sum(b.hit_cap for b, _ in pairs) / len(pairs),
         cap_hit_edit=sum(e.hit_cap for _, e in pairs) / len(pairs),
         small_n=n < _SMALL_N,
+        score_mde=(_Z + _Z_POWER) * se,
+        tokens_se=tokens_se,
+        tokens_mde=(_Z + _Z_POWER) * tokens_se,
     )
 
 
-def format_report(r: PairedResult) -> str:
-    """A few plain lines summarising a `PairedResult`."""
+def _excludes_zero(ci: tuple[float, float]) -> bool:
+    return ci[0] > 0 or ci[1] < 0
+
+
+def _beyond(diff: float, floor_diff: float, floor_se: float) -> bool:
+    return abs(diff) > abs(floor_diff) + _Z * floor_se  # False if any is nan
+
+
+def exceeds_floor(result: PairedResult, floor: PairedResult) -> dict[str, bool]:
+    """Whether `result` is significant and larger than the base-vs-base noise `floor`.
+
+    `floor` is `compare(base_run_1, base_run_2)`: the same arm run twice under the same
+    settings. True for a metric when its CI excludes 0 and |diff| > |floor diff| + 1.96
+    floor SE. NaN anywhere gives False.
+    """
+    return {
+        "score": _excludes_zero(result.ci95)
+        and _beyond(result.diff, floor.diff, floor.se),
+        "tokens": _excludes_zero(result.tokens_ci95)
+        and _beyond(result.tokens_diff, floor.tokens_diff, floor.tokens_se),
+    }
+
+
+def _mde_note(ci: tuple[float, float], mde: float, fmt: str) -> str:
+    if ci[0] <= 0 <= ci[1] and math.isfinite(mde):
+        return f"; not significant; smallest detectable difference at this n is {mde:{fmt}}"
+    return ""
+
+
+def _floor_line(
+    name: str, diff: float, floor_diff: float, floor_se: float, exceeds: bool, fmt: str
+) -> str:
+    bar = abs(floor_diff) + _Z * floor_se
+    verdict = "exceeds" if exceeds else "does not exceed"
+    return (
+        f"noise floor ({name}): |diff|={abs(diff):{fmt}} {verdict} "
+        f"|floor diff| + 1.96 SE = {bar:{fmt}}"
+    )
+
+
+def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
+    """A few plain lines summarising a `PairedResult`; `floor` adds noise-floor verdicts."""
     lines = [
         f"n={r.n_items} items  base={r.mean_base:.4f}  edit={r.mean_edit:.4f}",
-        f"score diff={r.diff:+.4f}  SE={r.se:.4f}  95% CI [{r.ci95[0]:+.4f}, {r.ci95[1]:+.4f}]",
+        f"score diff={r.diff:+.4f}  SE={r.se:.4f}  95% CI [{r.ci95[0]:+.4f}, {r.ci95[1]:+.4f}]"
+        + _mde_note(r.ci95, r.score_mde, ".4f"),
     ]
     if r.mcnemar_p is not None:
         lines.append(
@@ -195,9 +247,25 @@ def format_report(r: PairedResult) -> str:
             f"tokens: base={r.tokens_base:.1f}  edit={r.tokens_edit:.1f}  "
             f"diff={r.tokens_diff:+.1f} ({r.tokens_diff_pct:+.1f}%)  "
             f"bootstrap 95% CI [{r.tokens_ci95[0]:+.1f}, {r.tokens_ci95[1]:+.1f}]"
+            + _mde_note(r.tokens_ci95, r.tokens_mde, ".1f")
         ),
         f"cap-hit rate: base={r.cap_hit_base:.3f}  edit={r.cap_hit_edit:.3f}",
     ]
+    if floor is not None:
+        v = exceeds_floor(r, floor)
+        lines.append(
+            _floor_line("score", r.diff, floor.diff, floor.se, v["score"], ".4f")
+        )
+        lines.append(
+            _floor_line(
+                "tokens",
+                r.tokens_diff,
+                floor.tokens_diff,
+                floor.tokens_se,
+                v["tokens"],
+                ".1f",
+            )
+        )
     if r.small_n:
         lines.append(
             f"WARNING: only {r.n_items} items (<{_SMALL_N}); intervals are unreliable"
