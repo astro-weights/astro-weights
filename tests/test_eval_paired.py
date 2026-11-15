@@ -259,3 +259,67 @@ def test_format_report_no_mcnemar_no_warning() -> None:
     text = format_report(r)
     assert "McNemar" not in text
     assert "WARNING" not in text
+
+
+def test_constant_fractional_arm_correlation_nan() -> None:
+    # 3 seeds, 1 of 3 right on every item: mean 1/3 is not exactly representable
+    base = [
+        rec(f"i{k}", "base", float(s == 0), seed=s) for k in range(10) for s in range(3)
+    ]
+    edit = [
+        rec(f"i{k}", "edit", float(k % 2), seed=s) for k in range(10) for s in range(3)
+    ]
+    assert math.isnan(compare(base, edit, n_boot=10).correlation)
+    base2, edit2 = arms([0.3] * 10, [float(k) for k in range(10)])
+    assert math.isnan(compare(base2, edit2, n_boot=10).correlation)
+
+
+@pytest.mark.parametrize("n_boot", [0, -5])
+def test_n_boot_must_be_positive(n_boot: int) -> None:
+    base, edit = arms([1, 0], [0, 1])
+    with pytest.raises(ValueError, match="n_boot must be >= 1"):
+        compare(base, edit, n_boot=n_boot)
+
+
+def test_bootstrap_chunked_matches_expected_and_is_seeded() -> None:
+    n_boot = 1234  # not a multiple of the chunk size
+    base = [rec(f"i{k}", "base", 1, tokens=100) for k in range(30)]
+    edit = [rec(f"i{k}", "edit", 1, tokens=100 + k) for k in range(30)]
+    a = compare(base, edit, n_boot=n_boot, seed=3)
+    assert a == compare(base, edit, n_boot=n_boot, seed=3)
+    assert a.tokens_ci95[0] < a.tokens_diff < a.tokens_ci95[1]
+    assert a.tokens_ci95 != compare(base, edit, n_boot=n_boot, seed=4).tokens_ci95
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_compare_rejects_non_finite_scores(bad: float) -> None:
+    base, edit = arms([1, 0, 1], [1, 1, 0])
+    edit[1] = rec("i1", "edit", bad)
+    with pytest.raises(ValueError, match="finite"):
+        compare(base, edit, n_boot=10)
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_read_jsonl_rejects_non_finite_score(tmp_path: Path, token: str) -> None:
+    line = _good().replace('"score": 1,', f'"score": {token},')
+    assert token in line
+    with pytest.raises(ValueError, match=r"line 2: score must be finite"):
+        read_jsonl(_write(tmp_path, _good(), line))
+
+
+def test_uneven_seed_counts_per_item() -> None:
+    base = [
+        rec("a", "base", 1, seed=0),
+        rec("a", "base", 0, seed=1),
+        rec("b", "base", 0),
+    ]
+    edit = [
+        rec("a", "edit", 0, seed=0),
+        rec("a", "edit", 0, seed=1),
+        rec("b", "edit", 1),
+    ]
+    r = compare(base, edit, n_boot=10)
+    assert r.n_items == 2
+    assert r.mean_base == pytest.approx(0.25)  # a: 0.5, b: 0
+    assert r.mean_edit == pytest.approx(0.5)  # a: 0, b: 1
+    assert r.diff == pytest.approx(0.25)  # d = [-0.5, 1]

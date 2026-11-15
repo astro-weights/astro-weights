@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -69,6 +70,8 @@ def _parse(line: str, num: int) -> Record:
     if not ok:
         raise ValueError(f"line {num}: wrong value type")
     obj["score"] = float(obj["score"])
+    if not math.isfinite(obj["score"]):
+        raise ValueError(f"line {num}: score must be finite")
     return Record(**obj)
 
 

@@ -12,6 +12,7 @@ from astro_weights.eval.records import Record
 
 _Key = tuple[str, int]
 _SMALL_N = 100
+_BOOT_CHUNK = 500  # bootstrap rows drawn at a time; bounds memory at chunk * n ints
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,7 @@ def _paired_se(d: npt.NDArray[np.float64]) -> float:
 
 
 def _pearson(x: npt.NDArray[np.float64], y: npt.NDArray[np.float64]) -> float:
-    if x.size < 2 or x.std() == 0 or y.std() == 0:
+    if x.size < 2 or np.ptp(x) == 0 or np.ptp(y) == 0:
         return math.nan
     return float(np.corrcoef(x, y)[0, 1])
 
@@ -109,10 +110,16 @@ def compare(
     base: Sequence[Record], edit: Sequence[Record], n_boot: int = 10000, seed: int = 0
 ) -> PairedResult:
     """Paired comparison of two arms; scores and tokens are averaged over seeds per item first."""
+    if n_boot < 1:
+        raise ValueError("n_boot must be >= 1")
     pairs = pair(base, edit)
     if not pairs:
         raise ValueError("no records to compare")
     sb, se_, tb, te = _per_item(pairs)
+    if not (np.isfinite(sb).all() and np.isfinite(se_).all()):
+        raise ValueError(
+            "scores must be finite (found NaN or inf); grade all records first"
+        )
     n = sb.size
     d = se_ - sb
     diff = float(d.mean())
@@ -124,7 +131,13 @@ def compare(
 
     dt = te - tb
     rng = np.random.default_rng(seed)
-    boot = dt[rng.integers(0, n, size=(n_boot, n))].mean(axis=1)
+    # Seed fixes the result for a given _BOOT_CHUNK (draws are made chunk by chunk).
+    boot = np.concatenate(
+        [
+            dt[rng.integers(0, n, size=(min(_BOOT_CHUNK, n_boot - i), n))].mean(axis=1)
+            for i in range(0, n_boot, _BOOT_CHUNK)
+        ]
+    )
     lo, hi = np.percentile(boot, [2.5, 97.5])
     tokens_base = float(tb.mean())
     tokens_diff = float(dt.mean())
