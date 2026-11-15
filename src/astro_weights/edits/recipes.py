@@ -1,8 +1,20 @@
 """Edit recipes that produce rank-1 LowRankDeltas (numpy only)."""
 
+import math
+
 import numpy as np
 
 from astro_weights.edits.core import LowRankDelta
+
+
+def _check_finite(module: str, name: str, x: float) -> None:
+    if not math.isfinite(x):
+        raise ValueError(f"{module}: {name} must be finite, got {x}")
+
+
+def _check_index(module: str, name: str, x: object) -> None:
+    if isinstance(x, bool) or not isinstance(x, (int, np.integer)):
+        raise ValueError(f"{module}: {name} must be an int, got {x!r}")  # noqa: TRY004 (spec: ValueError)
 
 
 def rank1(module: str, b: np.ndarray, a: np.ndarray) -> LowRankDelta:
@@ -63,7 +75,10 @@ def project_out(
     if W0.ndim != 2 or v.shape != (W0.shape[0],):
         raise ValueError(f"{module}: shape mismatch, W0 {W0.shape}, v {v.shape}")
     v64 = v.astype(np.float64)
+    _check_finite(module, "strength", strength)
     norm = np.linalg.norm(v64)
+    if not np.isfinite(norm):
+        raise ValueError(f"{module}: v must be finite")
     if norm == 0.0:
         raise ValueError(f"{module}: v must be non-zero")
     vhat = v64 / norm
@@ -75,6 +90,8 @@ def scale_column(module: str, W0: np.ndarray, j: int, s: float) -> LowRankDelta:
     """Multiply input column j by s: dW = (s - 1) * outer(W0[:, j], e_j)."""
     if W0.ndim != 2:
         raise ValueError(f"{module}: W0 must be 2-D, got {W0.ndim}-D")
+    _check_index(module, "column", j)
+    _check_finite(module, "s", s)
     if not 0 <= j < W0.shape[1]:
         raise ValueError(f"{module}: column {j} out of range for n_in={W0.shape[1]}")
     e = np.zeros(W0.shape[1], dtype=np.float64)
@@ -89,6 +106,9 @@ def scale_head(
     """Multiply the input columns of one attention head's block by s."""
     if W0.ndim != 2:
         raise ValueError(f"{module}: W0 must be 2-D, got {W0.ndim}-D")
+    _check_index(module, "head", head)
+    _check_index(module, "n_heads", n_heads)
+    _check_finite(module, "s", s)
     n_in = W0.shape[1]
     if n_heads < 1 or n_in % n_heads != 0:
         raise ValueError(f"{module}: n_in={n_in} not divisible by n_heads={n_heads}")

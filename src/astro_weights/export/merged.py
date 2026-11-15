@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from safetensors import SafetensorError
@@ -52,25 +53,56 @@ def save_merged_tensors(
     )
 
 
-def load_merged_tensors(path: Path | str) -> dict[str, np.ndarray]:
-    """Load merged weights keyed by module name, checking every sha256.
+def _read_manifest(directory: Path) -> dict[str, dict[str, Any]]:
+    """Parse the manifest's `tensors` table; any malformed shape is a ValueError."""
+    manifest = json.loads((directory / MANIFEST).read_text())
+    tensors = manifest.get("tensors") if isinstance(manifest, dict) else None
+    if not isinstance(tensors, dict):
+        raise ValueError("manifest must be an object with a `tensors` object")  # noqa: TRY004 (spec: ValueError)
+    for key, entry in tensors.items():
+        ok = (
+            isinstance(entry, dict)
+            and isinstance(entry.get("sha256"), str)
+            and isinstance(entry.get("dtype"), str)
+            and isinstance(entry.get("shape"), list)
+            and all(
+                isinstance(n, int) and not isinstance(n, bool) for n in entry["shape"]
+            )
+        )
+        if not ok:
+            raise ValueError(
+                f"manifest entry {key!r} needs str sha256/dtype, int list shape"
+            )
+    return tensors
 
-    Raises `ValueError` on a missing file, unreadable weights, or a mismatch.
+
+def load_merged_tensors(path: Path | str) -> dict[str, np.ndarray]:
+    """Load merged weights keyed by module name, checking sha256, shape and dtype.
+
+    The manifest sits next to the tensors, so a matching hash only proves the
+    two files agree with each other. It is not a signature and does not show
+    the weights are authentic.
+
+    Raises `ValueError` on a missing file, unreadable weights, a malformed
+    manifest, or any mismatch.
     """
     directory = Path(path)
     try:
-        manifest = json.loads((directory / MANIFEST).read_text())
+        expected = _read_manifest(directory)
         arrays = load_file(str(directory / TENSORS))
-    except (OSError, json.JSONDecodeError, SafetensorError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, SafetensorError) as e:
         raise ValueError(f"cannot read merged tensors in {directory}: {e}") from e
-    expected: dict[str, dict[str, object]] = manifest["tensors"]
     bad = sorted(
         k
         for k in expected.keys() | arrays.keys()
         if k not in arrays
         or k not in expected
         or _sha256(np.ascontiguousarray(arrays[k])) != expected[k]["sha256"]
+        or list(arrays[k].shape) != expected[k]["shape"]
+        or str(arrays[k].dtype) != expected[k]["dtype"]
     )
     if bad:
-        raise ValueError(f"hash mismatch, missing or unexpected tensors: {bad}")
+        raise ValueError(
+            f"hash mismatch (or wrong shape/dtype), missing or unexpected tensors: {bad}"
+        )
     return {k.removesuffix(SUFFIX): v for k, v in arrays.items()}

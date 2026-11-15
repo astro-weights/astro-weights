@@ -33,6 +33,31 @@ def resolve_modules(model: nn.Module, edit: Edit) -> dict[str, str]:
     """
     # named_modules() yields a module registered under two names only once
     live = {n: m for n, m in model.named_modules() if isinstance(m, nn.Linear)}
+    return _resolve(live, edit)
+
+
+def _base_linears(peft_model: PeftModel) -> dict[str, nn.Linear]:
+    """The linear layers of the base model under `peft_model`, by base-model name.
+
+    LoRA wrappers count as the linear they wrap; the LoRA factors do not count.
+    """
+    prefix = "base_model.model."
+    wrappers = {
+        n: m.base_layer
+        for n, m in peft_model.named_modules()
+        if isinstance(getattr(m, "base_layer", None), nn.Linear)
+    }
+    live: dict[str, nn.Linear] = {}
+    for n, m in peft_model.named_modules():
+        if any(n.startswith(w + ".") for w in wrappers):
+            continue
+        linear = wrappers.get(n, m if isinstance(m, nn.Linear) else None)
+        if linear is not None:
+            live[n.removeprefix(prefix)] = linear
+    return live
+
+
+def _resolve(live: dict[str, nn.Linear], edit: Edit) -> dict[str, str]:
     resolved: dict[str, str] = {}
     for d in edit.deltas:
         if d.module in live:
@@ -112,15 +137,21 @@ def remove(peft_model: PeftModel) -> nn.Module:
 
 
 def swap(peft_model: PeftModel, edit: Edit, adapter_name: str = "astro") -> PeftModel:
-    """Replace the applied edit with another: remove, then apply on the base."""
+    """Replace the applied edit with another: remove, then apply on the base.
+
+    The new edit's modules are resolved first, so a bad edit raises before
+    anything is removed and `peft_model` stays usable.
+    """
+    _resolve(_base_linears(peft_model), edit)
     return apply(remove(peft_model), edit, adapter_name)
 
 
 def merged_weights(model: nn.Module, edit: Edit) -> dict[str, torch.Tensor]:
     """Edited weights `W0 + B @ A` per module, keyed by the model's module name.
 
-    `model` must be the plain base model. The sum is done in float32 and cast
-    back to the weight's dtype; results live on CPU. The model is not modified.
+    `model` must be the plain base model. The sum is done in at least float32
+    (float64 weights stay float64) and cast back to the weight's dtype; results
+    live on CPU. The model is not modified.
     """
     if isinstance(model, PeftModel):
         msg = "merged_weights needs the plain base model, not a PeftModel"
@@ -132,5 +163,6 @@ def merged_weights(model: nn.Module, edit: Edit) -> dict[str, torch.Tensor]:
         name = names[d.module]
         w0 = modules[name].weight.detach().cpu()
         dense = torch.from_numpy(d.B) @ torch.from_numpy(d.A)
-        merged[name] = (w0.float() + dense).to(w0.dtype)
+        acc = torch.promote_types(w0.dtype, torch.float32)
+        merged[name] = (w0.to(acc) + dense.to(acc)).to(w0.dtype)
     return merged
