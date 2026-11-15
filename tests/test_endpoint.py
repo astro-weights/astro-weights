@@ -435,7 +435,9 @@ def test_key_cut_at_truncation_boundary_not_leaked() -> None:
     assert KEY[:4] not in str(exc.value)
 
 
-@pytest.mark.parametrize("key", ["k\n", " k", "k\x00", "a b", "k\u00e9"])
+@pytest.mark.parametrize(
+    "key", ["k\n", " k", "k\x00", "a b", "k\u00e9", 'k"x', "k\\x", "=k"]
+)
 def test_bad_api_key_rejected_without_echo(key: str) -> None:
     with serve(lambda _b: _ok()) as (url, state):
         with pytest.raises(ValueError, match="api_key") as exc:

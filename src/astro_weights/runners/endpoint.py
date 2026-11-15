@@ -6,6 +6,7 @@ Serve the base and the edit under two model names and call this once per name.
 
 import http.client
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -36,8 +37,10 @@ def _root(base_url: str) -> str:
 
 def _check_key(api_key: str | None) -> None:
     """Reject keys that cannot be a header value; never show the key."""
-    if api_key and not all("!" <= c <= "~" for c in api_key):
-        raise ValueError("api_key must be printable ASCII without whitespace")
+    if api_key and not re.fullmatch(r"[A-Za-z0-9\-._~+/]+=*", api_key):
+        raise ValueError(
+            "api_key must use only A-Z a-z 0-9 - . _ ~ + / (trailing = ok)"
+        )
 
 
 def _scrub(text: str, api_key: str | None) -> str:
