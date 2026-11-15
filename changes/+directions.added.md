@@ -1,1 +1,0 @@
-Add `astro_weights.directions`: difference-of-means directions (`direction_from_means`, `directions_from_pairs`, `neuron_scores`, `stability`) and `direction_gate`, a split-half and shuffled-sign check that a direction is real.
