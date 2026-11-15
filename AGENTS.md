@@ -8,10 +8,10 @@ astro-weights: agent-driven weight-space edits for open LLMs, exported as standa
 
 - `src/astro_weights/edits/`: `Edit` (`Edit.from_deltas` pads mixed ranks), `LowRankDelta`, `from_dense` (`dense.py`: dense `dW` to `LowRankDelta` by truncated SVD, with residual) and the numpy recipes (`rank1`, `masked_rank1`, `column_shift`, `orthogonal_random`, `top_k_mask`, `project_out`, `scale_column`, `scale_head`, `zero_head`); recipe files (`recipe_file.py`: `load_recipe`, `build_edit`, `save_recipe`) rebuild an `Edit` from JSON plus `.npy` arrays.
 - `src/astro_weights/export/`: PEFT LoRA adapter I/O (`save_peft`, `load_peft`, `read_peft`, `verify_peft`) hash-checked merged weights (`save_merged_tensors`, `load_merged_tensors`), model card (`card.py`: `model_card`, `write_card`), base-model weight reader (`base.py`: `read_base_weight`, `read_tensor`, `tensor_sha256`; numpy only) and GGUF (`gguf.py`: `save_lora_gguf`, `read_lora_gguf`, `splice_gguf`, `verify_splice`; `gguf` extra, not re-exported from `export`).
-- `src/astro_weights/runners/`: apply edits to live models (`hf.py`: `apply`, `remove`, `swap`, `merged_weights`, `resolve_modules`, `rounding_error`) and generate one eval arm (`generate.py`: `generate_records`, `run_header`).
+- `src/astro_weights/runners/`: apply edits to live models (`hf.py`: `apply`, `remove`, `swap`, `merged_weights`, `resolve_modules`, `rounding_error`) generate one eval arm (`generate.py`: `generate_records` with `out`, `resume`, `batch_size`; `run_header`) and run one arm against an OpenAI-compatible server (`endpoint.py`: `generate_records_http`, `run_header_http`; standard library only, no extra).
 - `src/astro_weights/directions/`: difference-of-means directions and `direction_gate`, numpy only.
-- `src/astro_weights/eval/`: per-item `Record` JSONL, paired comparison of two arms (`compare`, `format_report`) and answer graders (`grade_exact`, `grade_choice`, `grade_math`). Never runs a model. `grade_math` imports math-verify lazily, from the `eval` extra.
-- `src/astro_weights/cli.py`: the `astro-weights` command (`build`, `eval`, `export`, `inspect`).
+- `src/astro_weights/eval/`: per-item `Record` JSONL, run headers (`header.py`: `header_path`, `write_header`, `read_header`, `check_headers`), paired comparison of two arms (`compare`, `format_report`, `exceeds_floor`; minimum detectable effect in `PairedResult`) and answer graders (`grade_exact`, `grade_choice`, `grade_math`). Never runs a model. `grade_math` imports math-verify lazily, from the `eval` extra.
+- `src/astro_weights/cli.py`: the `astro-weights` command (`build`, `eval`, `export`, `inspect`; each takes `--json`).
 - `docs/`: user docs site (Zensical, `zensical.toml`), Diátaxis folders `tutorials/`, `how-to/`, `reference/` (built from docstrings by mkdocstrings), `explanation/`. Published to GitHub Pages by `docs.yml` on push to `main`.
 - Layer rule, enforced by import-linter: `cli > runners > export > edits`. A lower layer never imports a higher one. `directions` and `eval` are outside the contract and import no other `astro_weights` package.
 - Core dependencies are numpy and safetensors only. torch, transformers and peft are imported only inside `runners/`, and only through the `hf` extra.
@@ -37,7 +37,8 @@ Run all of them before opening a PR; CI runs the same set.
 - mypy strict. Small, typed functions.
 - No new dependency without a stated reason in the PR. Core stays numpy + safetensors.
 - Every behavior change comes with a test.
-- GPU-only tests carry `@pytest.mark.gpu`. CI skips them; maintainers run them by hand before a release.
+- GPU-only tests carry `@pytest.mark.gpu`. CI skips them; maintainers run them by hand before a release (`tests/test_gpu.py` docstring: `ASTRO_GPU_MODEL`, `ASTRO_GPU_ADAPTER`).
+- Tests on real 9B files carry `@pytest.mark.realdata` and skip unless `$ASTRO_REALDATA` names a directory (`tests/test_exit_0_1.py`: 0.1.0 exit test).
 - Public API change (name or signature in `tests/golden/public_api.json`) fails `tests/test_public_api.py` on purpose. If intended: `ASTRO_UPDATE_API=1 uv run --extra hf --extra eval --extra gguf pytest tests/test_public_api.py`, then add a changelog fragment.
 - `tests/test_docs_snippets.py` runs every `python` code block in `README.md`, `docs/tutorials/` and `docs/how-to/`, in order, one namespace per file, in a temp dir. Each page must create every file it reads. Page needing an extra goes in `NEEDS`; block that cannot run goes in `SKIP` with a reason.
 - `tests/golden/v0.0.1/` and `v0.0.9/` hold adapters written by those releases; they must keep loading. Never edit them; `tests/golden/make_golden.py` regenerates one from a published release.

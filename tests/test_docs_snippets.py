@@ -32,6 +32,10 @@ NEEDS: dict[str, tuple[str, ...]] = {
 # (file, 0-based block index) -> reason. Blocks listed here are not run.
 SKIP: dict[tuple[str, int], str] = {
     ("README.md", 1): "needs a real transformers model (`model` is a placeholder)",
+    (
+        "docs/how-to/run-eval.md",
+        3,
+    ): "needs an OpenAI-compatible server (llama-server, vLLM)",
 }
 
 FENCE = re.compile(r"^```python\n(.*?)^```", re.DOTALL | re.MULTILINE)

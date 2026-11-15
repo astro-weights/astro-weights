@@ -34,7 +34,7 @@ Prints:
 
 ```text
 n=8 items  base=0.6250  edit=0.7500
-score diff=+0.1250  SE=0.1250  95% CI [-0.1200, +0.3700]
+score diff=+0.1250  SE=0.1250  95% CI [-0.1200, +0.3700]; not significant; smallest detectable difference at this n is 0.3500
 McNemar exact p=1  (base-only right=0, edit-only right=1)
 tokens: base=300.0  edit=250.0  diff=-50.0 (-16.7%)  bootstrap 95% CI [-50.0, -50.0]
 cap-hit rate: base=0.000  edit=0.000
@@ -49,6 +49,32 @@ WARNING: only 8 items (<100); intervals are unreliable
 - Exact McNemar p-value only when every per-item score is 0 or 1; otherwise `mcnemar_p` is `None`.
 - Token difference: bootstrap 95% CI, `n_boot=10000` resamples, `seed=0` by default.
 - `small_n` is `True` under 100 items; `format_report` then adds warning line.
+- Minimum detectable effect: `score_mde = (1.96 + 0.84) * se`, `tokens_mde = (1.96 + 0.84) * tokens_se` (5% two-sided test, 80% power). When 95% CI contains 0, report line ends with `not significant; smallest detectable difference at this n is ...`.
+
+## Noise floor
+
+Run base arm twice under same settings; `compare` of those two runs is noise floor. `exceeds_floor(result, floor)` is `True` per metric when its CI excludes 0 and `|diff| > |floor diff| + 1.96 * floor SE`; NaN anywhere gives `False`. `format_report(result, floor)` adds one line per metric. Continues example above:
+
+```python
+from astro_weights.eval import exceeds_floor
+
+# base arm run again; token counts differ by 1 on half the items
+rerun = [
+    record(k, "base", 1.0 if i < 5 else 0.0, 300 + i % 2) for i, k in enumerate(prompts)
+]
+floor = compare(base, rerun)
+print(exceeds_floor(result, floor))
+print(format_report(result, floor).splitlines()[-3:-1])
+```
+
+Prints:
+
+```text
+{'score': False, 'tokens': True}
+['noise floor (score): |diff|=0.1250 does not exceed |floor diff| + 1.96 SE = 0.0000', 'noise floor (tokens): |diff|=50.0 exceeds |floor diff| + 1.96 SE = 0.9']
+```
+
+Command line: `astro-weights eval BASE.jsonl EDIT.jsonl --floor A.jsonl B.jsonl`; see [run eval end to end](run-eval.md#compare-arms).
 
 ## Store records
 

@@ -12,6 +12,8 @@ Built from docstrings on each docs build.
 
 ::: astro_weights.runners.generate
 
+::: astro_weights.runners.endpoint
+
 ::: astro_weights.directions
 
 ::: astro_weights.eval
