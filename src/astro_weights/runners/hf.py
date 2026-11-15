@@ -1,5 +1,6 @@
 """Apply and remove an Edit on a transformers model through PEFT."""
 
+import math
 from typing import Any
 
 import torch
@@ -140,6 +141,7 @@ def rounding_error(model: nn.Module, edit: Edit) -> dict[str, float]:
     Per edit module name, `|cast(B) @ cast(A) - B @ A|_F / |B @ A|_F`, where
     `cast` rounds to that module's weight dtype (what `apply` loads); the math
     is float64. A float32 or float64 model gives 0.0, as does a zero delta.
+    A factor that overflows the dtype gives `inf`.
     The model is not modified.
     """
     names = resolve_modules(model, edit)
@@ -148,12 +150,14 @@ def rounding_error(model: nn.Module, edit: Edit) -> dict[str, float]:
     for d in edit.deltas:
         dtype = modules[names[d.module]].weight.dtype
         b, a = torch.from_numpy(d.B), torch.from_numpy(d.A)
+        cb, ca = b.to(dtype).double(), a.to(dtype).double()
+        if not (torch.isfinite(cb).all() and torch.isfinite(ca).all()):
+            errors[d.module] = math.inf  # overflow in the model dtype
+            continue
         exact = b.double() @ a.double()
-        cast = b.to(dtype).double() @ a.to(dtype).double()
         norm = float(torch.linalg.norm(exact))
-        errors[d.module] = (
-            float(torch.linalg.norm(cast - exact)) / norm if norm else 0.0
-        )
+        err = float(torch.linalg.norm(cb @ ca - exact)) / norm if norm else 0.0
+        errors[d.module] = err if math.isfinite(err) else math.inf
     return errors
 
 
@@ -175,7 +179,7 @@ def apply(
     names = resolve_modules(model, edit)
     if max_rounding_error is not None:
         for module, err in rounding_error(model, edit).items():
-            if err > max_rounding_error:
+            if not err <= max_rounding_error:  # NaN must not pass
                 raise ValueError(
                     f"{module}: rounding error {err:.3g} of the factors in the "
                     f"model dtype exceeds max_rounding_error {max_rounding_error:.3g}"

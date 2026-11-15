@@ -1,4 +1,5 @@
 import copy
+import math
 from pathlib import Path
 from typing import Any
 
@@ -543,3 +544,20 @@ def test_merged_weights_rejects_integer_weight(tiny_llama: Any) -> None:
 def make_edit_shape(model: Any) -> Edit:
     out, inn = model.get_submodule(MODULE).weight.shape
     return Edit((LowRankDelta(MODULE, np.ones((out, 1)), np.ones((1, inn))),), "x")
+
+
+@pytest.mark.parametrize("a_row", [[0.0, 1.0], [0.0, 0.0]])
+def test_overflowing_factor_is_inf_and_rejected(
+    tiny_llama: Any, a_row: list[float]
+) -> None:
+    from astro_weights.runners.hf import rounding_error
+
+    # 1e5 is inf in float16; inf * 0 gives NaN, and an all-zero A a zero delta
+    a = np.resize(np.array(a_row), (1, 64))
+    edit = Edit((LowRankDelta(MODULE, np.full((32, 1), 1e5), a),), "x")
+    model = tiny_llama.to(torch.float16)
+    before = snapshot(model)
+    assert rounding_error(model, edit) == {MODULE: math.inf}
+    with pytest.raises(ValueError, match=rf"{MODULE}: rounding error inf"):
+        apply(model, edit, max_rounding_error=1e-3)
+    assert_untouched(model, before)

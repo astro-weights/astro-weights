@@ -1,1 +1,1 @@
-New `rounding_error(model, edit)` reports how much each delta changes when its factors are cast to the model's weight dtype (for example bfloat16), and `apply(..., max_rounding_error=...)` refuses an edit whose error is above the limit before touching the model.
+New `rounding_error(model, edit)` reports how much each delta changes when its factors are cast to the model's weight dtype (for example bfloat16), or `inf` when a factor overflows that dtype, and `apply(..., max_rounding_error=...)` refuses an edit whose error is above the limit before touching the model.
