@@ -73,6 +73,19 @@ def _check_config(cfg: dict[str, object]) -> None:
             raise ValueError(f"unsupported adapter config: {field} is true")
 
 
+def _check_manifest(manifest: object, path: Path) -> None:
+    ok = (
+        isinstance(manifest, dict)
+        and isinstance(manifest.get("base_model"), str)
+        and isinstance(manifest.get("factors"), dict)
+        and all(isinstance(h, str) for h in manifest["factors"].values())
+    )
+    if not ok:
+        raise ValueError(
+            f"{path}: manifest needs a string base_model and a factors map"
+        )
+
+
 def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
     """Parse an adapter; ValueError on structural problems, hash problems returned."""
     directory = Path(directory)
@@ -118,6 +131,7 @@ def read_peft(directory: Path | str) -> tuple[Edit, list[str]]:
     if not manifest_path.exists():
         return Edit(deltas, cfg.get("base_model_name_or_path") or ""), []
     manifest = json.loads(manifest_path.read_text())
+    _check_manifest(manifest, manifest_path)
     problems = [
         f"hash mismatch or missing factor: {k}"
         for k, h in sorted(manifest["factors"].items())

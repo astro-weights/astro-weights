@@ -198,3 +198,11 @@ def test_missing_b(tmp_path: Path) -> None:
     write_adapter(tmp_path, tensors)
     with pytest.raises(ValueError, match=MOD_A):
         load_peft(tmp_path)
+
+
+@pytest.mark.parametrize("manifest", [[], None, {"factors": 5}, {"base_model": "x"}])
+def test_malformed_manifest_is_value_error(tmp_path: Path, manifest: object) -> None:
+    save_peft(make_edit(), tmp_path)
+    (tmp_path / "astro_manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match=r"astro_manifest\.json"):
+        load_peft(tmp_path)

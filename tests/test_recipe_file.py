@@ -337,3 +337,10 @@ def test_non_finite_param_rejected(tmp_path: Path, bad: str) -> None:
     path.write_text(f'{{"format": 1, "base_model": "x", "steps": [{step}]}}')
     with pytest.raises(ValueError, match=r"step 0.*alpha.*finite"):
         load_recipe(path)
+
+
+def test_deeply_nested_json_is_value_error(tmp_path: Path) -> None:
+    path = tmp_path / "deep.json"
+    path.write_text("[" * 200_000)
+    with pytest.raises(ValueError, match=r"cannot read recipe.*deep\.json"):
+        load_recipe(path)
