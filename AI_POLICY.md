@@ -3,7 +3,9 @@
 ## How this project uses AI
 Most of astro-weights is written by AI coding agents (currently Claude Code) working
 under the direction of a maintainer. A maintainer reviews every change before it is
-merged and signs off on it under the Developer Certificate of Origin. Agent-written
+merged and signs off on it under the Developer Certificate of Origin. On the maintainer's
+instruction, after that review, the maintainer's agent may add the maintainer's
+`Signed-off-by`; the sign-off is still the maintainer's certification. Agent-written
 commits carry an `Assisted-by:` or `Co-Authored-By:` trailer naming the tool.
 
 ## Contributing with AI tools
@@ -14,9 +16,8 @@ You may use AI tools. You are responsible for what you submit.
   `Assisted-by: Claude:claude-opus-5-5` to your commits.
 - **Understand it.** You must be able to explain the change in your own words and
   answer review questions without asking the tool.
-- **The sign-off is yours.** Only a human can certify the DCO. Your agent may add your
-  `Signed-off-by` only when you tell it to, after you have reviewed the change. Whoever
-  types it, the sign-off is your certification.
+- **Sign off yourself.** Only a human can certify the DCO. If you are not a maintainer,
+  your agent must not add `Signed-off-by` for you; add it yourself after you have reviewed the change.
 - **Open an issue first** for anything larger than a small fix.
 - **Write to people yourself.** Issues, PR descriptions and comments must be written
   or fully edited by you. Translation and grammar tools are fine.
