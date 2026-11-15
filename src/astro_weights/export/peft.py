@@ -3,6 +3,8 @@
 import hashlib
 import json
 import math
+import secrets
+import shutil
 from importlib.metadata import version
 from pathlib import Path
 
@@ -30,17 +32,15 @@ def _sha256(arr: np.ndarray) -> str:
     return hashlib.sha256(arr.tobytes()).hexdigest()
 
 
-def save_peft(edit: Edit, out_dir: Path | str) -> None:
-    """Write edit as a PEFT LoRA adapter (scaling 1) with an astro manifest."""
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+def _write_adapter(edit: Edit, directory: Path) -> None:
+    """Write the three adapter files into an existing directory."""
     tensors: dict[str, np.ndarray] = {}
     for d in edit.deltas:
         tensors[f"{PREFIX}{d.module}{SUFFIX_A}"] = d.A
         tensors[f"{PREFIX}{d.module}{SUFFIX_B}"] = d.B
-    save_file(tensors, str(out / WEIGHTS))
+    save_file(tensors, str(directory / WEIGHTS))
     _write_json(
-        out / CONFIG,
+        directory / CONFIG,
         {
             "peft_type": "LORA",
             "task_type": "CAUSAL_LM",
@@ -54,7 +54,7 @@ def save_peft(edit: Edit, out_dir: Path | str) -> None:
         },
     )
     _write_json(
-        out / MANIFEST,
+        directory / MANIFEST,
         {
             "format": 1,
             "astro_weights_version": version("astro-weights"),
@@ -64,6 +64,50 @@ def save_peft(edit: Edit, out_dir: Path | str) -> None:
             "factors": {k: _sha256(v) for k, v in tensors.items()},
         },
     )
+
+
+# Replace order when overwriting. The manifest pins the weights hash, so putting
+# it first means every state before the final replace is either the untouched
+# old adapter (a failure before the first replace) or a directory whose new
+# manifest disagrees with the old weights, which verify_peft reports. The
+# weights go last and are the commit point.
+_REPLACE_ORDER = (MANIFEST, CONFIG, WEIGHTS)
+
+
+def save_peft(edit: Edit, out_dir: Path | str, *, overwrite: bool = False) -> None:
+    """Write edit as a PEFT LoRA adapter (scaling 1) with an astro manifest.
+
+    The files are written to a temp directory beside `out_dir`, then moved in.
+    A non-empty `out_dir` raises FileExistsError unless `overwrite` is true;
+    with `overwrite` only the three adapter files are replaced and any other
+    file in `out_dir` stays. On any failure the temp directory is removed.
+    """
+    out = Path(out_dir)
+    exists = out.exists() or out.is_symlink()
+    if exists and not out.is_dir():
+        raise NotADirectoryError(f"{out} exists and is not a directory")
+    if exists and not overwrite and any(out.iterdir()):
+        raise FileExistsError(f"{out} exists and is not empty; pass overwrite=True")
+    for name in _REPLACE_ORDER:
+        target = out / name
+        if target.is_dir() and not target.is_symlink():
+            raise IsADirectoryError(f"{target} is a directory")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(f".{out.name}.{secrets.token_hex(4)}.tmp")
+    tmp.mkdir()
+    try:
+        _write_adapter(edit, tmp)
+        if not out.is_symlink() and (not exists or not any(out.iterdir())):
+            tmp.rename(out)  # atomic; replaces an empty directory on POSIX
+        else:
+            # replace() swaps the directory entry, so a symlinked adapter file
+            # is replaced itself and its target is never written through.
+            for name in _REPLACE_ORDER:
+                (tmp / name).replace(out / name)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    shutil.rmtree(tmp, ignore_errors=True)  # empty after file moves
 
 
 def _load_object(path: Path) -> dict[str, object]:

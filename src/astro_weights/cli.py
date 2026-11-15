@@ -112,7 +112,7 @@ def _build(recipe: Path, base: Path, out: Path, card: str | None, force: bool) -
             spec, lambda m: read_base_weight(base, m + ".weight"), recipe.parent
         )
         text = model_card(edit, "adapter", card) if card is not None else None
-        save_peft(edit, out)
+        save_peft(edit, out, overwrite=force)
         if text is not None:
             write_card(out, text)
     except _ERRORS as e:
