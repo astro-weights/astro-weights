@@ -12,7 +12,7 @@ astro-weights: agent-driven weight-space edits for open LLMs, exported as standa
 - `src/astro_weights/directions/`: difference-of-means directions and `direction_gate`, numpy only.
 - `src/astro_weights/eval/`: per-item `Record` JSONL, run headers (`header.py`: `header_path`, `write_header`, `read_header`, `check_headers`), paired comparison of two arms (`compare`, `format_report`, `exceeds_floor`; minimum detectable effect in `PairedResult`) and answer graders (`grade_exact`, `grade_choice`, `grade_math`). Never runs a model. `grade_math` imports math-verify lazily, from the `eval` extra.
 - `src/astro_weights/cli.py`: the `astro-weights` command (`build`, `eval`, `export`, `inspect`; each takes `--json`).
-- `docs/`: user docs site (Zensical, `zensical.toml`), Diátaxis folders `tutorials/`, `how-to/`, `reference/` (built from docstrings by mkdocstrings), `explanation/`. Published to GitHub Pages by `docs.yml` on push to `main`.
+- `docs/`: user docs site (Zensical, `zensical.toml`), Diátaxis folders `tutorials/`, `how-to/`, `reference/` (built from docstrings by mkdocstrings), `explanation/`. `docs.yml` runs strict build check only. Site deploys from `astro-weights/astro-weights.github.io`: landing page at https://astro-weights.dev/, these docs built into https://astro-weights.dev/docs/.
 - Layer rule, enforced by import-linter: `cli > runners > export > edits`. A lower layer never imports a higher one. `directions` and `eval` are outside the contract and import no other `astro_weights` package.
 - Core dependencies are numpy and safetensors only. torch, transformers and peft are imported only inside `runners/`, and only through the `hf` extra.
 

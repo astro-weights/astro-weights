@@ -22,7 +22,7 @@ uv run mypy src
 uv run pytest
 ```
 
-Docs changes: `uv run --only-group docs zensical build --strict` must pass; preview with `uv run --only-group docs zensical serve`.
+Docs changes: `uv run --only-group docs zensical build --strict` must pass; preview with `uv run --only-group docs zensical serve`. The Docs workflow here only checks the build. The site is deployed from [astro-weights/astro-weights.github.io](https://github.com/astro-weights/astro-weights.github.io), which builds `docs/` into https://astro-weights.dev/docs/ beside the landing page.
 
 CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release. Tests that need the real 9B files are marked `@pytest.mark.realdata` and skip unless `$ASTRO_REALDATA` is set.
 
