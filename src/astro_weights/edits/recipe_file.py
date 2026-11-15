@@ -99,7 +99,8 @@ def _check_npy_header(data: bytes) -> None:
 
 def _read_capped(path: Path) -> bytes:
     """Read a regular file of at most MAX_NPY_BYTES; never blocks on a FIFO."""
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)  # O_BINARY: no CRLF/Ctrl-Z translation on Windows
     with os.fdopen(fd, "rb") as fh:
         st = os.fstat(fh.fileno())
         if not stat.S_ISREG(st.st_mode):

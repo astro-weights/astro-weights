@@ -463,3 +463,22 @@ def test_column_shift_n_in_capped(tmp_path: Path) -> None:
     path.write_text(json.dumps({"format": 1, "base_model": "x", "steps": [step]}))
     with pytest.raises(ValueError, match="n_in must be at most"):
         load_recipe(path)
+
+
+def test_npy_with_crlf_and_ctrl_z_bytes_read_verbatim(tmp_path: Path) -> None:
+    """Payload bytes 0d 0a 1a must survive the read (Windows text-mode guard)."""
+    payload = np.frombuffer(bytes([0x0D, 0x0A, 0x1A, 0x3F]) * OUT, dtype="<f4")
+    assert b"\r\n\x1a" in payload.tobytes()
+    a_payload = np.frombuffer(bytes([0x0D, 0x0A, 0x1A, 0x3F]) * IN, dtype="<f4")
+    raw_b, raw_a = _npy_bytes(payload), _npy_bytes(a_payload)
+    for name, raw in (("b.npy", raw_b), ("a.npy", raw_a)):
+        (tmp_path / name).write_bytes(raw)
+    recipe = {"format": 1, "base_model": "x", "steps": [_rank1_step()]}
+    edit = build_edit(recipe, lambda _m: W0, tmp_path)
+    got = edit.meta["recipe"]
+    assert isinstance(got, dict)
+    assert got["arrays_sha256"] == {
+        "b.npy": hashlib.sha256(raw_b).hexdigest(),
+        "a.npy": hashlib.sha256(raw_a).hexdigest(),
+    }
+    assert recipe_file._read_capped(tmp_path / "b.npy") == raw_b
