@@ -81,3 +81,45 @@ def test_works_in_edit_from_deltas() -> None:
     d2, _ = from_dense("b", rng.standard_normal((6, 8)), 3)
     edit = Edit.from_deltas([d1, d2], "base")
     assert edit.rank == 3
+
+
+def test_residual_equal_to_threshold_is_accepted() -> None:
+    rng = np.random.default_rng(3)
+    dW = rng.standard_normal((10, 8))
+    _, rel = from_dense("m", dW, 2)
+    from_dense("m", dW, 2, max_rel_residual=rel)  # not strictly greater: no raise
+    with pytest.raises(ValueError, match="exceeds max_rel_residual"):
+        from_dense("m", dW, 2, max_rel_residual=rel * 0.999)
+
+
+def test_float32_input_residual_is_measured_in_float64() -> None:
+    # Large float32 entries: a float32 norm overflows to inf and the residual reads 0.
+    rng = np.random.default_rng(4)
+    dW = (1e20 * rng.standard_normal((6, 5))).astype(np.float32)
+    s = np.linalg.svd(dW.astype(np.float64), compute_uv=False)
+    expected = np.sqrt(np.sum(s[2:] ** 2)) / np.linalg.norm(s)
+    _, rel = from_dense("m", dW, 2)
+    assert rel == pytest.approx(expected, rel=1e-4)
+
+
+def test_from_dense_uses_thin_svd(monkeypatch: pytest.MonkeyPatch) -> None:
+    # full_matrices=True would build an m*m U and n*n Vt (about 1.2 GB for a real down_proj).
+    real_svd = np.linalg.svd
+    seen: list[object] = []
+
+    def spy(a: np.ndarray, full_matrices: bool = True, **kw: object) -> object:
+        seen.append(full_matrices)
+        return real_svd(a, full_matrices=full_matrices, **kw)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(np.linalg, "svd", spy)
+    from_dense("m", np.random.default_rng(5).standard_normal((6, 40)), 2)
+    assert seen == [False]
+
+
+def test_from_dense_float32_input_equals_its_float64_copy() -> None:
+    dW = np.random.default_rng(6).standard_normal((9, 7)).astype(np.float32)
+    d32, rel32 = from_dense("m", dW, 3)
+    d64, rel64 = from_dense("m", dW.astype(np.float64), 3)
+    np.testing.assert_array_equal(d32.B, d64.B)
+    np.testing.assert_array_equal(d32.A, d64.A)
+    assert rel32 == rel64

@@ -649,3 +649,188 @@ def test_read_peft_missing_weights_is_os_error(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         read_peft(tmp_path)
     assert len(verify_peft(tmp_path)) == 1
+
+
+# --- gaps found by mutation testing ---
+
+
+def test_json_files_are_sorted_indented_and_newline_terminated(tmp_path: Path) -> None:
+    save_peft(make_edit(), tmp_path)
+    for name in ("adapter_config.json", "astro_manifest.json"):
+        text = (tmp_path / name).read_text()
+        obj = json.loads(text)
+        assert text == json.dumps(obj, indent=1, sort_keys=True) + "\n"
+
+
+def test_save_out_is_file_message_names_path(tmp_path: Path) -> None:
+    out = tmp_path / "f"
+    out.write_text("x")
+    with pytest.raises(NotADirectoryError, match=re.escape(f"{out} exists and is not")):
+        save_peft(make_edit(), out)
+
+
+def test_overwrite_directory_in_the_way_message_names_target(tmp_path: Path) -> None:
+    (tmp_path / "adapter_config.json").mkdir()
+    with pytest.raises(IsADirectoryError, match=r"adapter_config\.json is a directory"):
+        save_peft(make_edit(), tmp_path, overwrite=True)
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+def test_cleanup_failure_does_not_mask_the_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fresh: bool
+) -> None:
+    out = tmp_path / "out"
+    if not fresh:
+        out.mkdir()
+
+    def vanish_then_fail(edit: Edit, directory: Path) -> None:
+        # the temp dir is already gone when cleanup runs; cleanup must not raise
+        for child in directory.iterdir():
+            child.unlink()
+        directory.rmdir()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("astro_weights.export.peft._write_adapter", vanish_then_fail)
+    with pytest.raises(RuntimeError, match="boom"):
+        save_peft(make_edit(), out)
+
+
+@pytest.mark.filterwarnings("ignore:overflow encountered in cast:RuntimeWarning")
+def test_lora_alpha_finite_as_float64_but_not_float32_is_rejected(
+    tmp_path: Path,
+) -> None:
+    write_adapter(tmp_path, pair(MOD_A), lora_alpha=1e39)
+    load_error(tmp_path, "lora_alpha")
+
+
+def test_wrong_peft_type_message_shows_value(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A), peft_type="IA3")
+    with pytest.raises(ValueError, match="unsupported peft_type: 'IA3'"):
+        load_peft(tmp_path)
+    write_adapter(tmp_path, pair(MOD_A), peft_type=None)
+    with pytest.raises(ValueError, match="unsupported peft_type: None"):
+        load_peft(tmp_path)
+
+
+def test_config_type_error_messages(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A), base_model_name_or_path=["x"])
+    with pytest.raises(
+        ValueError, match=r"^adapter config: base_model_name_or_path must be a string$"
+    ):
+        load_peft(tmp_path)
+    write_adapter(tmp_path, pair(MOD_A), target_modules=[5])
+    with pytest.raises(
+        ValueError,
+        match=r"^adapter config: target_modules must be a string or list of strings$",
+    ):
+        load_peft(tmp_path)
+
+
+def test_unexpected_tensor_key_messages(tmp_path: Path) -> None:
+    write_adapter(tmp_path, {"stray": np.zeros((1, 1), dtype=np.float32)})
+    with pytest.raises(ValueError, match="unexpected tensor key: stray"):
+        load_peft(tmp_path)
+    key = f"base_model.model.{MOD_A}.weight"
+    write_adapter(tmp_path, {key: np.zeros((1, 1), dtype=np.float32)})
+    with pytest.raises(ValueError, match=f"unexpected tensor key: {re.escape(key)}"):
+        load_peft(tmp_path)
+
+
+def test_tensor_rank_mismatch_message(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A), r=2, lora_alpha=2)
+    with pytest.raises(ValueError, match=r"tensor rank does not match config r=2"):
+        load_peft(tmp_path)
+
+
+def test_no_manifest_and_no_base_model_gives_empty_base_model(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A))
+    cfg = json.loads((tmp_path / "adapter_config.json").read_text())
+    del cfg["base_model_name_or_path"]
+    (tmp_path / "adapter_config.json").write_text(json.dumps(cfg))
+    edit, problems = read_peft(tmp_path)
+    assert edit.base_model == ""
+    assert problems == []
+
+
+def test_manifest_without_optional_fields_is_accepted(tmp_path: Path) -> None:
+    save_peft(make_edit(), tmp_path)
+    path = tmp_path / "astro_manifest.json"
+    manifest = json.loads(path.read_text())
+    del manifest["base_sha256"], manifest["meta"]
+    path.write_text(json.dumps(manifest))
+    edit, problems = read_peft(tmp_path)
+    assert problems == []
+    assert edit.base_sha256 == {}
+    assert edit.meta == {}
+
+
+def test_load_peft_joins_every_problem_with_semicolons(tmp_path: Path) -> None:
+    save_peft(make_edit(), tmp_path)
+    path = tmp_path / "adapter_model.safetensors"
+    tensors = load_file(str(path))
+    for key in tensors:
+        tensors[key] = tensors[key] + np.float32(1.0)
+    save_file(tensors, str(path))
+    with pytest.raises(ValueError, match=r"lora_A\.weight; hash mismatch") as err:
+        load_peft(tmp_path)
+    assert str(err.value).count("; ") == len(tensors) - 1
+
+
+def _write_raw_safetensors(
+    path: Path, dtype: str, shapes: dict[str, list[int]]
+) -> None:
+    """Hand-write a zero-filled safetensors file of one dtype (numpy has no BF16)."""
+    width = {"BF16": 2, "I32": 4}[dtype]
+    header: dict[str, object] = {}
+    offset = 0
+    for key, shape in shapes.items():
+        n = width * int(np.prod(shape))
+        header[key] = {
+            "dtype": dtype,
+            "shape": shape,
+            "data_offsets": [offset, offset + n],
+        }
+        offset += n
+    head = json.dumps(header).encode()
+    head += b" " * (-len(head) % 8)
+    path.write_bytes(len(head).to_bytes(8, "little") + head + bytes(offset))
+
+
+def test_bf16_error_carries_resave_hint(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A))
+    keys = {f"base_model.model.{MOD_A}.lora_{ab}.weight": [1, 2] for ab in "AB"}
+    _write_raw_safetensors(tmp_path / "adapter_model.safetensors", "BF16", keys)
+    with pytest.raises(
+        ValueError,
+        match=r"^unsupported tensor dtypes \{.*\} "
+        r"\(BF16 cannot be read by numpy; re-save the adapter as float32\)$",
+    ):
+        load_peft(tmp_path)
+
+
+def test_other_unsupported_dtype_has_no_bf16_hint(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A))
+    keys = {f"base_model.model.{MOD_A}.lora_{ab}.weight": [1, 2] for ab in "AB"}
+    _write_raw_safetensors(tmp_path / "adapter_model.safetensors", "I32", keys)
+    with pytest.raises(ValueError, match=r"^unsupported tensor dtypes \{.*I32.*\}$"):
+        load_peft(tmp_path)
+
+
+def test_f16_adapter_with_manifest_verifies_against_float32_hashes(
+    tmp_path: Path,
+) -> None:
+    rng = np.random.default_rng(5)
+    # multiples of 1/8 below 8 are exact in float16, so the cast loses nothing
+    deltas = tuple(
+        LowRankDelta(
+            m,
+            rng.integers(-8, 8, (16, 1)) / 8,
+            rng.integers(-8, 8, (1, 48)) / 8,
+        )
+        for m in (MOD_A, MOD_B)
+    )
+    save_peft(Edit(deltas, "org/tiny"), tmp_path)
+    path = tmp_path / "adapter_model.safetensors"
+    f16 = {k: v.astype(np.float16) for k, v in load_file(str(path)).items()}
+    save_file(f16, str(path))
+    assert verify_peft(tmp_path) == []

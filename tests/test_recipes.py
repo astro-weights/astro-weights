@@ -364,3 +364,101 @@ def test_orthogonal_random_rejects_bad_u() -> None:
 def test_non_array_input_is_value_error() -> None:
     with pytest.raises(ValueError, match="m: b must be a numpy array, got list"):
         rank1("m", [1.0, 2.0], _ONES_IN)  # type: ignore[arg-type]
+
+
+# --- gaps found by mutation testing ---
+
+
+def test_top_k_mask_k_zero_selects_nothing() -> None:
+    mask = top_k_mask(np.array([3.0, 1.0, 2.0]), 0)
+    assert mask.tolist() == [0.0, 0.0, 0.0]
+
+
+def test_top_k_mask_k_one_selects_the_largest_only() -> None:
+    mask = top_k_mask(np.array([3.0, 1.0, 2.0]), 1)
+    assert mask.tolist() == [1.0, 0.0, 0.0]
+
+
+def test_top_k_mask_errors_name_the_recipe() -> None:
+    with pytest.raises(ValueError, match=r"top_k_mask: scores must be 1-D"):
+        top_k_mask(np.ones((2, 2)), 1)
+    with pytest.raises(ValueError, match=r"top_k_mask: k must be an int"):
+        top_k_mask(np.ones(3), 1.5)  # type: ignore[arg-type]
+
+
+def test_orthogonal_random_error_names_the_recipe() -> None:
+    with pytest.raises(ValueError, match=r"orthogonal_random: u must be 1-D"):
+        orthogonal_random(np.ones((2, 2)), 0)
+
+
+def test_scale_column_first_column_is_valid() -> None:
+    w0 = _w0()
+    d = scale_column("m", w0, 0, 3.0)
+    expected = np.zeros_like(w0)
+    expected[:, 0] = 2.0 * w0[:, 0]
+    np.testing.assert_allclose(d.dense(), expected, atol=1e-6)
+
+
+def test_scale_column_last_column_is_valid_and_next_is_not() -> None:
+    scale_column("m", _w0(), IN - 1, 2.0)
+    with pytest.raises(ValueError, match="m: column 10 out of range for n_in=10"):
+        scale_column("m", _w0(), IN, 2.0)
+    with pytest.raises(ValueError, match="m: column -1 out of range"):
+        scale_column("m", _w0(), -1, 2.0)
+
+
+def test_scale_column_error_messages_name_module_and_argument() -> None:
+    with pytest.raises(ValueError, match=r"m: column must be an int"):
+        scale_column("m", _w0(), 1.0, 2.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"m: s must be finite"):
+        scale_column("m", _w0(), 1, float("nan"))
+
+
+def test_scale_head_first_head_and_single_head_are_valid() -> None:
+    w0 = _w0()
+    d = scale_head("m", w0, 0, 1, 0.5)  # one head spanning every column
+    np.testing.assert_allclose(d.dense(), -0.5 * w0, atol=1e-6)
+    d0 = scale_head("m", w0, 0, 2, 0.0)
+    expected = np.zeros_like(w0)
+    expected[:, :5] = -w0[:, :5]
+    np.testing.assert_allclose(d0.dense(), expected, atol=1e-6)
+
+
+def test_scale_head_error_messages_name_module_and_argument() -> None:
+    with pytest.raises(ValueError, match=r"m: head must be an int"):
+        scale_head("m", _w0(), 0.5, 2, 1.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"m: n_heads must be an int"):
+        scale_head("m", _w0(), 0, 2.0, 1.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"m: s must be finite"):
+        scale_head("m", _w0(), 0, 2, float("inf"))
+    with pytest.raises(ValueError, match=r"m: n_in=10 not divisible by n_heads=0"):
+        scale_head("m", _w0(), 0, 0, 1.0)
+    with pytest.raises(ValueError, match=r"m: head 2 out of range for n_heads=2"):
+        scale_head("m", _w0(), 2, 2, 1.0)
+
+
+def test_column_shift_first_column_index_is_valid() -> None:
+    d = column_shift("m", np.ones(OUT), np.array([0]), np.array([2.0]), IN)
+    expected = np.zeros((OUT, IN))
+    expected[:, 0] = 2.0
+    np.testing.assert_allclose(d.dense(), expected)
+
+
+def test_column_shift_two_d_shift_with_valid_idx_is_rejected() -> None:
+    with pytest.raises(ValueError, match="shift must be 1-D; idx and coef must be 1-D"):
+        column_shift("m", np.ones((OUT, 1)), np.array([0]), np.array([1.0]), IN)
+
+
+def test_column_shift_two_d_idx_with_valid_shift_is_rejected() -> None:
+    with pytest.raises(ValueError, match="shift must be 1-D; idx and coef must be 1-D"):
+        column_shift("m", np.ones(OUT), np.array([[0]]), np.array([[1.0]]), IN)
+
+
+def test_column_shift_error_names_module_and_argument() -> None:
+    with pytest.raises(ValueError, match=r"m: n_in must be an int"):
+        column_shift("m", np.ones(OUT), np.array([0]), np.array([1.0]), 2.5)  # type: ignore[arg-type]
+
+
+def test_project_out_non_finite_strength_names_module() -> None:
+    with pytest.raises(ValueError, match=r"m: strength must be finite"):
+        project_out("m", _w0(), np.ones(OUT), float("nan"))
