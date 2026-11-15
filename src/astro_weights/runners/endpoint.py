@@ -4,9 +4,11 @@ Standard library plus `astro_weights.eval` only: no torch, no extra dependency.
 Serve the base and the edit under two model names and call this once per name.
 """
 
+import http.client
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
@@ -25,12 +27,31 @@ def _root(base_url: str) -> str:
     """`base_url` without a trailing slash or `/v1`; http(s) only."""
     if not base_url.startswith(("http://", "https://")):
         raise ValueError("base_url must start with http:// or https://")
+    parts = urllib.parse.urlsplit(base_url)
+    if "@" in parts.netloc or parts.query or parts.fragment:
+        raise ValueError("base_url must not have userinfo, a query or a fragment")
     root = base_url.rstrip("/")
     return root.removesuffix("/v1").rstrip("/")
 
 
+def _check_key(api_key: str | None) -> None:
+    """Reject keys that cannot be a header value; never show the key."""
+    if api_key and not all("!" <= c <= "~" for c in api_key):
+        raise ValueError("api_key must be printable ASCII without whitespace")
+
+
 def _scrub(text: str, api_key: str | None) -> str:
     return text.replace(api_key, "***") if api_key else text
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects: urllib would forward the Authorization header."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _request(
@@ -47,11 +68,11 @@ def _request(
             time.sleep(_RETRY_SLEEP)
         req = urllib.request.Request(url, data=data, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _OPENER.open(req, timeout=timeout) as resp:
                 return int(resp.status), resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             return int(e.code), e.read().decode("utf-8", "replace")
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:
             last = f"{type(e).__name__}: {_scrub(str(e), api_key)}"
     raise RuntimeError(f"cannot reach {url} after {_RETRIES + 1} attempts: {last}")
 
@@ -152,6 +173,7 @@ def generate_records_http(
     """
     _validate(items)
     root = _root(base_url)
+    _check_key(api_key)
     path = Path(out) if out is not None else None
     if path is not None and path.exists() and path.stat().st_size > 0:
         raise FileExistsError(f"{path} already has records")
@@ -163,7 +185,7 @@ def generate_records_http(
             messages = [{"role": "user", "content": item["prompt"]}]
             body = _body(model, messages, max_new_tokens, seed, extra_body)
             obj = _chat(url, body, api_key, timeout)
-            seen = json.dumps(obj)[:_BODY_CHARS]
+            seen = _scrub(json.dumps(obj), api_key)[:_BODY_CHARS]
             output = _content(obj, seen)
             record = Record(
                 item_id=str(item["item_id"]),
@@ -201,6 +223,7 @@ def run_header_http(
     out when the server does not give them. The api key is never recorded.
     """
     root = _root(base_url)
+    _check_key(api_key)
     header: dict[str, Any] = {
         "base_url": root,
         "model": model,

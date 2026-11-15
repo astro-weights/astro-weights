@@ -38,6 +38,7 @@ class _Server:
         self.respond = respond
         self.requests: list[dict[str, Any]] = []
         self.models: Reply = (200, json.dumps({"data": []}))
+        self.location: str | None = None
 
 
 @contextmanager
@@ -49,6 +50,8 @@ def serve(respond: Responder) -> Iterator[tuple[str, _Server]]:
             data = reply[1].encode()
             self.send_response(reply[0])
             self.send_header("Content-Length", str(len(data)))
+            if state.location is not None:
+                self.send_header("Location", state.location)
             self.end_headers()
             self.wfile.write(data)
 
@@ -368,3 +371,109 @@ def test_run_header_http_server_down() -> None:
     header = run_header_http(url, "m", 8, 0)
     assert "system_fingerprint" not in header
     assert "server_model" not in header
+
+
+def _redirect_pair(path: str = "/steal") -> Iterator[tuple[str, str, _Server, _Server]]:
+    with (
+        serve(lambda _b: _ok()) as (other, other_state),
+        serve(lambda _b: (302, "moved")) as (url, state),
+    ):
+        state.location = other + path
+        state.models = (302, "moved")
+        yield url, other, state, other_state
+
+
+def test_redirect_refused_and_key_not_forwarded() -> None:
+    for url, _, state, other_state in _redirect_pair():
+        with pytest.raises(RuntimeError, match="HTTP 302") as exc:
+            generate_records_http(url, "m", ITEMS[:1], "a", grade_exact, 4, api_key=KEY)
+        assert len(state.requests) == 1
+        assert other_state.requests == []
+        assert KEY not in str(exc.value)
+
+
+def test_redirect_refused_for_models_probe() -> None:
+    for url, _, _, other_state in _redirect_pair("/v1/models"):
+        header = run_header_http(url, "m", 4, 0, api_key=KEY)
+        assert "server_model" not in header
+        assert other_state.requests == []
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        (200, json.dumps({"choices": [{"message": {"content": "x"}}], "echo": "K"})),
+        (200, json.dumps({"choices": [{"message": None}], "echo": "K"})),
+        (200, json.dumps({"choices": [{"message": {"content": 5}}], "echo": "K"})),
+        (
+            200,
+            json.dumps(
+                {"choices": [{"message": {"content": "x"}}], "usage": {}, "echo": "K"}
+            ),
+        ),
+    ],
+)
+def test_echoed_key_scrubbed_from_value_errors(reply: Reply) -> None:
+    text = reply[1].replace('"K"', json.dumps(f"Bearer {KEY}"))
+    with (
+        serve(lambda _b: (200, text)) as (url, _),
+        pytest.raises(ValueError, match="response") as exc,
+    ):
+        generate_records_http(url, "m", ITEMS[:1], "a", grade_exact, 4, api_key=KEY)
+    assert KEY not in str(exc.value)
+    assert KEY not in repr(exc.value)
+
+
+def test_key_cut_at_truncation_boundary_not_leaked() -> None:
+    pad = "p" * (endpoint._BODY_CHARS - 10)
+    obj = {"choices": [{"message": {"content": "x"}}], "echo": pad + KEY}
+    with (
+        serve(lambda _b: (200, json.dumps(obj))) as (url, _),
+        pytest.raises(ValueError, match="usage") as exc,
+    ):
+        generate_records_http(url, "m", ITEMS[:1], "a", grade_exact, 4, api_key=KEY)
+    assert KEY[:4] not in str(exc.value)
+
+
+@pytest.mark.parametrize("key", ["k\n", " k", "k\x00", "a b", "k\u00e9"])
+def test_bad_api_key_rejected_without_echo(key: str) -> None:
+    with serve(lambda _b: _ok()) as (url, state):
+        with pytest.raises(ValueError, match="api_key") as exc:
+            generate_records_http(url, "m", ITEMS[:1], "a", grade_exact, 4, api_key=key)
+        with pytest.raises(ValueError, match="api_key"):
+            run_header_http(url, "m", 4, 0, api_key=key)
+    assert state.requests == []
+    assert key not in str(exc.value)
+    assert key not in repr(exc.value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://u:p@host", "http://host/?token=abc", "http://host/v1#frag"],
+)
+def test_url_userinfo_query_fragment_rejected(url: str) -> None:
+    with pytest.raises(ValueError, match="base_url") as exc:
+        generate_records_http(url, "m", ITEMS[:1], "a", grade_exact, 4)
+    assert "abc" not in str(exc.value)
+    assert "u:p" not in str(exc.value)
+    with pytest.raises(ValueError, match="base_url"):
+        run_header_http(url, "m", 4, 0)
+
+
+def test_http_exception_retried_then_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    calls: list[int] = []
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        calls.append(1)
+        raise http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(endpoint._OPENER, "open", boom)
+    with pytest.raises(RuntimeError, match="3 attempts"):
+        generate_records_http(
+            "http://127.0.0.1:1", "m", ITEMS[:1], "a", grade_exact, 4, api_key=KEY
+        )
+    assert len(calls) == 3
