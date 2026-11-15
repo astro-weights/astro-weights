@@ -113,7 +113,7 @@ Prints:
 
 ## Run headers
 
-`run_header(model, tokenizer, max_new_tokens, seed, chat, batch_size=...)` returns settings that decide outputs: model class, dtype, device, `max_new_tokens`, seed, chat, `batch_size`, chat template sha256, torch, transformers and peft versions. `write_header(header_path("X.jsonl"), header)` stores it beside records as `X.header.json`. Continues example above:
+`run_header(model, tokenizer, max_new_tokens, seed, chat, batch_size=...)` returns settings that decide outputs: model class (class under adapter for `apply` result), dtype, device, `max_new_tokens`, seed, chat, `batch_size`, chat template sha256, torch, transformers and peft versions. `write_header(header_path("X.jsonl"), header)` stores it beside records as `X.header.json`. Continues example above:
 
 ```python
 from astro_weights.eval import check_headers, header_path, write_header
@@ -123,27 +123,25 @@ for arm, m in [("base", model), ("edit", peft_model)]:
     write_header(header_path(f"{arm}.jsonl"), run_header(m, tok, 6, 0, False))
 print(header_path("base.jsonl"))
 
-try:
-    check_headers(
-        run_header(model, tok, 6, 0, False), run_header(peft_model, tok, 6, 0, False)
-    )
-except ValueError as e:
-    print(e)
+base_h = run_header(model, tok, 6, 0, False)
+edit_h = run_header(peft_model, tok, 6, 0, False)
+check_headers(base_h, edit_h)  # raises when arms are not comparable
+print(base_h["model"], edit_h["model"])
 ```
 
 Prints:
 
 ```text
 base.header.json
-arms ran under different settings and are not comparable: model: base='LlamaForCausalLM' edit='PeftModel'
+LlamaForCausalLM LlamaForCausalLM
 ```
 
-`check_headers(base, edit, ignore=("device",))` raises listing every key that differs or is missing on one side. Base model and `apply` result always differ on `model`; check rest with `ignore=("device", "model")`.
+`check_headers(base, edit, ignore=("device",))` raises listing every key that differs or is missing on one side.
 
 ## Compare arms
 
 ```bash
-astro-weights eval base.jsonl edit.jsonl --ignore-header
+astro-weights eval base.jsonl edit.jsonl
 ```
 
 Prints [`format_report`](compare-arms.md) output:
@@ -157,7 +155,7 @@ cap-hit rate: base=1.000  edit=1.000
 WARNING: only 4 items (<100); intervals are unreliable
 ```
 
-- When `BASE.header.json` and `EDIT.header.json` both exist, `eval` compares them (ignoring `device`) and exits 1 on any difference, with `error: arms ran under different settings ...` on stderr. `--ignore-header` skips check. Headers above differ on `model`, hence flag.
+- When `BASE.header.json` and `EDIT.header.json` both exist, `eval` compares them (ignoring `device`) and exits 1 on any difference, with `error: arms ran under different settings ...` on stderr. `--ignore-header` skips check.
 - `--floor A.jsonl B.jsonl`: two runs of base arm under same settings; report adds noise-floor lines. See [compare arms](compare-arms.md#noise-floor).
 - `--json`: one JSON object on stdout instead of text (`PairedResult` fields plus `floor`; non-finite numbers as `null`).
 - `--boot` sets bootstrap resamples (default 10000), `--seed` bootstrap seed (default 0). Unreadable file or arms that do not pair: message on stderr, exit code 2.
@@ -181,7 +179,7 @@ for arm, name in [("base", "base-model"), ("edit", "edit-model")]:
 
 - One `POST /v1/chat/completions` per item, temperature 0, `max_tokens` and `seed` set; `extra_body` keys merged last. Output is `message.content` (`reasoning_content` ignored); tokens from `usage.completion_tokens`; `hit_cap` when `finish_reason` is `length`.
 - `out` must be empty or absent; no resume. `api_key` sent as bearer token, never recorded or shown in errors. Redirects refused.
-- `run_header_http` records `base_url`, `model`, `max_new_tokens`, `seed`, `extra_body`, plus server's `/v1/models` entry and `system_fingerprint` when server gives them. Headers differ on `model`, so `astro-weights eval` needs `--ignore-header` here too.
+- `run_header_http` records `base_url`, `model`, `max_new_tokens`, `seed`, `extra_body`, plus server's `/v1/models` entry and `system_fingerprint` when server gives them. Two served names give headers that differ on `model` (and `server_model`), so `astro-weights eval` needs `--ignore-header` for HTTP arms.
 
 ## What `generate_records` does
 
