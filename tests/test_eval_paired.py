@@ -510,7 +510,11 @@ _GOLDEN = {
 @pytest.mark.parametrize("binary", [True, False])
 def test_unclustered_results_bit_identical_to_before(binary: bool) -> None:
     r = compare(*_golden_arms(binary), n_boot=1234, seed=5)
-    assert r == _GOLDEN[binary]  # exact float equality, field by field
+    want = _GOLDEN[binary]
+    # correlation goes through BLAS dot products: last-bit differences across platforms
+    assert r.correlation == pytest.approx(want.correlation, rel=1e-12)
+    # every other field: exact float equality
+    assert dataclasses.replace(r, correlation=want.correlation) == want
     assert r.n_clusters is None
 
 
