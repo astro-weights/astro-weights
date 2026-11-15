@@ -1,0 +1,18 @@
+{
+ "astro_weights_version": "0.0.9",
+ "base_model": "golden/tiny-base",
+ "base_sha256": {
+  "model.layers.0.mlp.down_proj.weight": "abababababababababababababababababababababababababababababababab"
+ },
+ "factors": {
+  "base_model.model.model.layers.0.mlp.down_proj.lora_A.weight": "dab3e777858cef03bf69de226a2a730077024af160dea743db5e843de8f60ffc",
+  "base_model.model.model.layers.0.mlp.down_proj.lora_B.weight": "c20058aae7d9e9ff304ebb581b9b852e145c279f809be36f75d66ba74df81747",
+  "base_model.model.model.layers.1.mlp.down_proj.lora_A.weight": "eddd4901711ed74f32674a318b71c97f20635a3cfc3c9b9e447ea9f33984f8cd",
+  "base_model.model.model.layers.1.mlp.down_proj.lora_B.weight": "6f1682ac0bc6ff591df5a3e499b3d0e816be4b55ff5f2f33761a347304e09b2f"
+ },
+ "format": 1,
+ "meta": {
+  "recipe": "golden",
+  "seed": 7
+ }
+}
