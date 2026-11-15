@@ -47,6 +47,8 @@ def _parse(line: str, num: int) -> Record:
         obj = json.loads(line)
     except json.JSONDecodeError as e:
         raise ValueError(f"line {num}: invalid JSON: {e.msg}") from e
+    except RecursionError as e:
+        raise ValueError(f"line {num}: JSON nested too deeply") from e
     if not isinstance(obj, dict):
         raise ValueError(f"line {num}: expected a JSON object")  # noqa: TRY004
     missing = [k for k in _REQUIRED if k not in obj]
@@ -69,7 +71,10 @@ def _parse(line: str, num: int) -> Record:
     )
     if not ok:
         raise ValueError(f"line {num}: wrong value type")
-    obj["score"] = float(obj["score"])
+    try:
+        obj["score"] = float(obj["score"])
+    except OverflowError as e:
+        raise ValueError(f"line {num}: score must be finite") from e
     if not math.isfinite(obj["score"]):
         raise ValueError(f"line {num}: score must be finite")
     return Record(**obj)
