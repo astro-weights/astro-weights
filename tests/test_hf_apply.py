@@ -217,3 +217,22 @@ def test_from_deltas_mixed_rank_apply(tiny_llama: Any, input_ids: Any) -> None:
     peft_model = apply(tiny_llama, edit)
     assert torch.allclose(logits(peft_model, input_ids), expected, atol=1e-5)
     assert len(lora_modules(peft_model)) == 2
+
+
+def test_head_edit_with_rank1_edit(tiny_llama: Any, input_ids: Any) -> None:
+    from astro_weights.edits import zero_head
+
+    o_proj = "model.layers.0.self_attn.o_proj"
+    w0 = tiny_llama.get_submodule(o_proj).weight.detach().numpy()
+    head = zero_head(o_proj, w0, 1, 4)
+    edit = Edit.from_deltas([head, make_edit(tiny_llama).deltas[0]], "tiny-llama")
+    assert edit.rank == w0.shape[1] // 4
+
+    ref = copy.deepcopy(tiny_llama)
+    with torch.no_grad():
+        for d in edit.deltas:
+            ref.get_submodule(d.module).weight += torch.from_numpy(d.dense())
+        block = ref.get_submodule(o_proj).weight[:, 8:16]
+    assert torch.count_nonzero(block) == 0
+    got = logits(apply(tiny_llama, edit), input_ids)
+    assert torch.allclose(got, logits(ref, input_ids), atol=1e-5)
