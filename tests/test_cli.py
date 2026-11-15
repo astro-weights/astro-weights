@@ -314,3 +314,87 @@ def test_export_gguf_missing_package(
     assert main(argv) == 2
     assert "astro-weights[gguf]" in capsys.readouterr().err
     assert not (tmp_path / "a.gguf").exists()
+
+
+# fix round 1
+
+
+def test_export_gguf_refuses_adapter_files(
+    adapter: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = (adapter / "adapter_model.safetensors").read_bytes()
+    for name in ("adapter_model.safetensors", "adapter_config.json"):
+        target = adapter / ".." / adapter.name / name
+        argv = ["export", str(adapter), "--gguf", str(target), "--arch", "qwen35"]
+        assert main([*argv, "--force"]) == 2
+        assert "adapter" in capsys.readouterr().err
+    assert (adapter / "adapter_model.safetensors").read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "manifest", ["[]", "null", '{"factors": 5}', '{"base_model": 1}']
+)
+def test_bad_manifest_exits_2(
+    adapter: Path, manifest: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (adapter / "astro_manifest.json").write_text(manifest)
+    for argv in (["inspect", str(adapter)], ["export", str(adapter), "--card", "mit"]):
+        assert main(argv) == 2
+        err = capsys.readouterr().err
+        assert err.startswith("error:")
+        assert "Traceback" not in err
+        assert "astro_manifest.json" in err
+
+
+def test_adapter_missing_key_names_dir(
+    adapter: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (adapter / "adapter_config.json").write_text('{"peft_type": "LORA"}')
+    assert main(["export", str(adapter), "--card", "mit"]) == 2
+    err = capsys.readouterr().err
+    assert str(adapter) in err
+    assert "missing key 'r'" in err
+
+
+def test_build_deeply_nested_recipe(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recipe = tmp_path / "deep.json"
+    recipe.write_text("[" * 200_000)
+    argv = ["build", str(recipe), "--base", str(_model(tmp_path)), "--out", "o"]
+    assert main(argv) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "deep.json" in err
+
+
+def test_build_recipe_error_names_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recipe = tmp_path / "bad.json"
+    recipe.write_text('{"format": 1, "base_model": "x", "steps": [{"recipe": "nope"}]}')
+    argv = ["build", str(recipe), "--base", str(_model(tmp_path)), "--out", "o"]
+    assert main(argv) == 2
+    assert "bad.json" in capsys.readouterr().err
+    assert main(_build_args(tmp_path, "--card", " ")) == 2
+    assert "recipe.json" in capsys.readouterr().err
+
+
+def test_export_bad_license_writes_no_gguf(
+    adapter: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("gguf")
+    out = tmp_path / "a.gguf"
+    argv = ["export", str(adapter), "--gguf", str(out), "--arch", "qwen35"]
+    assert main([*argv, "--card", " "]) == 2
+    assert "license" in capsys.readouterr().err
+    assert not out.exists()
+    assert not (adapter / "README.md").exists()
+
+
+def test_export_blank_arch(
+    adapter: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = ["export", str(adapter), "--gguf", str(tmp_path / "a.gguf"), "--arch", " "]
+    assert main(argv) == 2
+    assert "--arch" in capsys.readouterr().err

@@ -122,7 +122,7 @@ def load_recipe(path: Path | str) -> dict[str, Any]:
     """Read and validate a recipe file; arrays are not loaded."""
     try:
         recipe = json.loads(Path(path).read_text())
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise ValueError(f"cannot read recipe {str(path)!r}: {exc}") from exc
     if not isinstance(recipe, dict):
         raise ValueError("recipe must be a JSON object")  # noqa: TRY004
