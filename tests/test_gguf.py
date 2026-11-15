@@ -1,3 +1,4 @@
+import os
 import struct
 import time
 from pathlib import Path
@@ -614,6 +615,24 @@ _MALFORMED = {
         0, 1, _kv(b"k", _ARR, struct.pack("<IQ", _STR, 2**40) + b"\0" * 64)
     ),
     "array_unknown_item": _gguf(0, 1, _kv(b"k", _ARR, struct.pack("<IQ", 77, 1))),
+    # bytes really present: 4 MB of uint8 cost GGUFReader 15 s and 2.8 GB
+    "array_4m_u8": _gguf(
+        0, 1, _kv(b"k", _ARR, struct.pack("<IQ", _U8, 4_000_000) + bytes(4_000_000))
+    ),
+    "array_2m_empty_strings": _gguf(
+        0,
+        1,
+        _kv(b"k", _ARR, struct.pack("<IQ", _STR, 2_100_000)) + bytes(8 * 2_100_000),
+    ),
+    # the cap is on the total over all kvs, not per array
+    "arrays_total_over_cap": _gguf(
+        0,
+        3,
+        b"".join(
+            _kv(b"k%d" % i, _ARR, struct.pack("<IQ", _U8, 1_000_000) + bytes(1_000_000))
+            for i in range(3)
+        ),
+    ),
     "array_nested_deep": _gguf(
         0, 1, _kv(b"k", _ARR, struct.pack("<IQ", _ARR, 1) * 20 + b"\0" * 64)
     ),
@@ -691,3 +710,57 @@ def test_valid_files_open(base: Path, tmp_path: Path) -> None:
         "blk.3.ffn_down.weight",
         "blk.5.attn_output.weight",
     }
+
+
+def test_array_cap_allows_real_size_tokenizer(tmp_path: Path) -> None:
+    """A 152k-string array (a real vocab) plus scalar arrays still opens."""
+    n = 152_000
+    toks = _kv(b"tokenizer.ggml.tokens", _ARR, struct.pack("<IQ", _STR, n))
+    toks += b"".join(_str(b"t%d" % i) for i in range(n))
+    types = _kv(b"tokenizer.ggml.token_type", _ARR, struct.pack("<IQ", 5, n))
+    types += bytes(4 * n)
+    p = tmp_path / "vocab.gguf"
+    p.write_bytes(_gguf(0, 2, toks + types))
+    t = time.monotonic()
+    reader = _open(p)
+    assert reader.get_field("tokenizer.ggml.token_type") is not None
+    assert time.monotonic() - t < 10
+
+
+def test_unsupported_kv_type_is_named(tmp_path: Path) -> None:
+    p = tmp_path / "t.gguf"
+    p.write_bytes(_gguf(0, 1, _kv(b"k", 99, bytes(8))))
+    with pytest.raises(ValueError, match="unsupported kv value type 99"):
+        _open(p)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no mkfifo")
+def test_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe.gguf"
+    os.mkfifo(fifo)
+    t = time.monotonic()
+    with pytest.raises(ValueError, match="not a regular file"):
+        read_lora_gguf(fifo)
+    with pytest.raises(ValueError, match="not a regular file"):
+        splice_gguf(fifo, tmp_path / "o.gguf", {N0: NEW})
+    assert time.monotonic() - t < 1
+
+
+def test_directory_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="not a regular file"):
+        _open(tmp_path)
+
+
+def test_big_endian_file_still_opens(tmp_path: Path) -> None:
+    p = tmp_path / "be.gguf"
+    w = GGUFWriter(p, "qwen35", endianess=gguf.GGUFEndian.BIG)
+    w.add_array("k", ["a", "b"])
+    w.add_tensor("x", np.zeros((2, 2), dtype=np.float32))
+    _finish(w)
+    assert len(_open(p).tensors) == 1
+    # and the walk is endian-aware: a big-endian absurd kv count is rejected
+    bad = bytearray(p.read_bytes())
+    bad[16:24] = struct.pack(">Q", 2**60)
+    p.write_bytes(bytes(bad))
+    with pytest.raises(ValueError, match="cannot fit"):
+        _open(p)
