@@ -176,7 +176,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.3" },
     { name = "peft", marker = "extra == 'hf'", specifier = ">=0.21.3" },
     { name = "safetensors", specifier = ">=0.5" },
-    { name = "torch", marker = "extra == 'hf'", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "extra == 'hf'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cpu" },
     { name = "transformers", marker = "extra == 'hf'", specifier = ">=5.4" },
 ]
 provides-extras = ["hf", "eval", "gguf"]

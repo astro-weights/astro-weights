@@ -26,6 +26,8 @@ Docs changes: `uv run --only-group docs zensical build --strict` must pass; prev
 
 CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release.
 
+CI jobs beyond the checks above: `wheel-smoke` builds the wheel, installs it alone in a clean venv and runs the CLI; `test-lowest` runs the tests with `--resolution lowest-direct`, so a dependency floor in `pyproject.toml` must really work; `test-os` runs the core tests on macOS and Windows. A weekly `Canary` workflow tests against peft and transformers `main`; it is not a required check, and a red run means upstream moved, not that a PR broke.
+
 ## Pull requests
 
 - Keep each PR to one change.
