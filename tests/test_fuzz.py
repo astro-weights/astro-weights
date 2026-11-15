@@ -606,3 +606,25 @@ def test_read_lora_gguf_mutated_header(
     path = tmp_path_factory.mktemp("fuzz") / "x.gguf"
     path.write_bytes(bytes(out))
     only_value_error(_read_lora, path)
+
+
+@FUZZ
+@given(
+    item=st.integers(0, 14),
+    length=st.integers(0, 2**64 - 1) | st.sampled_from([2**25, 2**32, 2**40, 2**63]),
+    tail=st.binary(max_size=64),
+)
+def test_read_lora_gguf_array_kv(
+    tmp_path_factory: pytest.TempPathFactory,
+    adapter_gguf: bytes,  # skips without the gguf extra
+    item: int,
+    length: int,
+    tail: bytes,
+) -> None:
+    """An array kv with any item type and length never hangs or leaks."""
+    key = b"k"
+    kv = struct.pack("<Q", len(key)) + key + struct.pack("<II", 9, item)
+    kv += struct.pack("<Q", length) + tail
+    path = tmp_path_factory.mktemp("fuzz") / "x.gguf"
+    path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, 1) + kv)
+    only_value_error(_read_lora, path)
