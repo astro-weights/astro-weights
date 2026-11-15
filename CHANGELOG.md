@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.0.8] - 2026-11-15
+
+### Added
+
+- Added `astro_weights.export.gguf` (optional `gguf` extra): write an edit as a llama.cpp LoRA adapter GGUF and read it back, and splice replacement tensors into an existing GGUF.
+- `astro_weights.export.card` writes a Hugging Face model card (`model_card`, `write_card`) for an adapter or GGUF edit, with a per-module table of shape, rank and Frobenius norm.
+
 ## [0.0.7] - 2026-11-15
 
 ### Added
@@ -69,6 +76,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.0.8]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.8
 [0.0.7]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.7
 [0.0.6]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.6
 [0.0.5]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.5
