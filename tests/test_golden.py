@@ -26,7 +26,11 @@ def test_golden_adapter_loads(version: str) -> None:
         expected = np.load(path / f"expected_{d.module}.npy")
         assert d.rank == 2
         assert d.shape == (4, 8)
-        assert d.dense().tobytes() == expected.tobytes()
+        # factors are stored verbatim: the loader must not alter a single bit
+        assert d.B.tobytes() == np.load(path / f"expected_{d.module}_B.npy").tobytes()
+        assert d.A.tobytes() == np.load(path / f"expected_{d.module}_A.npy").tobytes()
+        # the product depends on the BLAS in use, so only compare to tolerance
+        np.testing.assert_allclose(d.dense(), expected, rtol=1e-6, atol=0)
 
 
 @pytest.mark.parametrize("version", VERSIONS)

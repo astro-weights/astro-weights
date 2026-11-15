@@ -53,7 +53,9 @@ def _describe(obj: object) -> str | None:
     if not callable(obj):
         return None
     try:
-        return str(inspect.signature(obj))
+        sig = str(inspect.signature(obj))
+        # Python 3.13 moved Path to pathlib._local; keep the snapshot version-independent
+        return sig.replace("pathlib._local.", "pathlib.")
     except (TypeError, ValueError):
         return None
 
@@ -81,3 +83,12 @@ def test_public_api_snapshot(name: str) -> None:
         n: (expected[n], current[n]) for n in current if current[n] != expected[n]
     }
     assert not changed, f"{name} signatures changed: {changed}. {HOWTO}"
+
+
+def test_describe_is_python_version_independent() -> None:
+    def fn(directory: "pathlib._local.Path | str") -> None: ...  # type: ignore[name-defined]  # noqa: F821
+
+    described = _describe(fn)
+    assert described is not None
+    assert "_local" not in described
+    assert "pathlib.Path" in described

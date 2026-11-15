@@ -5,7 +5,8 @@ Run with a published release, e.g.:
     uv run --no-project --with astro-weights==0.0.1 python make_golden.py out_dir
 
 Only uses API that exists in 0.0.1. Also writes the expected dense delta of each
-module to out_dir/expected_<module>.npy.
+module to out_dir/expected_<module>.npy, and its factors to
+expected_<module>_B.npy and expected_<module>_A.npy.
 """
 
 import sys
@@ -36,6 +37,8 @@ def main(out: str) -> None:
     save_peft(Edit(deltas, BASE, base_sha256=SHA, meta=META), out_dir)
     for d in deltas:
         np.save(out_dir / f"expected_{d.module}.npy", d.dense())
+        np.save(out_dir / f"expected_{d.module}_B.npy", d.B)
+        np.save(out_dir / f"expected_{d.module}_A.npy", d.A)
 
 
 if __name__ == "__main__":
