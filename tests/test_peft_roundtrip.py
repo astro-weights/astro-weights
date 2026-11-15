@@ -206,3 +206,156 @@ def test_malformed_manifest_is_value_error(tmp_path: Path, manifest: object) -> 
     (tmp_path / "astro_manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match=r"astro_manifest\.json"):
         load_peft(tmp_path)
+
+
+def load_error(path: Path, field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        load_peft(path)
+    problems = verify_peft(path)
+    assert len(problems) == 1
+    assert field in problems[0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("r", 0),
+        ("r", -1),
+        ("r", "1"),
+        ("r", 1.0),
+        ("r", True),
+        ("r", None),
+        ("lora_alpha", "1"),
+        ("lora_alpha", True),
+        ("lora_alpha", None),
+        ("lora_alpha", [1]),
+        ("lora_alpha", 1e999),
+        ("lora_alpha", 10**400),
+        ("rank_pattern", {"down_proj": 2}),
+        ("alpha_pattern", {"down_proj": 64}),
+        ("modules_to_save", ["lm_head"]),
+        ("bias", "all"),
+        ("bias", "lora_only"),
+        ("bias", True),
+        ("target_modules", 5),
+        ("target_modules", [5]),
+        ("target_modules", ["up_proj"]),
+        ("base_model_name_or_path", ["x"]),
+    ],
+)
+def test_unrepresentable_config_rejected(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    write_adapter(tmp_path, pair(MOD_A), **{field: value})
+    load_error(tmp_path, field)
+
+
+def test_missing_r_or_alpha(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A))
+    cfg = json.loads((tmp_path / "adapter_config.json").read_text())
+    del cfg["r"]
+    (tmp_path / "adapter_config.json").write_text(json.dumps(cfg))
+    assert "r" in verify_peft(tmp_path)[0]
+
+
+def test_target_modules_error_names_module(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A), target_modules=["q_proj"])
+    with pytest.raises(ValueError, match=MOD_A):
+        load_peft(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [["down_proj"], [MOD_A], ["mlp.down_proj", "q_proj"], ".*down_proj", None],
+)
+def test_target_modules_accepted(tmp_path: Path, targets: object) -> None:
+    write_adapter(tmp_path, pair(MOD_A), target_modules=targets)
+    assert MOD_A in by_module(load_peft(tmp_path))
+
+
+def test_target_modules_absent(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A))
+    cfg = json.loads((tmp_path / "adapter_config.json").read_text())
+    del cfg["target_modules"]
+    (tmp_path / "adapter_config.json").write_text(json.dumps(cfg))
+    assert MOD_A in by_module(load_peft(tmp_path))
+
+
+def test_target_modules_suffix_needs_dot(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A), target_modules=["proj"])
+    with pytest.raises(ValueError, match="target_modules"):
+        load_peft(tmp_path)
+
+
+@pytest.mark.parametrize("empty", [None, {}, []])
+@pytest.mark.parametrize("field", ["rank_pattern", "alpha_pattern"])
+def test_empty_patterns_accepted(tmp_path: Path, field: str, empty: object) -> None:
+    write_adapter(tmp_path, pair(MOD_A), **{field: empty})
+    assert MOD_A in by_module(load_peft(tmp_path))
+
+
+@pytest.mark.parametrize("empty", [None, []])
+def test_empty_modules_to_save_accepted(tmp_path: Path, empty: object) -> None:
+    write_adapter(tmp_path, pair(MOD_A), modules_to_save=empty)
+    assert MOD_A in by_module(load_peft(tmp_path))
+
+
+@pytest.mark.parametrize("bias", [None, "none"])
+def test_bias_none_forms_accepted(tmp_path: Path, bias: object) -> None:
+    write_adapter(tmp_path, pair(MOD_A), bias=bias)
+    assert MOD_A in by_module(load_peft(tmp_path))
+
+
+def test_bias_absent_and_float_alpha_accepted(tmp_path: Path) -> None:
+    write_adapter(tmp_path, pair(MOD_A), lora_alpha=0.5)
+    assert np.allclose(
+        by_module(load_peft(tmp_path))[MOD_A].B,
+        pair(MOD_A)[f"base_model.model.{MOD_A}.lora_B.weight"] * 0.5,
+    )
+
+
+@pytest.mark.parametrize("text", ["[]", "5", "null", '"x"', "{", "", "[" * 100000])
+@pytest.mark.parametrize("name", ["adapter_config.json", "astro_manifest.json"])
+def test_non_object_json_is_value_error(tmp_path: Path, name: str, text: str) -> None:
+    save_peft(make_edit(), tmp_path)
+    (tmp_path / name).write_text(text)
+    with pytest.raises(ValueError, match=name.replace(".", r"\.")):
+        load_peft(tmp_path)
+    assert name in verify_peft(tmp_path)[0]
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"base_sha256": []},
+        {"base_sha256": {"w": 1}},
+        {"base_sha256": 5},
+        {"meta": []},
+        {"meta": "x"},
+    ],
+)
+def test_manifest_field_types(tmp_path: Path, patch: dict[str, object]) -> None:
+    save_peft(make_edit(), tmp_path)
+    manifest = json.loads((tmp_path / "astro_manifest.json").read_text())
+    manifest.update(patch)
+    (tmp_path / "astro_manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match=next(iter(patch))):
+        load_peft(tmp_path)
+    assert next(iter(patch)) in verify_peft(tmp_path)[0]
+
+
+def test_verify_never_raises_on_junk(tmp_path: Path) -> None:
+    (tmp_path / "adapter_config.json").write_bytes(b"\xff\xfe\x00")
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"junk")
+    assert all(isinstance(p, str) for p in verify_peft(tmp_path))
+    assert all(isinstance(p, str) for p in verify_peft(tmp_path / "missing"))
+
+
+def test_verify_never_raises_on_truncation(tmp_path: Path) -> None:
+    save_peft(make_edit(), tmp_path)
+    good = (tmp_path / "adapter_model.safetensors").read_bytes()
+    for n in range(0, len(good), 37):
+        (tmp_path / "adapter_model.safetensors").write_bytes(good[:n])
+        problems = verify_peft(tmp_path)
+        assert problems
+        assert all(isinstance(p, str) for p in problems)
