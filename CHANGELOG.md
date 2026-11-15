@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.1.1] - 2026-11-15
+
+### Changed
+
+- Docs moved to https://astro-weights.dev; old github.io URLs redirect.
+- The logo astronaut has larger eyes, a slimmer face and a softer smile.
+
+
 ## [0.1.0] - 2026-11-15
 
 ### Added
@@ -113,6 +121,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.1.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.1
 [0.1.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.0
 [0.0.9]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.9
 [0.0.8]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.8
