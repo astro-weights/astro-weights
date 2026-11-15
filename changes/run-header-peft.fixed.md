@@ -1,1 +1,0 @@
-The run header from `run_header` records the model class under an applied adapter instead of `PeftModel`, so `astro-weights eval` no longer rejects a base arm and an `apply`-ed edit arm as run under different settings.

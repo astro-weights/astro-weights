@@ -1,1 +1,0 @@
-generate_records_http and run_header_http (astro_weights.runners.endpoint) run an eval arm against an OpenAI-compatible server (llama-server, vLLM) with the standard library only, so base and edit served under two model names can be compared without torch.

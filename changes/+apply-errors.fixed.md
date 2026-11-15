@@ -1,1 +1,0 @@
-`apply`, `resolve_modules` and `merged_weights` now say an adapter is already applied (use `swap()` or `remove()`) instead of "no nn.Linear matches", name the module type when the target is not `nn.Linear` (such as GPT-2's `Conv1D`), and `merged_weights` rejects non-floating-point weights; a failed `apply` no longer leaves LoRA layers on the model.

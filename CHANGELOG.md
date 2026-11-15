@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.1.0] - 2026-11-15
+
+### Added
+
+- Eval reports now show the minimum detectable effect and a noise-floor check (`astro-weights eval --floor A.jsonl B.jsonl`), arms are checked against their `X.header.json` run headers (`--ignore-header` to skip), and every subcommand takes `--json`.
+- New `rounding_error(model, edit)` reports how much each delta changes when its factors are cast to the model's weight dtype (for example bfloat16), or `inf` when a factor overflows that dtype, and `apply(..., max_rounding_error=...)` refuses an edit whose error is above the limit before touching the model.
+- `compare` now uses cluster-robust standard errors when records carry `cluster_id`: the score SE, CI and MDEs and the token SE and MDE use the clustered SE (with a G/(G-1) factor), the token bootstrap resamples clusters, and `PairedResult.n_clusters` and the report show the cluster count. Records without `cluster_id` give the same results as before.
+- `generate_records` takes `out`, `resume` and `batch_size`: records are written to a JSONL file as they are made, a crashed run resumes from that file, and items can be generated in left-padded batches. `run_header` records `batch_size`.
+- from_dense converts a dense dW matrix to a LowRankDelta by truncated SVD and returns its relative residual, with an optional bound.
+- generate_records_http and run_header_http (astro_weights.runners.endpoint) run an eval arm against an OpenAI-compatible server (llama-server, vLLM) with the standard library only, so base and edit served under two model names can be compared without torch.
+
+### Changed
+
+- The `hf` extra now requires `torch>=2.4`, the lowest version that works with `transformers>=5.4`.
+- `read_peft`, `load_peft` and `verify_peft` now reject adapters they cannot represent (non-positive or non-integer `r`, `rank_pattern`, `alpha_pattern`, `modules_to_save`, `bias` other than `none`, tensors outside a list-form `target_modules`, malformed JSON or manifest fields) with a `ValueError`, and `verify_peft` never raises.
+- save_peft now refuses a non-empty directory unless `overwrite=True`, and writes the adapter atomically through a temp directory.
+
+### Fixed
+
+- The run header from `run_header` records the model class under an applied adapter instead of `PeftModel`, so `astro-weights eval` no longer rejects a base arm and an `apply`-ed edit arm as run under different settings. ([#run-header-peft](https://github.com/astro-weights/astro-weights/pull/run-header-peft))
+- GGUF reading now raises `ValueError` for any malformed file, including duplicate keys, and rejects absurd header counts, array lengths, files with more than 2,097,152 kv array items in total (the reader costs about 1 KB per item), and non-regular files such as FIFOs up front instead of hanging or exhausting memory.
+- LowRankDelta now rejects NaN or infinite factors, including float64 values that overflow when cast to float32.
+- Recipe loading now raises `ValueError` instead of `IndexError`, `OverflowError`, `tokenize.TokenError` or an out-of-memory crash on malformed `.npy` side files (wrong rank or dtype, a header claiming more data than the file holds, a file over 256 MiB), on integer parameters too large for a float, and on a `column_shift` `n_in` above 1048576.
+- Recipes now raise `ValueError` instead of `IndexError` or `TypeError` when an array has the wrong dtype or number of dimensions: `column_shift` needs an integer `idx` and real `shift` and `coef` (not bool or complex), and `rank1`, `masked_rank1` (a bool `mask` still works), `project_out`, `top_k_mask` and `orthogonal_random` need real 1-D arrays.
+- `apply`, `resolve_modules` and `merged_weights` now say an adapter is already applied (use `swap()` or `remove()`) instead of "no nn.Linear matches", name the module type when the target is not `nn.Linear` (such as GPT-2's `Conv1D`), and `merged_weights` rejects non-floating-point weights; a failed `apply` no longer leaves LoRA layers on the model.
+- `compare` computes the exact McNemar p-value in linear time, so large evals with tens of thousands of discordant items no longer hang.
+- `read_jsonl` now raises `ValueError` (not `OverflowError` or `RecursionError`) for an out-of-range score or deeply nested JSON.
+- `read_peft` and `load_peft` now raise `ValueError` for an adapter config missing `r` or `lora_alpha` and for a weights file that is not valid safetensors, instead of leaking `KeyError` and `SafetensorError`.
+
 ## [0.0.9] - 2026-11-15
 
 ### Added
@@ -84,6 +113,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.1.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.0
 [0.0.9]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.9
 [0.0.8]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.8
 [0.0.7]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.7
