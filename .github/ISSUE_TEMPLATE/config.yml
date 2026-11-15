@@ -1,5 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
     url: https://github.com/astro-weights/astro-weights/security/advisories/new
     about: Report security issues privately, not as public issues.
+  - name: AI policy
+    url: https://github.com/astro-weights/astro-weights/blob/main/AI_POLICY.md
+    about: How AI-assisted contributions are handled in this project.
