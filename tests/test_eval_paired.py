@@ -286,7 +286,8 @@ def test_bootstrap_chunked_matches_expected_and_is_seeded() -> None:
     base = [rec(f"i{k}", "base", 1, tokens=100) for k in range(30)]
     edit = [rec(f"i{k}", "edit", 1, tokens=100 + k) for k in range(30)]
     a = compare(base, edit, n_boot=n_boot, seed=3)
-    assert a == compare(base, edit, n_boot=n_boot, seed=3)
+    # repr, not ==: correlation is nan here and nan != nan field by field (3.13+)
+    assert repr(a) == repr(compare(base, edit, n_boot=n_boot, seed=3))
     assert a.tokens_ci95[0] < a.tokens_diff < a.tokens_ci95[1]
     assert a.tokens_ci95 != compare(base, edit, n_boot=n_boot, seed=4).tokens_ci95
 
