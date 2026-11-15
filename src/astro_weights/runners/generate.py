@@ -13,15 +13,16 @@ from astro_weights.eval import Record, prompt_hash
 _KEYS = ("item_id", "prompt", "gold")
 
 
-def _prompt_text(tokenizer: Any, prompt: str, chat: bool) -> str:
+def _prompt_text(tokenizer: Any, prompt: str, chat: bool) -> tuple[str, bool]:
+    """Prompt text and whether a chat template (which carries its own specials) ran."""
     if chat and getattr(tokenizer, "chat_template", None):
         text = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
             tokenize=False,
             add_generation_prompt=True,
         )
-        return str(text)
-    return prompt
+        return str(text), True
+    return prompt, False
 
 
 def generate_records(
@@ -34,18 +35,48 @@ def generate_records(
     seed: int = 0,
     chat: bool = True,
 ) -> list[Record]:
-    """Generate and score each item; items carry `item_id`, `prompt`, `gold`."""
+    """Generate and score each item; items carry `item_id`, `prompt`, `gold`.
+
+    `scorer(gold, output)` sees the full decoded text. If the model emits a think
+    block, wrap the scorer yourself (e.g. with `answer_part`), or a `\\boxed{}`
+    inside the thinking can be graded. The model runs in eval mode (restored after).
+    """
+    seen: set[str] = set()
     for item in items:
         for key in _KEYS:
             if key not in item:
                 raise ValueError(f"item is missing key {key!r}")
+        item_id = str(item["item_id"])
+        if item_id in seen:
+            raise ValueError(f"duplicate item_id {item_id!r}")
+        seen.add(item_id)
+    was_training = bool(model.training)
+    model.eval()
+    try:
+        return _generate(
+            model, tokenizer, items, arm, scorer, max_new_tokens, seed, chat
+        )
+    finally:
+        model.train(was_training)
+
+
+def _generate(
+    model: Any,
+    tokenizer: Any,
+    items: Sequence[Mapping[str, Any]],
+    arm: str,
+    scorer: Callable[[str, str], bool],
+    max_new_tokens: int,
+    seed: int,
+    chat: bool,
+) -> list[Record]:
     torch.manual_seed(seed)
     eos = model.generation_config.eos_token_id
     eos_ids = set(eos if isinstance(eos, list) else [] if eos is None else [eos])
     records: list[Record] = []
     for item in items:
-        text = _prompt_text(tokenizer, item["prompt"], chat)
-        enc = tokenizer(text, return_tensors="pt", add_special_tokens=not chat)
+        text, templated = _prompt_text(tokenizer, item["prompt"], chat)
+        enc = tokenizer(text, return_tensors="pt", add_special_tokens=not templated)
         enc = enc.to(model.device)
         with torch.no_grad():
             out = model.generate(
@@ -85,6 +116,7 @@ def run_header(
         "max_new_tokens": max_new_tokens,
         "seed": seed,
         "chat": chat,
+        "training": False,  # generate_records always runs the model in eval mode
         "chat_template_sha256": (
             hashlib.sha256(str(template).encode("utf-8")).hexdigest()
             if template

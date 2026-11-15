@@ -101,3 +101,14 @@ def test_eval_hash_mismatch(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
 def test_eval_unreadable(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["eval", str(tmp_path / "no"), str(tmp_path / "no2")]) == 2
     assert "error:" in capsys.readouterr().err
+
+
+def test_eval_bad_json_names_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _records(tmp_path / "b.jsonl", "base", ["a"], [0])
+    (tmp_path / "e.jsonl").write_text("{not json\n")
+    assert main(["eval", str(tmp_path / "b.jsonl"), str(tmp_path / "e.jsonl")]) == 2
+    err = capsys.readouterr().err
+    assert str(tmp_path / "e.jsonl") in err
+    assert str(tmp_path / "b.jsonl") not in err

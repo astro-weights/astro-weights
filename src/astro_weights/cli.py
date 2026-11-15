@@ -56,9 +56,16 @@ def _inspect(directory: Path) -> int:
 
 
 def _eval(base: Path, edit: Path, boot: int, seed: int) -> int:
+    recs = []
+    for path in (base, edit):
+        try:
+            recs.append(read_jsonl(path))
+        except (ValueError, OSError) as e:
+            print(f"error: {path}: {e}", file=sys.stderr)
+            return 2
     try:
-        result = compare(read_jsonl(base), read_jsonl(edit), n_boot=boot, seed=seed)
-    except (ValueError, OSError) as e:
+        result = compare(recs[0], recs[1], n_boot=boot, seed=seed)
+    except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     print(format_report(result))

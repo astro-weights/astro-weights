@@ -125,3 +125,65 @@ def test_run_header(model: Any, tok: Any) -> None:
     } <= h.keys()
     tok.chat_template = "x"
     assert len(run_header(model, tok, 6, 0, True)["chat_template_sha256"]) == 64
+
+
+@pytest.fixture
+def bos_tok(tok: Any) -> Any:
+    tok.backend_tokenizer.post_processor = tokenizers.processors.TemplateProcessing(
+        single="<s> $A", special_tokens=[("<s>", 1)]
+    )
+    return tok
+
+
+def _captured_ids(model: Any, tok: Any, monkeypatch: pytest.MonkeyPatch, chat: bool):  # type: ignore[no-untyped-def]
+    seen: list[list[int]] = []
+    real = model.generate
+
+    def spy(*args: Any, **kw: Any) -> Any:
+        seen.append(kw["input_ids"][0].tolist())
+        return real(*args, **kw)
+
+    monkeypatch.setattr(model, "generate", spy)
+    generate_records(model, tok, ITEMS[:1], "base", grade_exact, 2, chat=chat)
+    return seen[0]
+
+
+def test_chat_without_template_keeps_bos(
+    model: Any, bos_tok: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert bos_tok.chat_template is None
+    chat = _captured_ids(model, bos_tok, monkeypatch, True)
+    raw = _captured_ids(model, bos_tok, monkeypatch, False)
+    assert chat[0] == 1
+    assert chat == raw
+
+
+def test_chat_template_no_extra_bos(
+    model: Any, bos_tok: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bos_tok.chat_template = "{% for m in messages %}{{ m['content'] }}{% endfor %}"
+    ids = _captured_ids(model, bos_tok, monkeypatch, True)
+    assert ids[0] != 1
+
+
+def test_eval_mode_set_and_restored(model: Any, tok: Any) -> None:
+    model.train()
+    modes: list[bool] = []
+    real = model.generate
+
+    def spy(*args: Any, **kw: Any) -> Any:
+        modes.append(model.training)
+        return real(*args, **kw)
+
+    model.generate = spy
+    _run(model, tok)
+    assert modes
+    assert not any(modes)
+    assert model.training
+    assert run_header(model, tok, 6, 0, False)["training"] is False
+
+
+def test_duplicate_item_id(model: Any, tok: Any) -> None:
+    dup = [ITEMS[0], ITEMS[0]]
+    with pytest.raises(ValueError, match="duplicate item_id 'i0'"):
+        generate_records(model, tok, dup, "b", grade_exact, 2, chat=False)
