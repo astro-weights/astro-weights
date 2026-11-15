@@ -1,10 +1,10 @@
 <p align="center">
-  <img alt="astro-weights" src="https://avatars.githubusercontent.com/u/356708378?v=4" width="120" height="120">
+  <img alt="astro-weights logo: astronaut with a gold visor and a violet chest patch" src="https://raw.githubusercontent.com/astro-weights/astro-weights/main/docs/assets/logo.svg" width="120" height="120">
 </p>
 
 <h1 align="center">astro-weights</h1>
 
-<p align="center"><b>Agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters.</b></p>
+<p align="center"><b>Small course corrections for open LLMs.</b><br>Agent-driven weight-space edits, exported as standard LoRA adapters.</p>
 
 <p align="center">
   <a href="https://pypi.org/project/astro-weights/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/astro-weights"></a>
@@ -84,3 +84,5 @@ If you use astro-weights in your work, please cite it. The metadata is in [CITAT
 ## License
 
 [Apache-2.0](https://github.com/astro-weights/astro-weights/blob/main/LICENSE).
+
+The logo is based on the Noto Emoji "person astronaut" glyph, Copyright Google LLC, Apache-2.0. See [docs/assets/LOGO-LICENSE.md](https://github.com/astro-weights/astro-weights/blob/main/docs/assets/LOGO-LICENSE.md).

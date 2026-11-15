@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `verify_peft` reports a corrupt weights file as a problem instead of raising `SafetensorError`.
 
 ### Changed
+- New logo, based on the Noto Emoji astronaut (Apache-2.0), replacing the unlicensed emoji avatar. README has a new tagline: "Small course corrections for open LLMs."
 - `astro-weights inspect` reads the adapter once and computes `|BA|_F` without building the dense matrix.
 
 ## [0.0.1] - 2026-11-14
