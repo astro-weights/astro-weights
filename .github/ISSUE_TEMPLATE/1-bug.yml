@@ -1,6 +1,7 @@
 name: Bug report
 description: Something does not work as documented.
-labels: [bug]
+type: Bug
+labels: [bug, needs triage]
 body:
   - type: textarea
     id: what
@@ -24,3 +25,19 @@ body:
       description: Output of `python -c "import astro_weights, sys; print(astro_weights.__version__, sys.version)"`, plus OS, GPU and torch version if relevant.
     validations:
       required: true
+  - type: dropdown
+    id: ai
+    attributes:
+      label: Did you use AI tools to find or write this up?
+      options:
+        - "No"
+        - Yes, details below
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues
+          required: true
