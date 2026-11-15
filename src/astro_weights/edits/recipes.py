@@ -54,3 +54,54 @@ def orthogonal_random(u: np.ndarray, seed: int) -> np.ndarray:
     r = np.random.default_rng(seed).standard_normal(len(u64))
     r -= (r @ u64) / (u64 @ u64) * u64
     return r / np.linalg.norm(r)
+
+
+def project_out(
+    module: str, W0: np.ndarray, v: np.ndarray, strength: float = 1.0
+) -> LowRankDelta:
+    """Remove direction v from the layer's output: W = W0 - strength * outer(vhat, vhat @ W0)."""
+    if W0.ndim != 2 or v.shape != (W0.shape[0],):
+        raise ValueError(f"{module}: shape mismatch, W0 {W0.shape}, v {v.shape}")
+    v64 = v.astype(np.float64)
+    norm = np.linalg.norm(v64)
+    if norm == 0.0:
+        raise ValueError(f"{module}: v must be non-zero")
+    vhat = v64 / norm
+    a = vhat @ W0.astype(np.float64)
+    return LowRankDelta(module, -strength * vhat[:, None], a[None, :])
+
+
+def scale_column(module: str, W0: np.ndarray, j: int, s: float) -> LowRankDelta:
+    """Multiply input column j by s: dW = (s - 1) * outer(W0[:, j], e_j)."""
+    if W0.ndim != 2:
+        raise ValueError(f"{module}: W0 must be 2-D, got {W0.ndim}-D")
+    if not 0 <= j < W0.shape[1]:
+        raise ValueError(f"{module}: column {j} out of range for n_in={W0.shape[1]}")
+    e = np.zeros(W0.shape[1], dtype=np.float64)
+    e[j] = 1.0
+    b = (s - 1.0) * W0[:, j].astype(np.float64)
+    return LowRankDelta(module, b[:, None], e[None, :])
+
+
+def scale_head(
+    module: str, W0: np.ndarray, head: int, n_heads: int, s: float
+) -> LowRankDelta:
+    """Multiply the input columns of one attention head's block by s."""
+    if W0.ndim != 2:
+        raise ValueError(f"{module}: W0 must be 2-D, got {W0.ndim}-D")
+    n_in = W0.shape[1]
+    if n_heads < 1 or n_in % n_heads != 0:
+        raise ValueError(f"{module}: n_in={n_in} not divisible by n_heads={n_heads}")
+    if not 0 <= head < n_heads:
+        raise ValueError(f"{module}: head {head} out of range for n_heads={n_heads}")
+    size = n_in // n_heads
+    lo = head * size
+    a = np.zeros((size, n_in), dtype=np.float64)
+    a[np.arange(size), lo + np.arange(size)] = 1.0
+    b = (s - 1.0) * W0[:, lo : lo + size].astype(np.float64)
+    return LowRankDelta(module, b, a)
+
+
+def zero_head(module: str, W0: np.ndarray, head: int, n_heads: int) -> LowRankDelta:
+    """Zero one attention head's input columns (scale_head with s = 0)."""
+    return scale_head(module, W0, head, n_heads, 0.0)
