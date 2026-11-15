@@ -588,3 +588,29 @@ def test_save_into_empty_dir_keeps_inode_and_mode(tmp_path: Path) -> None:
     assert (after.st_ino, after.st_mode) == (before.st_ino, before.st_mode)
     assert verify_peft(out) == []
     assert [p.name for p in tmp_path.iterdir()] == ["out"]
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs permission checks",
+)
+def test_save_into_existing_dir_with_read_only_parent(tmp_path: Path) -> None:
+    parent = tmp_path / "parent"
+    out = parent / "out"
+    out.mkdir(parents=True)
+    (out / "README.md").write_text("keep")
+    parent.chmod(0o555)
+    try:
+        save_peft(make_edit(), out, overwrite=True)
+        assert verify_peft(out) == []
+        assert sorted(p.name for p in out.iterdir()) == sorted(
+            [
+                "README.md",
+                "adapter_model.safetensors",
+                "adapter_config.json",
+                "astro_manifest.json",
+            ]
+        )
+        assert [p.name for p in parent.iterdir()] == ["out"]
+    finally:
+        parent.chmod(0o755)

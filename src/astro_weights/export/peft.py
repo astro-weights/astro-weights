@@ -78,7 +78,9 @@ _REPLACE_ORDER = (MANIFEST, CONFIG, WEIGHTS)
 def save_peft(edit: Edit, out_dir: Path | str, *, overwrite: bool = False) -> None:
     """Write edit as a PEFT LoRA adapter (scaling 1) with an astro manifest.
 
-    The files are written to a temp directory beside `out_dir`, then moved in.
+    The files are written to a temp directory, then moved in: beside `out_dir`
+    when it is new, inside it when it exists (so its parent need not be writable
+    and a mount point works).
     A non-empty `out_dir` raises FileExistsError unless `overwrite` is true;
     with `overwrite` only the three adapter files are replaced and any other
     file in `out_dir` stays. On any failure the temp directory is removed.
@@ -94,8 +96,12 @@ def save_peft(edit: Edit, out_dir: Path | str, *, overwrite: bool = False) -> No
         target = out / name
         if target.is_dir() and not target.is_symlink():
             raise IsADirectoryError(f"{target} is a directory")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(f".{out.name}.{secrets.token_hex(4)}.tmp")
+    if exists:
+        # inside out_dir: same filesystem and writable whenever out_dir is
+        tmp = out / f".astro-tmp-{secrets.token_hex(4)}"
+    else:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(f".{out.name}.{secrets.token_hex(4)}.tmp")
     tmp.mkdir()
     try:
         _write_adapter(edit, tmp)
@@ -103,7 +109,8 @@ def save_peft(edit: Edit, out_dir: Path | str, *, overwrite: bool = False) -> No
             tmp.rename(out)  # atomic
         else:
             # An existing directory (even empty) is filled, never swapped, so
-            # its inode, mode and mount point survive. replace() swaps the
+            # its inode, mode and mount point survive; tmp is inside it, so the
+            # moves never cross a filesystem. replace() swaps the
             # entry, so a symlinked adapter file is replaced itself and its
             # target is never written through.
             for name in _REPLACE_ORDER:
