@@ -68,7 +68,11 @@ def resolve_modules(model: nn.Module, edit: Edit) -> dict[str, str]:
 
 
 def apply(model: nn.Module, edit: Edit, adapter_name: str = "astro") -> PeftModel:
-    """Wrap only the edit's modules in LoRA layers carrying the edit's factors."""
+    """Wrap only the edit's modules in LoRA layers carrying the edit's factors.
+
+    Edit module names map to model names through `resolve_modules`. Raises
+    `RuntimeError` if the adapter did not wrap every edit module.
+    """
     names = resolve_modules(model, edit)
     modules = dict(model.named_modules())
     state: dict[str, torch.Tensor] = {}

@@ -10,7 +10,7 @@ extra_css = ["assets/brand.css"]
 nav = [
   { "Home" = "index.md" },
   { "Tutorials" = ["tutorials/first-edit.md"] },
-  { "How-to" = ["how-to/inspect-adapter.md"] },
+  { "How-to" = ["how-to/inspect-adapter.md", "how-to/apply-across-model-classes.md"] },
   { "Reference" = ["reference/index.md", "reference/cli.md"] },
   { "Explanation" = ["explanation/why-lora.md"] },
 ]
