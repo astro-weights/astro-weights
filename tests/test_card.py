@@ -1,3 +1,4 @@
+import re
 from importlib.metadata import version
 from pathlib import Path
 
@@ -93,3 +94,52 @@ def test_format_and_write(tmp_path: Path) -> None:
     path = write_card(tmp_path / "out", text)
     assert path == tmp_path / "out" / "README.md"
     assert path.read_text() == text
+
+
+def _rows(text: str) -> list[list[str]]:
+    rows = [ln for ln in text.split("\n") if ln.startswith("| ") and "---" not in ln]
+    return [[c.strip() for c in re.split(r"(?<!\\)\|", r)[1:-1]] for r in rows]
+
+
+def test_astral_chars_kept_literal() -> None:
+    edit = _edit("org/😀")
+    text = model_card(edit, "adapter", "😀\x7f\u2028")
+    front = _front(text)
+    assert front[0] == 'base_model: "org/😀"'
+    assert front[3] == 'license: "😀\\u007f\\u2028"'
+    assert 'from_pretrained("org/😀")' in text
+    assert "\\ud83d" not in text
+
+
+def test_table_cells_escaped() -> None:
+    d = LowRankDelta("m|o`d\nel", np.ones((3, 1)), np.ones((1, 2)))
+    edit = Edit.from_deltas([d], "org/base")
+    text = model_card(edit, "adapter", "mit", results={"k|\n## h": "v|\nw"})
+    assert "\n## h" not in text
+    rows = _rows(text)
+    assert ["``m\\|o`d el``", "3 x 2", "1", "2.44949"] in rows
+    assert ["k\\| ## h", "v\\| w"] in rows
+
+
+def test_title_and_summary_whitespace() -> None:
+    text = model_card(
+        _edit(), "adapter", "mit", title="T\n## injected", summary="a  \nb   \n"
+    )
+    assert "\n# T ## injected\n" in text
+    assert "\na\nb\n" in text
+    assert all(ln == ln.rstrip() for ln in text.split("\n"))
+    assert "# org/base edit\n" in model_card(_edit(), "gguf", "mit", title=" \n ")
+
+
+def test_empty_license() -> None:
+    with pytest.raises(ValueError, match="license"):
+        model_card(_edit(), "adapter", "  ")
+
+
+def test_write_card_no_overwrite(tmp_path: Path) -> None:
+    write_card(tmp_path, "one\n")
+    with pytest.raises(FileExistsError):
+        write_card(tmp_path, "two\n", overwrite=False)
+    assert (tmp_path / "README.md").read_text() == "one\n"
+    write_card(tmp_path, "two\n")
+    assert (tmp_path / "README.md").read_text() == "two\n"

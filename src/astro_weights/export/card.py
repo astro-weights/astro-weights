@@ -1,6 +1,7 @@
 """Write a Hugging Face model card (README.md) for an edit."""
 
 import json
+import re
 from importlib.metadata import version
 from pathlib import Path
 
@@ -18,8 +19,47 @@ def _fro_norm(d: LowRankDelta) -> float:
     return float(np.sqrt(max(np.sum((b.T @ b) * (a @ a.T)), 0.0)))
 
 
+_ESCAPES = {
+    "\x7f": "\\u007f",
+    "\x85": "\\u0085",
+    "\u2028": "\\u2028",
+    "\u2029": "\\u2029",
+}
+
+
+def _q(s: str) -> str:
+    """Double-quoted string valid as YAML and Python; astral chars kept literal."""
+    out = json.dumps(s, ensure_ascii=False)
+    for ch, esc in _ESCAPES.items():
+        out = out.replace(ch, esc)
+    return out
+
+
+def _line(s: str) -> str:
+    """Collapse all whitespace, including line breaks, to single spaces."""
+    return " ".join(s.split())
+
+
+def _cell(s: str) -> str:
+    """Escape text for a markdown table cell."""
+    return _line(s).replace("\\", "\\\\").replace("|", "\\|")
+
+
+def _code_cell(s: str) -> str:
+    """Code span for a table cell; the fence outgrows any backtick run inside."""
+    s = _line(s).replace("|", "\\|")
+    fence = "`" * (_longest_run(s) + 1)
+    pad = " " if s.startswith("`") or s.endswith("`") else ""
+    return f"{fence}{pad}{s}{pad}{fence}"
+
+
+def _longest_run(s: str) -> int:
+    runs = [len(r) for r in re.findall(r"`+", s)]
+    return max(runs, default=0)
+
+
 def _front_matter(edit: Edit, kind: str, license: str) -> list[str]:
-    q = json.dumps
+    q = _q
     lines = ["---", f"base_model: {q(edit.base_model)}"]
     relation = "adapter" if kind == "adapter" else "quantized"
     lines.append(f"base_model_relation: {q(relation)}")
@@ -41,7 +81,7 @@ def _edit_table(edit: Edit) -> list[str]:
     for d in sorted(edit.deltas, key=lambda d: d.module):
         out, inp = d.shape
         lines.append(
-            f"| `{d.module}` | {out} x {inp} | {d.rank} | {_fro_norm(d):.6g} |"
+            f"| {_code_cell(d.module)} | {out} x {inp} | {d.rank} | {_fro_norm(d):.6g} |"
         )
     return lines
 
@@ -54,7 +94,7 @@ def _how_to_load(edit: Edit, kind: str) -> list[str]:
         "from peft import PeftModel",
         "from transformers import AutoModelForCausalLM",
         "",
-        f"base = AutoModelForCausalLM.from_pretrained({json.dumps(edit.base_model)})",
+        f"base = AutoModelForCausalLM.from_pretrained({_q(edit.base_model)})",
         'model = PeftModel.from_pretrained(base, "path/to/this/adapter")',
         "```",
     ]
@@ -73,24 +113,33 @@ def model_card(
         raise ValueError(f"unknown kind {kind!r}; expected one of {KINDS}")
     if not edit.base_model:
         raise ValueError("edit.base_model is empty; a model card needs a base model")
+    if not license.strip():
+        raise ValueError("license is empty; the Hub rejects a blank license")
     lines = _front_matter(edit, kind, license)
-    lines += ["", f"# {title or f'{edit.base_model} edit'}", ""]
-    if summary:
-        lines += [summary, ""]
+    lines += ["", f"# {_line(title or '') or f'{edit.base_model} edit'}", ""]
+    if summary and summary.strip():
+        lines += ["\n".join(summary.strip().splitlines()), ""]
     lines += ["## Edit", "", *_edit_table(edit), "", "## How to load", ""]
     lines += [*_how_to_load(edit, kind), ""]
     if results:
         lines += ["## Results", "", "| metric | value |", "| --- | --- |"]
-        lines += [f"| {k} | {v} |" for k, v in results.items()]
+        lines += [f"| {_cell(k)} | {_cell(v)} |" for k, v in results.items()]
         lines.append("")
     lines.append(f"Card written by astro-weights {version('astro-weights')}.")
-    return "\n".join(line.rstrip() for line in lines) + "\n"
+    text = "\n".join(lines)
+    return "\n".join(line.rstrip() for line in text.split("\n")) + "\n"
 
 
-def write_card(directory: Path | str, text: str) -> Path:
-    """Write `text` as README.md in `directory` and return its path."""
+def write_card(directory: Path | str, text: str, *, overwrite: bool = True) -> Path:
+    """Write `text` as README.md in `directory` and return its path.
+
+    Replaces an existing README.md unless `overwrite=False`, which raises
+    FileExistsError instead.
+    """
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
     path = out / "README.md"
+    if path.exists() and not overwrite:
+        raise FileExistsError(path)
     path.write_text(text)
     return path
