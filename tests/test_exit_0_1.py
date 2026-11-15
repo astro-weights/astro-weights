@@ -31,6 +31,7 @@ S18K6S25_COEF = [
     0.49340373277664185,
 ]
 S18K6S25_REL_CHANGE = 0.17884531617164612
+S18K6S25_SHIFT_NORM = 8.286072731018066
 
 
 def _fro(x: np.ndarray) -> float:
@@ -51,12 +52,18 @@ def leg_a(
     base_dir: Path,
     edited_dir: Path,
     work: Path,
+    numbers: dict[str, float],
     *,
     expect_rel_change: float,
+    expect_dense_norm: float,
     rel_err_tol: float,
     change_tol: float,
-) -> dict[str, float]:
-    """Rebuild one column_shift edit from a recipe and compare it with edited - base."""
+    dense_norm_tol: float,
+) -> None:
+    """Rebuild one column_shift edit from a recipe and compare it with edited - base.
+
+    Measurements go into `numbers` before any assert, so a failed run still reports them.
+    """
     recipe = load_recipe(recipe_src)
     step = recipe["steps"][0]
     module, names = step["module"], step["arrays"]
@@ -80,24 +87,24 @@ def leg_a(
 
     outside = np.ones(d.shape[1], dtype=bool)
     outside[idx] = False
-    assert not d[:, outside].any(), "edited weight differs outside the edited columns"
-
-    d_norm = _fro(d)
-    rel_err = _fro(dense - d) / d_norm
-    base_norm = _fro(base)
-    rel_change = (
-        _fro(dense) / base_norm
-    )  # pre-rounding change, as the original run recorded
-    d_rel_change = d_norm / base_norm  # after the bf16 rounding of the saved weight
-    assert rel_err < rel_err_tol
-    assert rel_change == pytest.approx(expect_rel_change, rel=change_tol)
-    return {
-        "rel_err": rel_err,
-        "rel_change": rel_change,
-        "d_rel_change": d_rel_change,
-        "expect_rel_change": expect_rel_change,
-        "delta_norm": d_norm,
-    }
+    d_norm, base_norm, dense_norm = _fro(d), _fro(base), _fro(dense)
+    # The original run's recorded 0.17884531617164612 is 0.42% high: it took |W0|_F with
+    # a float32 torch norm over 50M elements (78.7121); the float64 value is 79.0440.
+    numbers.update(
+        rel_err=_fro(dense - d) / d_norm,
+        rel_change=dense_norm / base_norm,
+        d_rel_change=d_norm / base_norm,
+        expect_rel_change=expect_rel_change,
+        dense_norm=dense_norm,
+        expect_dense_norm=expect_dense_norm,
+        delta_norm=d_norm,
+        base_norm=base_norm,
+        nonzero_outside=float(np.count_nonzero(d[:, outside])),
+    )
+    assert numbers["nonzero_outside"] == 0, "edited weight differs outside the columns"
+    assert numbers["rel_err"] < rel_err_tol
+    assert dense_norm == pytest.approx(expect_dense_norm, rel=dense_norm_tol)
+    assert numbers["rel_change"] == pytest.approx(expect_rel_change, rel=change_tol)
 
 
 def leg_b(
@@ -164,7 +171,15 @@ def realdata() -> Path:
 
 @pytest.mark.realdata
 def test_leg_a_recipe_real(realdata: Path, tmp_path: Path) -> None:
-    numbers = leg_a(
+    numbers: dict[str, float] = {}
+    try:
+        _leg_a_real(realdata, tmp_path, numbers)
+    finally:
+        _record("leg_a", numbers)
+
+
+def _leg_a_real(realdata: Path, tmp_path: Path, numbers: dict[str, float]) -> None:
+    leg_a(
         RECIPE,
         realdata / "s18k6s25" / "shift_l18.npy",
         S18K6S25_IDX,
@@ -172,11 +187,14 @@ def test_leg_a_recipe_real(realdata: Path, tmp_path: Path) -> None:
         realdata / "base",
         realdata / "s18k6s25",
         tmp_path,
+        numbers,
         expect_rel_change=S18K6S25_REL_CHANGE,
+        expect_dense_norm=S18K6S25_SHIFT_NORM
+        * float(np.sqrt(np.sum(np.square(S18K6S25_COEF)))),
         rel_err_tol=5e-3,
-        change_tol=1e-4,
+        change_tol=6e-3,
+        dense_norm_tol=1e-4,
     )
-    _record("leg_a", numbers)
 
 
 @pytest.mark.realdata
@@ -235,7 +253,8 @@ def test_exit_legs_synthetic(tmp_path: Path) -> None:
     recipe["steps"][0]["params"]["n_in"] = IN
     recipe_src = tmp_path / "synthetic.recipe.json"
     save_recipe(recipe_src, recipe)
-    a = leg_a(
+    a: dict[str, float] = {}
+    leg_a(
         recipe_src,
         a_dir / "shift_l18.npy",
         idx,
@@ -243,9 +262,13 @@ def test_exit_legs_synthetic(tmp_path: Path) -> None:
         base_dir,
         a_dir,
         tmp_path / "work_a",
+        a,
         expect_rel_change=float(np.linalg.norm(dense) / np.linalg.norm(bases[1])),
+        expect_dense_norm=float(np.linalg.norm(shift.astype(np.float64)))
+        * float(np.linalg.norm(coef)),
         rel_err_tol=1e-5,
         change_tol=1e-5,
+        dense_norm_tol=1e-5,
     )
     assert a["rel_err"] < 1e-5
 
