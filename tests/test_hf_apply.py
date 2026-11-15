@@ -236,3 +236,66 @@ def test_head_edit_with_rank1_edit(tiny_llama: Any, input_ids: Any) -> None:
     assert torch.count_nonzero(block) == 0
     got = logits(apply(tiny_llama, edit), input_ids)
     assert torch.allclose(got, logits(ref, input_ids), atol=1e-5)
+
+
+def second_edit(model: Any, module: str = MODULE) -> Edit:
+    w0 = model.get_submodule(module).weight.detach().numpy()
+    rng = np.random.default_rng(5)
+    u = rng.standard_normal(w0.shape[0]).astype(np.float32)
+    mask = top_k_mask(rng.standard_normal(w0.shape[1]), 8)
+    return Edit((masked_rank1(module, w0, u, mask, 1.0),), "tiny-llama")
+
+
+def test_swap_equals_fresh_apply(tiny_llama: Any, input_ids: Any) -> None:
+    from astro_weights.runners.hf import swap
+
+    a = make_edit(tiny_llama)
+    other = "model.layers.0.mlp.down_proj"
+    b = second_edit(tiny_llama, other)
+    base = logits(tiny_llama, input_ids)
+    fresh = logits(apply(copy.deepcopy(tiny_llama), b), input_ids)
+
+    peft_model = swap(apply(tiny_llama, a), b)
+    assert torch.allclose(logits(peft_model, input_ids), fresh, atol=1e-6)
+    names = lora_modules(peft_model)
+    assert len(names) == 1
+    assert names[0].endswith(f"{other}.lora_A.astro")
+
+    model = remove(peft_model)
+    assert not lora_modules(model)
+    assert torch.equal(logits(model, input_ids), base)
+
+
+def test_merged_weights_match_dense(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import merged_weights
+
+    edit = make_edit(tiny_llama)
+    before = {k: v.clone() for k, v in tiny_llama.state_dict().items()}
+    merged = merged_weights(tiny_llama, edit)
+    w0 = tiny_llama.get_submodule(MODULE).weight
+    assert list(merged) == [MODULE]
+    assert torch.allclose(
+        merged[MODULE], w0 + torch.from_numpy(edit.deltas[0].dense()), atol=1e-6
+    )
+    after = tiny_llama.state_dict()
+    assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+def test_merged_weights_other_layout(tiny_qwen_text: Any) -> None:
+    from astro_weights.runners.hf import merged_weights
+
+    edit = renamed(edit_for(tiny_qwen_text, TEXT), VL)
+    merged = merged_weights(tiny_qwen_text, edit)
+    w0 = tiny_qwen_text.get_submodule(TEXT).weight
+    assert list(merged) == [TEXT]
+    assert torch.allclose(
+        merged[TEXT], w0 + torch.from_numpy(edit.deltas[0].dense()), atol=1e-6
+    )
+
+
+def test_merged_weights_rejects_peft_model(tiny_llama: Any) -> None:
+    from astro_weights.runners.hf import merged_weights
+
+    edit = make_edit(tiny_llama)
+    with pytest.raises(ValueError, match="plain base model"):
+        merged_weights(apply(tiny_llama, edit), edit)
