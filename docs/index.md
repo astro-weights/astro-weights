@@ -5,7 +5,7 @@
 Small course corrections for open LLMs. Agent proposes small low-rank edits to model weights; edits that hold up under paired tests get saved as plain PEFT LoRA adapters.
 
 !!! warning "Pre-alpha"
-    0.0.8 on PyPI. API changes without notice until 1.0.
+    0.0.9 on PyPI. API changes without notice until 1.0.
 
 Covers edit core (build low-rank edits, save and load as LoRA adapters, apply to transformers models, export as GGUF with model card), difference-of-means directions with gate, eval runner with graders, paired eval statistics.
 
@@ -26,6 +26,7 @@ pip install "astro-weights[hf]"
 | Need | Page |
 |---|---|
 | First edit, start to finish | [Tutorial: first edit](tutorials/first-edit.md) |
+| Adapter from recipe file, GGUF and card from CLI | [How-to: build adapter from recipe file](how-to/build-from-recipe.md) |
 | Check adapter before shipping | [How-to: inspect adapter](how-to/inspect-adapter.md) |
 | Edited weights without adapter | [How-to: save merged weights](how-to/save-merged-weights.md) |
 | llama.cpp adapter, GGUF splice, model card | [How-to: export GGUF and model card](how-to/export-gguf.md) |

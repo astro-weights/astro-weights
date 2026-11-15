@@ -2,6 +2,8 @@
 
 `astro_weights.export.gguf` writes edit as llama.cpp LoRA adapter GGUF, reads it back, and splices replacement tensors into existing base GGUF. Needs `gguf` extra (`pip install "astro-weights[gguf]"`). `astro_weights.export.card` writes Hugging Face model card; numpy only.
 
+Saved adapter on disk: `astro-weights export DIR --gguf OUT.gguf --arch ARCH --card LICENSE` does both without Python; see [CLI reference](../reference/cli.md).
+
 ## Write and read adapter GGUF
 
 ```python
