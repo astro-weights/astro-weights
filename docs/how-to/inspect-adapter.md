@@ -19,10 +19,34 @@ On success prints base model, rank, module count, one row per module (`out x in`
 ## Python
 
 ```python
-from astro_weights.export import read_peft, verify_peft
+import numpy as np
+
+from astro_weights.edits import Edit, rank1
+from astro_weights.export import read_peft, save_peft, verify_peft
+
+rng = np.random.default_rng(0)
+delta = rank1(
+    "model.layers.1.mlp.down_proj", rng.standard_normal(16), rng.standard_normal(48)
+)
+save_peft(Edit(deltas=(delta,), base_model="org/tiny"), "my-edit")
 
 problems = verify_peft("my-edit")  # list of strings; empty when fine
 edit, problems = read_peft("my-edit")  # edit plus problems, one pass
+print(problems, edit.base_model)
 ```
 
-`read_peft` raises `ValueError` on structural problems (wrong `peft_type`, `use_dora`, `use_rslora` or `fan_in_fan_out` set). Hash problems come back in list. `load_peft` raises when list not empty.
+Prints:
+
+```text
+[] org/tiny
+```
+
+`read_peft` raises `ValueError` on adapters it cannot represent:
+
+- `peft_type` not `LORA`; `use_dora`, `use_rslora` or `fan_in_fan_out` true.
+- `rank_pattern`, `alpha_pattern` or `modules_to_save` set; `bias` other than `none`.
+- `r` not int >= 1; `lora_alpha` not number, or `lora_alpha / r` not finite.
+- tensors for module outside list-form `target_modules`.
+- malformed JSON or manifest fields.
+
+Hash problems come back in list. `verify_peft` never raises: every problem, structural or hash, comes back as string. `load_peft` raises when list not empty.

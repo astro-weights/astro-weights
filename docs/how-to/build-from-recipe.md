@@ -111,11 +111,11 @@ Only these recipes allowed in a step. Same names as keyword arguments of functio
 
 ## Same in Python
 
-Rebuild from recipe and check against shipped adapter. Continues example above:
+`build_edit` plus `save_peft` do what `build` does. Continues example above:
 
 ```python
 from astro_weights.edits import build_edit, load_recipe
-from astro_weights.export import read_base_weight, read_peft
+from astro_weights.export import read_base_weight, read_peft, save_peft
 
 recipe = load_recipe("recipe/recipe.json")  # validates; arrays not loaded yet
 edit = build_edit(
@@ -125,10 +125,11 @@ edit = build_edit(
 )
 print(sorted(edit.meta["recipe"]["arrays_sha256"]))
 
-shipped, problems = read_peft("my-adapter")
+save_peft(edit, "rebuilt")
+rebuilt, problems = read_peft("rebuilt")
 print(
     problems,
-    shipped.meta["recipe"]["arrays_sha256"] == edit.meta["recipe"]["arrays_sha256"],
+    rebuilt.meta["recipe"]["arrays_sha256"] == edit.meta["recipe"]["arrays_sha256"],
 )
 ```
 
@@ -138,3 +139,5 @@ Prints:
 ['a.npy', 'b.npy', 'v.npy']
 [] True
 ```
+
+To check shipped adapter against recipe, compare `edit.meta["recipe"]["arrays_sha256"]` with same field from `read_peft("my-adapter")`.
