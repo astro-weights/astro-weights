@@ -16,6 +16,7 @@ nav = [
     "how-to/save-merged-weights.md",
     "how-to/find-direction.md",
     "how-to/compare-arms.md",
+    "how-to/run-eval.md",
   ] },
   { "Reference" = ["reference/index.md", "reference/cli.md"] },
   { "Explanation" = ["explanation/why-lora.md"] },
