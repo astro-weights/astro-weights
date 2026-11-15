@@ -14,8 +14,9 @@ You may use AI tools. You are responsible for what you submit.
   `Assisted-by: Claude:claude-opus-5-5` to your commits.
 - **Understand it.** You must be able to explain the change in your own words and
   answer review questions without asking the tool.
-- **Sign off yourself.** Only a human can certify the DCO. Your agent must not add
-  `Signed-off-by` for you; add it yourself after you have reviewed the change.
+- **The sign-off is yours.** Only a human can certify the DCO. Your agent may add your
+  `Signed-off-by` only when you tell it to, after you have reviewed the change. Whoever
+  types it, the sign-off is your certification.
 - **Open an issue first** for anything larger than a small fix.
 - **Write to people yourself.** Issues, PR descriptions and comments must be written
   or fully edited by you. Translation and grammar tools are fine.

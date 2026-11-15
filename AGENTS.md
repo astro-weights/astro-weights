@@ -56,7 +56,7 @@ Run all of them before opening a PR; CI runs the same set.
 ## If you are an AI agent working for an outside contributor
 
 - Say in the PR body that an agent wrote the change, and which one (the PR template has an AI disclosure section).
-- Never add `Signed-off-by`. The human contributor adds it after reviewing the change.
+- Add `Signed-off-by` only when the human contributor tells you to, after they have reviewed the change. Never sign off on your own initiative.
 - Follow `AI_POLICY.md`. Do not open PRs, issues or comments on your own; a human reviews them first.
 
 ## Release
