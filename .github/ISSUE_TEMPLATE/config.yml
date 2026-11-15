@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Question
+    url: https://github.com/astro-weights/astro-weights/discussions/categories/q-a
+    about: Ask how to use astro-weights in Discussions (Q&A).
+  - name: Idea
+    url: https://github.com/astro-weights/astro-weights/discussions/categories/ideas
+    about: Float an idea before it is a concrete feature request.
   - name: Security vulnerability
     url: https://github.com/astro-weights/astro-weights/security/advisories/new
     about: Report security issues privately, not as public issues.

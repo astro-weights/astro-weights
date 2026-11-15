@@ -84,6 +84,8 @@ Maintainers: see [RELEASING.md](RELEASING.md) for the release steps.
 
 ## Issue triage
 
+- Questions and early ideas go to [Discussions](https://github.com/astro-weights/astro-weights/discussions) (Q&A, Ideas). Issues are for bugs and concrete feature requests. A question filed as an issue may be moved to Discussions.
+- Maintainers add one `area: ...` label (`edits`, `directions`, `eval`, `export`, `runners`, `cli`) matching the subpackage. Requests for a new model family get `model support`.
 - New issues get the `needs triage` label. A maintainer removes it after reading the issue.
 - `needs info` or `needs repro` means we are waiting on the reporter. Issues with no reply for a few weeks may be closed.
 - `good first issue` is reserved for people learning the codebase without AI help. Please do these by hand.
