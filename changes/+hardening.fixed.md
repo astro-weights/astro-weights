@@ -1,1 +1,0 @@
-Recipes, merged-tensor loading, `swap` and the direction gate now reject bad input (non-finite values, non-integer indices, tampered shapes or dtypes, `draws < 1`) with a `ValueError`, and a failed `swap` leaves the original model usable.

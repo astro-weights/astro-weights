@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.0.7] - 2026-11-15
+
+### Added
+
+- Added `astro_weights.eval` graders (`grade_choice`, `grade_math`, `grade_exact`), `runners.generate` to produce per-item eval records with fixed greedy settings, and an `astro-weights eval BASE.jsonl EDIT.jsonl` command.
+
+### Fixed
+
+- Recipes, merged-tensor loading, `swap` and the direction gate now reject bad input (non-finite values, non-integer indices, tampered shapes or dtypes, `draws < 1`) with a `ValueError`, and a failed `swap` leaves the original model usable.
+
 ## [0.0.6] - 2026-11-15
 
 ### Added
@@ -59,6 +69,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.0.7]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.7
 [0.0.6]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.6
 [0.0.5]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.5
 [0.0.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.4
