@@ -1,16 +1,32 @@
 """Property tests: parsers raise ValueError on bad input, never anything else."""
 
+import io
 import json
 import math
+import struct
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from hypothesis.extra import numpy as hnp
+from safetensors import SafetensorError
 
+from astro_weights.edits import Edit, LowRankDelta
+from astro_weights.edits.recipe_file import build_edit, load_recipe
 from astro_weights.eval import Record, read_jsonl, write_jsonl
+from astro_weights.export.base import read_tensor, tensor_sha256
+from astro_weights.export.peft import (
+    CONFIG,
+    MANIFEST,
+    WEIGHTS,
+    read_peft,
+    save_peft,
+    verify_peft,
+)
 
 FUZZ = settings(max_examples=300, deadline=None)
 
@@ -147,3 +163,476 @@ def test_read_jsonl_rejects_overflow_and_deep_nesting(
     path.write_text(line + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match=match):
         read_jsonl(path)
+
+
+# --- shared helpers for the file-format fuzzers -----------------------------
+
+
+def mutate_json(obj: Any, data: st.DataObject) -> Any:
+    """Copy of `obj` with one randomly chosen node replaced by an arbitrary JSON value."""
+    paths: list[tuple[Any, ...]] = []
+
+    def walk(node: Any, path: tuple[Any, ...]) -> None:
+        paths.append(path)
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, (*path, k))
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, (*path, i))
+
+    walk(obj, ())
+    path = data.draw(st.sampled_from(paths))
+    new = data.draw(json_values)
+    if not path:
+        return new
+    out = json.loads(json.dumps(obj))
+    node = out
+    for p in path[:-1]:
+        node = node[p]
+    if data.draw(st.booleans()) and isinstance(node, dict):
+        del node[path[-1]]
+    else:
+        node[path[-1]] = new
+    return out
+
+
+def mutate_bytes(raw: bytes, data: st.DataObject) -> bytes:
+    """`raw` truncated and/or with a few bytes flipped."""
+    out = bytearray(raw)
+    for _ in range(data.draw(st.integers(0, 4))):
+        if out:
+            out[data.draw(st.integers(0, len(out) - 1))] = data.draw(
+                st.integers(0, 255)
+            )
+    if data.draw(st.booleans()):
+        del out[data.draw(st.integers(0, len(out))) :]
+    return bytes(out)
+
+
+# --- export.base: read_tensor / tensor_sha256 -------------------------------
+
+
+def _st_bytes(header: object, body: bytes, n: int | None = None) -> bytes:
+    blob = json.dumps(header).encode()
+    return struct.pack("<Q", len(blob) if n is None else n) + blob + body
+
+
+def _both_value_error(path: Path) -> None:
+    only_value_error(lambda p: read_tensor(p, "w"), path)
+    only_value_error(lambda p: tensor_sha256(p, "w"), path)
+
+
+_VALID_ST = _st_bytes(
+    {"w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]}}, bytes(24)
+)
+
+
+@FUZZ
+@given(raw=st.binary(max_size=300))
+def test_read_tensor_arbitrary_bytes(
+    tmp_path_factory: pytest.TempPathFactory, raw: bytes
+) -> None:
+    path = tmp_path_factory.mktemp("fuzz") / "x.safetensors"
+    path.write_bytes(raw)
+    _both_value_error(path)
+
+
+@FUZZ
+@given(data=st.data())
+def test_read_tensor_mutated_bytes(
+    tmp_path_factory: pytest.TempPathFactory, data: st.DataObject
+) -> None:
+    path = tmp_path_factory.mktemp("fuzz") / "x.safetensors"
+    path.write_bytes(mutate_bytes(_VALID_ST, data))
+    _both_value_error(path)
+
+
+@FUZZ
+@given(
+    n=st.none() | st.integers(0, 2**64 - 1),
+    entry=st.fixed_dictionaries(
+        {},
+        optional={
+            "dtype": st.sampled_from(["F32", "F16", "BF16", "I8", "F64", ""])
+            | json_values,
+            "shape": st.lists(st.integers(-5, 2**70), max_size=4) | json_values,
+            "data_offsets": st.lists(st.integers(-5, 2**70), max_size=3) | json_values,
+        },
+    ),
+    body=st.binary(max_size=64),
+    header=st.none() | json_values,
+)
+def test_read_tensor_mutated_header(
+    tmp_path_factory: pytest.TempPathFactory,
+    n: int | None,
+    entry: dict[str, Any],
+    body: bytes,
+    header: Any,
+) -> None:
+    path = tmp_path_factory.mktemp("fuzz") / "x.safetensors"
+    path.write_bytes(_st_bytes({"w": entry} if header is None else header, body, n))
+    _both_value_error(path)
+
+
+# --- edits.recipe_file: load_recipe / build_edit ----------------------------
+
+_W0 = np.ones((4, 6), dtype=np.float32)
+_RECIPES_VALID: dict[str, Any] = {
+    "format": 1,
+    "base_model": "org/m",
+    "steps": [
+        {
+            "recipe": "rank1",
+            "module": "model.layers.0.mlp.down_proj",
+            "arrays": {"b": "b.npy", "a": "a.npy"},
+        },
+        {
+            "recipe": "scale_column",
+            "module": "model.layers.1.mlp.down_proj",
+            "params": {"j": 2, "s": 0.5},
+        },
+        {
+            "recipe": "masked_rank1",
+            "module": "model.layers.2.mlp.down_proj",
+            "params": {"alpha": 0.5},
+            "arrays": {"u": "u.npy", "mask": "mask.npy"},
+        },
+        {
+            "recipe": "column_shift",
+            "module": "model.layers.3.mlp.down_proj",
+            "params": {"n_in": 6},
+            "arrays": {"shift": "u.npy", "idx": "idx.npy", "coef": "coef.npy"},
+        },
+        {
+            "recipe": "project_out",
+            "module": "model.layers.4.mlp.down_proj",
+            "params": {"strength": 1.0},
+            "arrays": {"v": "u.npy"},
+        },
+        {
+            "recipe": "scale_head",
+            "module": "model.layers.5.self_attn.o_proj",
+            "params": {"head": 1, "n_heads": 2, "s": 0.5},
+        },
+        {
+            "recipe": "zero_head",
+            "module": "model.layers.6.self_attn.o_proj",
+            "params": {"head": 0, "n_heads": 3},
+        },
+    ],
+}
+
+
+def _npy(arr: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    return buf.getvalue()
+
+
+_NPY_FILES = {
+    "b.npy": _npy(np.ones(4, dtype=np.float32)),
+    "a.npy": _npy(np.ones(6, dtype=np.float32)),
+    "u.npy": _npy(np.ones(4, dtype=np.float32)),
+    "mask.npy": _npy(np.array([1, 0, 1, 0, 1, 0], dtype=bool)),
+    "idx.npy": _npy(np.array([1, 5], dtype=np.int64)),
+    "coef.npy": _npy(np.array([0.5, -1.0], dtype=np.float32)),
+}
+
+
+def _weights(_module: str) -> np.ndarray:
+    return _W0
+
+
+def _load_and_build(path: Path) -> None:
+    recipe = load_recipe(path)
+    build_edit(recipe, _weights, path.parent)
+
+
+def _recipe_dir(root: Path, files: dict[str, bytes]) -> Path:
+    for name, raw in files.items():
+        (root / name).write_bytes(raw)
+    return root / "recipe.json"
+
+
+@FUZZ
+@given(raw=st.binary(max_size=300))
+def test_load_recipe_arbitrary_bytes(
+    tmp_path_factory: pytest.TempPathFactory, raw: bytes
+) -> None:
+    path = _recipe_dir(tmp_path_factory.mktemp("fuzz"), {"recipe.json": raw})
+    only_value_error(_load_and_build, path)
+
+
+@FUZZ
+@given(value=json_values)
+def test_load_recipe_arbitrary_json(
+    tmp_path_factory: pytest.TempPathFactory, value: Any
+) -> None:
+    path = _recipe_dir(
+        tmp_path_factory.mktemp("fuzz"), {"recipe.json": json.dumps(value).encode()}
+    )
+    only_value_error(_load_and_build, path)
+
+
+@FUZZ
+@given(data=st.data())
+def test_build_edit_mutated_recipe(
+    tmp_path_factory: pytest.TempPathFactory, data: st.DataObject
+) -> None:
+    recipe = mutate_json(_RECIPES_VALID, data)
+    path = _recipe_dir(
+        tmp_path_factory.mktemp("fuzz"),
+        {"recipe.json": json.dumps(recipe).encode(), **_NPY_FILES},
+    )
+    only_value_error(_load_and_build, path)
+
+
+@FUZZ
+@given(data=st.data(), name=st.sampled_from(sorted(_NPY_FILES)))
+def test_build_edit_mutated_npy(
+    tmp_path_factory: pytest.TempPathFactory, data: st.DataObject, name: str
+) -> None:
+    raw = (
+        data.draw(st.binary(max_size=300))
+        if data.draw(st.booleans())
+        else mutate_bytes(_NPY_FILES[name], data)
+    )
+    path = _recipe_dir(
+        tmp_path_factory.mktemp("fuzz"),
+        {
+            "recipe.json": json.dumps(_RECIPES_VALID).encode(),
+            **_NPY_FILES,
+            name: raw,
+        },
+    )
+    only_value_error(_load_and_build, path)
+
+
+@FUZZ
+@given(
+    arr=hnp.arrays(
+        dtype=hnp.scalar_dtypes(),
+        shape=hnp.array_shapes(min_dims=0, max_dims=3, max_side=8),
+    ),
+    name=st.sampled_from(sorted(_NPY_FILES)),
+)
+def test_build_edit_odd_arrays(
+    tmp_path_factory: pytest.TempPathFactory, arr: np.ndarray, name: str
+) -> None:
+    path = _recipe_dir(
+        tmp_path_factory.mktemp("fuzz"),
+        {
+            "recipe.json": json.dumps(_RECIPES_VALID).encode(),
+            **_NPY_FILES,
+            name: _npy(arr),
+        },
+    )
+    only_value_error(_load_and_build, path)
+
+
+# --- export.peft: read_peft / verify_peft ------------------------------------
+
+
+@pytest.fixture(scope="module")
+def adapter_files(tmp_path_factory: pytest.TempPathFactory) -> dict[str, bytes]:
+    """File name -> bytes of a small valid adapter directory."""
+    rng = np.random.default_rng(0)
+    deltas = tuple(
+        LowRankDelta(
+            f"model.layers.{i}.mlp.down_proj",
+            rng.standard_normal((4, 2)),
+            rng.standard_normal((2, 3)),
+        )
+        for i in range(2)
+    )
+    out = tmp_path_factory.mktemp("adapter")
+    save_peft(Edit(deltas, "org/m", meta={"k": [1, 2]}), out)
+    return {p.name: p.read_bytes() for p in out.iterdir()}
+
+
+def _adapter_dir(root: Path, files: dict[str, bytes]) -> Path:
+    for name, raw in files.items():
+        (root / name).write_bytes(raw)
+    return root
+
+
+def _read_peft_tolerating_known_bugs(path: Path) -> None:
+    """read_peft, ignoring the two leaks pinned by the xfail tests below."""
+    try:
+        read_peft(path)
+    except (ValueError, KeyError, SafetensorError):
+        pass
+
+
+def _check_peft(path: Path) -> None:
+    """verify_peft never raises and returns strings; read_peft is ValueError-only."""
+    problems = verify_peft(path)
+    assert all(isinstance(p, str) for p in problems)
+    _read_peft_tolerating_known_bugs(path)
+
+
+def _fuzz_adapter(
+    tmp_path_factory: pytest.TempPathFactory,
+    files: dict[str, bytes],
+    name: str,
+    raw: bytes,
+) -> None:
+    path = _adapter_dir(tmp_path_factory.mktemp("fuzz"), {**files, name: raw})
+    _check_peft(path)
+
+
+@FUZZ
+@given(data=st.data(), name=st.sampled_from([CONFIG, MANIFEST]))
+def test_peft_mutated_json(
+    tmp_path_factory: pytest.TempPathFactory,
+    adapter_files: dict[str, bytes],
+    data: st.DataObject,
+    name: str,
+) -> None:
+    doc = mutate_json(json.loads(adapter_files[name]), data)
+    _fuzz_adapter(tmp_path_factory, adapter_files, name, json.dumps(doc).encode())
+
+
+@FUZZ
+@given(raw=st.binary(max_size=300), name=st.sampled_from([CONFIG, MANIFEST, WEIGHTS]))
+def test_peft_arbitrary_bytes(
+    tmp_path_factory: pytest.TempPathFactory,
+    adapter_files: dict[str, bytes],
+    raw: bytes,
+    name: str,
+) -> None:
+    _fuzz_adapter(tmp_path_factory, adapter_files, name, raw)
+
+
+@FUZZ
+@given(data=st.data(), name=st.sampled_from([CONFIG, MANIFEST, WEIGHTS]))
+def test_peft_mutated_bytes(
+    tmp_path_factory: pytest.TempPathFactory,
+    adapter_files: dict[str, bytes],
+    data: st.DataObject,
+    name: str,
+) -> None:
+    raw = mutate_bytes(adapter_files[name], data)
+    _fuzz_adapter(tmp_path_factory, adapter_files, name, raw)
+
+
+@FUZZ
+@given(data=st.data())
+def test_peft_mutated_safetensors_header(
+    tmp_path_factory: pytest.TempPathFactory,
+    adapter_files: dict[str, bytes],
+    data: st.DataObject,
+) -> None:
+    raw = adapter_files[WEIGHTS]
+    (n,) = struct.unpack("<Q", raw[:8])
+    header = mutate_json(json.loads(raw[8 : 8 + n]), data)
+    _fuzz_adapter(
+        tmp_path_factory, adapter_files, WEIGHTS, _st_bytes(header, raw[8 + n :])
+    )
+
+
+# peft.py is outside this task's files; these pin the read_peft leaks the fuzzers found.
+# They are strict: when peft.py is fixed they pass, and the xfail mark must go.
+
+
+@pytest.mark.xfail(strict=True, raises=KeyError, reason="read_peft: config without r")
+def test_read_peft_config_missing_r_is_value_error(
+    tmp_path_factory: pytest.TempPathFactory, adapter_files: dict[str, bytes]
+) -> None:
+    cfg = json.loads(adapter_files[CONFIG])
+    del cfg["r"]
+    path = _adapter_dir(
+        tmp_path_factory.mktemp("fuzz"),
+        {**adapter_files, CONFIG: json.dumps(cfg).encode()},
+    )
+    only_value_error(read_peft, path)
+
+
+@pytest.mark.xfail(
+    strict=True, raises=SafetensorError, reason="read_peft: corrupt safetensors"
+)
+def test_read_peft_corrupt_safetensors_is_value_error(
+    tmp_path_factory: pytest.TempPathFactory, adapter_files: dict[str, bytes]
+) -> None:
+    path = _adapter_dir(
+        tmp_path_factory.mktemp("fuzz"), {**adapter_files, WEIGHTS: b"\x00" * 4}
+    )
+    only_value_error(read_peft, path)
+
+
+# --- export.gguf: read_lora_gguf ---------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def adapter_gguf(tmp_path_factory: pytest.TempPathFactory) -> bytes:
+    """Bytes of a small valid adapter GGUF."""
+    pytest.importorskip("gguf")
+    from astro_weights.export.gguf import save_lora_gguf
+
+    rng = np.random.default_rng(1)
+    delta = LowRankDelta(
+        "model.layers.1.mlp.down_proj",
+        rng.standard_normal((4, 2)),
+        rng.standard_normal((2, 3)),
+    )
+    path = tmp_path_factory.mktemp("gguf") / "a.gguf"
+    save_lora_gguf(Edit((delta,), "org/m"), path, "qwen35")
+    return path.read_bytes()
+
+
+def _read_lora(path: Path) -> None:
+    from astro_weights.export.gguf import read_lora_gguf
+
+    read_lora_gguf(path)
+
+
+@FUZZ
+@given(raw=st.binary(max_size=300))
+def test_read_lora_gguf_arbitrary_bytes(
+    tmp_path_factory: pytest.TempPathFactory, adapter_gguf: bytes, raw: bytes
+) -> None:
+    path = tmp_path_factory.mktemp("fuzz") / "x.gguf"
+    path.write_bytes(b"GGUF" + raw)  # past the magic check, into the parser
+    only_value_error(_read_lora, path)
+
+
+@FUZZ
+@given(data=st.data())
+def test_read_lora_gguf_mutated(
+    tmp_path_factory: pytest.TempPathFactory, adapter_gguf: bytes, data: st.DataObject
+) -> None:
+    path = tmp_path_factory.mktemp("fuzz") / "x.gguf"
+    path.write_bytes(mutate_bytes(adapter_gguf, data))
+    only_value_error(_read_lora, path)
+
+
+@FUZZ
+@given(
+    n_tensors=st.none() | st.integers(0, 2**64 - 1) | st.sampled_from([2**31, 2**63]),
+    n_kv=st.none() | st.integers(0, 2**64 - 1) | st.sampled_from([2**31, 2**63]),
+    version=st.none() | st.integers(0, 2**32 - 1),
+    patch=st.lists(
+        st.tuples(st.integers(0, 400), st.binary(min_size=1, max_size=8)), max_size=3
+    ),
+)
+def test_read_lora_gguf_mutated_header(
+    tmp_path_factory: pytest.TempPathFactory,
+    adapter_gguf: bytes,
+    n_tensors: int | None,
+    n_kv: int | None,
+    version: int | None,
+    patch: list[tuple[int, bytes]],
+) -> None:
+    out = bytearray(adapter_gguf)
+    if version is not None:
+        out[4:8] = struct.pack("<I", version)
+    if n_tensors is not None:
+        out[8:16] = struct.pack("<Q", n_tensors)
+    if n_kv is not None:
+        out[16:24] = struct.pack("<Q", n_kv)
+    for at, raw in patch:  # kv strings, value types, tensor dims and offsets
+        out[at : at + len(raw)] = raw
+    path = tmp_path_factory.mktemp("fuzz") / "x.gguf"
+    path.write_bytes(bytes(out))
+    only_value_error(_read_lora, path)

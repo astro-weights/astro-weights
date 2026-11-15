@@ -1,6 +1,8 @@
 import copy
 import hashlib
+import io
 import json
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ from astro_weights.edits import (
     masked_rank1,
     project_out,
     rank1,
+    recipe_file,
     scale_column,
     scale_head,
     top_k_mask,
@@ -343,4 +346,93 @@ def test_deeply_nested_json_is_value_error(tmp_path: Path) -> None:
     path = tmp_path / "deep.json"
     path.write_text("[" * 200_000)
     with pytest.raises(ValueError, match=r"cannot read recipe.*deep\.json"):
+        load_recipe(path)
+
+
+# --- regressions found by tests/test_fuzz.py ---------------------------------
+
+
+def _build_rank1(tmp_path: Path, **files: bytes) -> None:
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    recipe = {"format": 1, "base_model": "x", "steps": [_rank1_step()]}
+    build_edit(recipe, lambda _m: W0, tmp_path)
+
+
+def _npy_bytes(arr: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    return buf.getvalue()
+
+
+def test_malformed_npy_header_is_value_error(tmp_path: Path) -> None:
+    # numpy's header parser raises tokenize.TokenError on an unclosed bracket
+    header = b"{'descr': '<f4', 'fortran_order': False, 'shape': (4,"
+    header += b" " * (-(10 + len(header) + 1) % 64) + b"\n"
+    raw = b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header
+    good = _npy_bytes(np.ones(1, np.float32))
+    with pytest.raises(ValueError, match=r"invalid \.npy header"):
+        _build_rank1(tmp_path, **{"b.npy": raw, "a.npy": good})
+
+
+def test_npy_header_claiming_huge_shape_is_value_error(tmp_path: Path) -> None:
+    header = b"{'descr': '<f4', 'fortran_order': False, 'shape': (1000000000000,), }"
+    header += b" " * (-(10 + len(header) + 1) % 64) + b"\n"
+    raw = b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header
+    good = _npy_bytes(np.ones(1, np.float32))
+    with pytest.raises(ValueError, match=r"truncated \.npy data"):
+        _build_rank1(tmp_path, **{"b.npy": raw, "a.npy": good})
+
+
+@pytest.mark.parametrize(
+    ("arr", "match"),
+    [
+        (np.array(1.0, dtype=np.float32), "1-D"),
+        (np.ones((2, 2), dtype=np.float32), "1-D"),
+        (np.ones(4, dtype=np.complex64), "unsupported dtype"),
+        (np.array(["a", "b"]), "unsupported dtype"),
+    ],
+)
+def test_npy_must_be_1d_numeric(tmp_path: Path, arr: np.ndarray, match: str) -> None:
+    good = _npy_bytes(np.ones(1, np.float32))
+    with pytest.raises(ValueError, match=match):
+        _build_rank1(tmp_path, **{"b.npy": _npy_bytes(arr), "a.npy": good})
+
+
+def test_npy_over_size_cap_rejected_unread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recipe_file, "MAX_NPY_BYTES", 200)
+    small = _npy_bytes(np.ones(1, np.float32))
+    assert len(small) <= 200
+    big = _npy_bytes(np.ones(64, np.float32))
+    assert len(big) > 200
+    _build_rank1(tmp_path, **{"b.npy": small, "a.npy": small})  # at or under the cap
+    with pytest.raises(ValueError, match="over the 200 limit"):
+        _build_rank1(tmp_path, **{"b.npy": big, "a.npy": small})
+
+
+def test_huge_int_param_is_value_error(tmp_path: Path) -> None:
+    step = {
+        "recipe": "masked_rank1",
+        "module": "m",
+        "params": {"alpha": 10**400},
+        "arrays": {"u": "u.npy", "mask": "mask.npy"},
+    }
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps({"format": 1, "base_model": "x", "steps": [step]}))
+    with pytest.raises(ValueError, match=r"alpha.*finite"):
+        load_recipe(path)
+
+
+def test_column_shift_n_in_capped(tmp_path: Path) -> None:
+    step = {
+        "recipe": "column_shift",
+        "module": "m",
+        "params": {"n_in": 10**12},
+        "arrays": {"shift": "s.npy", "idx": "i.npy", "coef": "c.npy"},
+    }
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps({"format": 1, "base_model": "x", "steps": [step]}))
+    with pytest.raises(ValueError, match="n_in must be at most"):
         load_recipe(path)
