@@ -24,9 +24,17 @@ uv run pytest
 
 Docs changes: `uv run --only-group docs zensical build --strict` must pass; preview with `uv run --only-group docs zensical serve`.
 
-CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release.
+CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release. Tests that need the real 9B files are marked `@pytest.mark.realdata` and skip unless `$ASTRO_REALDATA` is set.
 
-CI jobs beyond the checks above: `wheel-smoke` builds the wheel, installs it alone in a clean venv and runs the CLI; `test-lowest` runs the tests with `--resolution lowest-direct`, so a dependency floor in `pyproject.toml` must really work; `test-os` runs the core tests on macOS and Windows. A weekly `Canary` workflow tests against peft and transformers `main`; it is not a required check, and a red run means upstream moved, not that a PR broke.
+Required CI jobs beyond the checks above: `wheel-smoke` builds the wheel, installs it alone in a clean venv and runs the CLI; `test-lowest` runs the tests with `--resolution lowest-direct`, so a dependency floor in `pyproject.toml` (for example `torch>=2.4` in the `hf` extra) must really work; `test-os` runs the core tests on macOS and Windows. All three are required checks on `main` (`test-os` counts as two: macOS and Windows). A weekly `Canary` workflow tests against peft and transformers `main`; it is not a required check, and a red run means upstream moved, not that a PR broke.
+
+`test-hf` also enforces coverage: `--cov=astro_weights --cov-branch --cov-fail-under=95`, so branch coverage below 95% fails it. Run the same locally with `uv run --extra hf --extra eval --extra gguf pytest --cov=astro_weights --cov-branch --cov-fail-under=95`.
+
+### Tests that guard the public surface
+
+- `tests/test_public_api.py` compares every public name and signature with `tests/golden/public_api.json`. An intended API change needs the snapshot updated by hand: `ASTRO_UPDATE_API=1 uv run --extra hf --extra eval --extra gguf pytest tests/test_public_api.py`, plus a changelog fragment.
+- `tests/test_docs_snippets.py` runs every `python` code block in `README.md`, `docs/tutorials/` and `docs/how-to/`. Blocks of one page run in order in one namespace, in a temp directory, so a page must create every file it reads. A page that needs an extra is listed in `NEEDS`; a block that cannot run is listed in `SKIP` with a reason.
+- `tests/test_golden.py` loads adapters written by released versions (`tests/golden/v0.0.1/`, `tests/golden/v0.0.9/`). Do not edit them; a change that breaks them breaks users' saved adapters.
 
 ## Pull requests
 

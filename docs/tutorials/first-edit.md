@@ -53,7 +53,7 @@ from astro_weights.export import save_peft
 save_peft(edit, "my-edit")
 ```
 
-`my-edit/` now holds `adapter_config.json`, `adapter_model.safetensors` and hash manifest. Any PEFT-aware stack loads it.
+`my-edit/` now holds `adapter_config.json`, `adapter_model.safetensors` and hash manifest. Any PEFT-aware stack loads it. `save_peft` writes files to temp directory first, then moves them in; on failure temp directory is removed. Non-empty `my-edit/` raises `FileExistsError`; `save_peft(edit, "my-edit", overwrite=True)` replaces adapter files, keeps others.
 
 ## 4. Inspect
 
