@@ -84,12 +84,17 @@ def leg_a(
 
     d_norm = _fro(d)
     rel_err = _fro(dense - d) / d_norm
-    rel_change = d_norm / _fro(base)
+    base_norm = _fro(base)
+    rel_change = (
+        _fro(dense) / base_norm
+    )  # pre-rounding change, as the original run recorded
+    d_rel_change = d_norm / base_norm  # after the bf16 rounding of the saved weight
     assert rel_err < rel_err_tol
     assert rel_change == pytest.approx(expect_rel_change, rel=change_tol)
     return {
         "rel_err": rel_err,
         "rel_change": rel_change,
+        "d_rel_change": d_rel_change,
         "expect_rel_change": expect_rel_change,
         "delta_norm": d_norm,
     }
@@ -169,7 +174,7 @@ def test_leg_a_recipe_real(realdata: Path, tmp_path: Path) -> None:
         tmp_path,
         expect_rel_change=S18K6S25_REL_CHANGE,
         rel_err_tol=5e-3,
-        change_tol=1e-3,
+        change_tol=1e-4,
     )
     _record("leg_a", numbers)
 
