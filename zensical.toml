@@ -1,0 +1,45 @@
+[project]
+site_name = "astro-weights"
+site_url = "https://astro-weights.github.io/astro-weights/"
+site_description = "Agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters."
+repo_url = "https://github.com/astro-weights/astro-weights"
+repo_name = "astro-weights/astro-weights"
+edit_uri = "edit/main/docs/"
+copyright = "Apache-2.0. Logo based on Noto Emoji, Copyright Google LLC, Apache-2.0."
+extra_css = ["assets/brand.css"]
+nav = [
+  { "Home" = "index.md" },
+  { "Tutorials" = ["tutorials/first-edit.md"] },
+  { "How-to" = ["how-to/inspect-adapter.md"] },
+  { "Reference" = ["reference/index.md", "reference/cli.md"] },
+  { "Explanation" = ["explanation/why-lora.md"] },
+]
+
+[project.theme]
+logo = "assets/logo.svg"
+favicon = "assets/logo.svg"
+features = ["content.code.copy", "navigation.sections", "navigation.footer", "content.action.edit"]
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+show_root_heading = true
+show_source = false
+members_order = "source"
+separate_signature = true
+show_signature_annotations = true

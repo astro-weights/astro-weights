@@ -13,6 +13,7 @@
 </p>
 
 <p align="center">
+  <a href="https://astro-weights.github.io/astro-weights/">Docs</a> ·
   <a href="https://pypi.org/project/astro-weights/">PyPI</a> ·
   <a href="https://github.com/astro-weights/astro-weights/blob/main/CHANGELOG.md">Changelog</a> ·
   <a href="https://github.com/astro-weights/astro-weights/blob/main/CONTRIBUTING.md">Contributing</a>

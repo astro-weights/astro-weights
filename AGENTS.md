@@ -10,6 +10,7 @@ astro-weights: agent-driven weight-space edits for open LLMs, exported as standa
 - `src/astro_weights/export/`: PEFT LoRA adapter I/O (`save_peft`, `load_peft`, `read_peft`, `verify_peft`).
 - `src/astro_weights/runners/`: apply edits to live models (`hf.py`: `apply`, `remove`).
 - `src/astro_weights/cli.py`: the `astro-weights` command.
+- `docs/`: user docs site (Zensical, `zensical.toml`), Diátaxis folders `tutorials/`, `how-to/`, `reference/` (built from docstrings by mkdocstrings), `explanation/`. Published to GitHub Pages by `docs.yml` on push to `main`.
 - Layer rule, enforced by import-linter: `cli > runners > export > edits`. A lower layer never imports a higher one.
 - Core dependencies are numpy and safetensors only. torch, transformers and peft are imported only inside `runners/`, and only through the `hf` extra.
 
@@ -23,6 +24,7 @@ uv run mypy src tests    # type check (strict)
 uv run lint-imports      # layer contract
 uv run pytest            # core tests
 uv run --extra hf pytest # tests that need torch/transformers/peft
+uv run --only-group docs zensical build --strict  # docs site; `zensical serve` to preview
 ```
 
 Run all of them before opening a PR; CI runs the same set.
