@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.0.4] - 2026-11-15
+
+### Added
+
+- `runners.hf.swap` switches the applied edit on a live model, `merged_weights` computes the edited weights without touching the model, and `save_merged_tensors` / `load_merged_tensors` store them as hash-checked safetensors.
+
 ## [0.0.3] - 2026-11-15
 
 ### Added
@@ -41,6 +47,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.0.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.4
 [0.0.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.3
 [0.0.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.2
 [0.0.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.1

@@ -1,1 +1,0 @@
-`runners.hf.swap` switches the applied edit on a live model, `merged_weights` computes the edited weights without touching the model, and `save_merged_tensors` / `load_merged_tensors` store them as hash-checked safetensors.
