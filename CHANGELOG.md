@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.0.3] - 2026-11-15
+
+### Added
+
+- Docs site at https://astro-weights.github.io/astro-weights/: tutorial, how-to, API reference built from docstrings, explanation. ([#14](https://github.com/astro-weights/astro-weights/pull/14))
+- Added `LowRankDelta.padded(rank)` and `Edit.from_deltas(...)` to combine deltas of different rank in one edit by exact zero padding.
+- New edit recipes `project_out`, `scale_column`, `scale_head` and `zero_head` in `astro_weights.edits`.
+
 ## [0.0.2] - 2026-11-15
 
 ### Added
@@ -33,5 +41,6 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.0.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.3
 [0.0.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.2
 [0.0.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.1
