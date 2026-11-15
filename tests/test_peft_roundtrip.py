@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -393,7 +394,7 @@ def test_save_into_empty_dir(tmp_path: Path) -> None:
 
 def test_save_refuses_non_empty_dir(tmp_path: Path) -> None:
     (tmp_path / "keep.txt").write_text("x")
-    with pytest.raises(FileExistsError, match=str(tmp_path)):
+    with pytest.raises(FileExistsError, match=re.escape(str(tmp_path))):
         save_peft(make_edit(), tmp_path)
     assert [p.name for p in tmp_path.iterdir()] == ["keep.txt"]
 
