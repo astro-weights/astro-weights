@@ -21,6 +21,7 @@ pytest.importorskip("peft")
 tokenizers = pytest.importorskip("tokenizers")
 transformers = pytest.importorskip("transformers")
 
+from astro_weights.runners import generate as generate_mod
 from astro_weights.runners.generate import generate_records, run_header
 from astro_weights.runners.hf import apply
 
@@ -410,6 +411,85 @@ def test_resume_mismatch_leaves_file_alone(
 ) -> None:
     out = tmp_path / "r.jsonl"
     _seed_file(model, tok, out)
+    before = out.read_bytes()
+    with pytest.raises(ValueError, match="another run"):
+        _run(model, tok, "other", out=out, resume=True)
+    assert out.read_bytes() == before
+
+
+def _spy_batches(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    seen: list[list[str]] = []
+    real = generate_mod._run_batch
+
+    def spy(model: Any, tok: Any, texts: Any, *a: Any) -> Any:
+        seen.append(list(texts))
+        return real(model, tok, texts, *a)
+
+    monkeypatch.setattr(generate_mod, "_run_batch", spy)
+    return seen
+
+
+@pytest.mark.parametrize("done", [1, 2, 3, 4, 5])
+def test_resume_batches_at_fixed_positions(
+    model: Any, tok: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, done: int
+) -> None:
+    seen = _spy_batches(monkeypatch)
+    kw: dict[str, Any] = {"chat": False, "batch_size": 4}
+    whole = generate_records(model, tok, MIXED, "base", grade_exact, 8, **kw)
+    plain = list(seen)
+    assert [len(b) for b in plain] == [4, 2]
+    seen.clear()
+    out = tmp_path / "r.jsonl"
+    write_jsonl(out, whole[:done])  # as if a run died after `done` records
+    resumed = generate_records(
+        model, tok, MIXED, "base", grade_exact, 8, out=out, resume=True, **kw
+    )
+    assert resumed == whole
+    # every batch is the uninterrupted one minus the items already done
+    expect = [b[max(0, done - 4 * k) :] for k, b in enumerate(plain)]
+    assert seen == [b for b in expect if b]
+
+
+def test_crash_leaves_no_half_batch(model: Any, tok: Any, tmp_path: Path) -> None:
+    whole = generate_records(
+        model, tok, MIXED, "base", grade_exact, 8, chat=False, batch_size=4
+    )
+    out = tmp_path / "r.jsonl"
+    with pytest.raises(RuntimeError):
+        generate_records(
+            model, tok, MIXED, "base", _crash_on(2, RuntimeError), 8, chat=False,
+            batch_size=4, out=out,
+        )  # fmt: skip
+    assert read_jsonl(out) == []  # the batch died while being scored: nothing written
+    resumed = generate_records(
+        model, tok, MIXED, "base", grade_exact, 8, chat=False, batch_size=4,
+        out=out, resume=True,
+    )  # fmt: skip
+    assert resumed == whole
+    assert read_jsonl(out) == whole
+
+
+@pytest.mark.parametrize("tail", [b'{"item_id": "m0", "se', b'{"item_id": "\xc3'])
+def test_resume_mismatch_with_partial_tail_leaves_file_alone(
+    model: Any, tok: Any, tmp_path: Path, tail: bytes
+) -> None:
+    out = tmp_path / "r.jsonl"
+    _seed_file(model, tok, out)
+    raw = out.read_bytes()
+    first = raw.index(b"\n") + 1
+    out.write_bytes(raw[:first] + tail)
+    before = out.read_bytes()
+    with pytest.raises(ValueError, match="another run"):
+        _run(model, tok, "other", out=out, resume=True)
+    assert out.read_bytes() == before
+
+
+def test_resume_mismatch_with_whole_unterminated_line_leaves_file_alone(
+    model: Any, tok: Any, tmp_path: Path
+) -> None:
+    out = tmp_path / "r.jsonl"
+    _seed_file(model, tok, out)
+    out.write_bytes(out.read_bytes().rstrip(b"\n"))
     before = out.read_bytes()
     with pytest.raises(ValueError, match="another run"):
         _run(model, tok, "other", out=out, resume=True)

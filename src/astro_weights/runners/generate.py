@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict
@@ -41,26 +42,37 @@ def _check_items(items: Sequence[Mapping[str, Any]]) -> None:
         seen.add(item_id)
 
 
-def _drop_partial_tail(path: Path) -> None:
-    """Cut a last line a crash left without its newline (or end it if it is whole)."""
+def _read_file(path: Path) -> tuple[list[Record], int | None, bool]:
+    """Records in `path` without changing it, and how to repair its last line.
+
+    Returns (records, cut, whole): `cut` is the size to truncate to when a crash
+    left a last line without its newline that is not valid JSON; `whole` is True
+    when that line is valid and only lacks its newline.
+    """
     data = path.read_bytes()
-    if not data or data.endswith(b"\n"):
-        return
-    cut = data.rfind(b"\n") + 1
-    try:
-        json.loads(data[cut:])
-    except ValueError:  # truncated JSON or a cut UTF-8 character
-        with path.open("r+b") as f:
-            f.truncate(cut)
-    else:
-        with path.open("ab") as f:
-            f.write(b"\n")
+    cut: int | None = None
+    whole = False
+    if data and not data.endswith(b"\n"):
+        start = data.rfind(b"\n") + 1
+        try:
+            json.loads(data[start:])
+        except ValueError:  # truncated JSON or a cut UTF-8 character
+            cut, data = start, data[:start]
+        else:
+            whole = True
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "records.jsonl"
+        copy.write_bytes(data)
+        return read_jsonl(copy), cut, whole
 
 
 def _load_done(
     path: Path | None, resume: bool, hashes: Mapping[str, str], arm: str, seed: int
 ) -> dict[str, Record]:
-    """Records of an earlier run in `path`, checked against this run."""
+    """Records of an earlier run in `path`, checked against this run.
+
+    The file is only repaired (a crash's partial last line) after it checked out.
+    """
     if path is None or not path.exists() or path.stat().st_size == 0:
         return {}
     if not resume:
@@ -68,9 +80,9 @@ def _load_done(
             f"{path} already has records; pass resume=True to continue it "
             "or choose another path"
         )
-    _drop_partial_tail(path)
+    records, cut, whole = _read_file(path)
     done: dict[str, Record] = {}
-    for r in read_jsonl(path):
+    for r in records:
         if (r.arm, r.seed) != (arm, seed):
             raise ValueError(
                 f"{path}: item {r.item_id!r} is arm {r.arm!r} seed {r.seed}, "
@@ -86,6 +98,12 @@ def _load_done(
         if r.item_id in done:
             raise ValueError(f"{path}: duplicate item_id {r.item_id!r}")
         done[r.item_id] = r
+    if cut is not None:
+        with path.open("r+b") as f:
+            f.truncate(cut)
+    elif whole:
+        with path.open("ab") as f:
+            f.write(b"\n")
     return done
 
 
@@ -123,7 +141,10 @@ def generate_records(
     `n_output_tokens` counts tokens up to and including the first EOS. Greedy
     outputs can differ from `batch_size=1`: padding can change float rounding,
     and a near tie may then resolve the other way. Use one batch size for both
-    arms of a paired comparison. The default `batch_size=1` runs each prompt
+    arms of a paired comparison. Batches sit at fixed positions of `items`, and a
+    batch is scored before any of its records is written, so a resume with the
+    same `batch_size` rebuilds the batches of an uninterrupted run. (Records an
+    earlier run wrote with another `batch_size` are kept as they are.) The default `batch_size=1` runs each prompt
     alone, unpadded.
     """
     _check_items(items)
@@ -147,18 +168,18 @@ def generate_records(
     }
     path = None if out is None else Path(out)
     done = _load_done(path, resume, hashes, arm, seed)
-    todo = [
+    entries = [
         (item, text, templated)
         for item, (text, templated) in zip(items, prompts, strict=True)
-        if str(item["item_id"]) not in done
     ]
     was_training = bool(model.training)
     model.eval()
     try:
         with path.open("a", encoding="utf-8") if path else nullcontext() as sink:
             for rec in _generate(
-                model, tokenizer, todo, arm, scorer, max_new_tokens, seed, batch_size
-            ):
+                model, tokenizer, entries, set(done), arm, scorer,
+                max_new_tokens, seed, batch_size,
+            ):  # fmt: skip
                 done[rec.item_id] = rec
                 if sink is not None:
                     sink.write(json.dumps(asdict(rec), ensure_ascii=False) + "\n")
@@ -171,7 +192,8 @@ def generate_records(
 def _generate(
     model: Any,
     tokenizer: Any,
-    todo: Sequence[tuple[Mapping[str, Any], str, bool]],
+    entries: Sequence[tuple[Mapping[str, Any], str, bool]],
+    done: set[str],
     arm: str,
     scorer: Callable[[str, str], bool],
     max_new_tokens: int,
@@ -181,8 +203,16 @@ def _generate(
     torch.manual_seed(seed)
     eos = model.generation_config.eos_token_id
     eos_ids = set(eos if isinstance(eos, list) else [] if eos is None else [eos])
-    for start in range(0, len(todo), batch_size):
-        chunk = todo[start : start + batch_size]
+    # Batches sit at fixed positions of `entries`, so a resumed run batches the
+    # remaining items as an uninterrupted one would (minus the items done).
+    for start in range(0, len(entries), batch_size):
+        chunk = [
+            e
+            for e in entries[start : start + batch_size]
+            if str(e[0]["item_id"]) not in done
+        ]
+        if not chunk:
+            continue
         if batch_size == 1:
             _, text, templated = chunk[0]
             rows = [
@@ -193,8 +223,10 @@ def _generate(
             rows = _run_batch(
                 model, tokenizer, texts, chunk[0][2], max_new_tokens, eos_ids
             )
-        for (item, text, _), (output, n, hit_cap) in zip(chunk, rows, strict=True):
-            yield Record(
+        # Score the whole batch before yielding any of it: a crash while scoring
+        # then leaves no half-written batch, and a resume restarts at a boundary.
+        records = [
+            Record(
                 item_id=str(item["item_id"]),
                 seed=seed,
                 arm=arm,
@@ -204,6 +236,9 @@ def _generate(
                 n_output_tokens=n,
                 hit_cap=hit_cap,
             )
+            for (item, text, _), (output, n, hit_cap) in zip(chunk, rows, strict=True)
+        ]
+        yield from records
 
 
 def _run_one(
