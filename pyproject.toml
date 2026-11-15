@@ -37,7 +37,13 @@ requires = ["uv_build>=0.11.6,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.17", "mypy>=1.15", "import-linter>=2.16"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.17",
+    "mypy>=1.15",
+    "import-linter>=2.16",
+    "towncrier>=26.9.0",
+]
 
 # CPU-only torch for dev/CI; uv-only tables, not published metadata.
 [[tool.uv.index]]
@@ -76,3 +82,42 @@ layers = [
     "astro_weights.export",
     "astro_weights.edits",
 ]
+
+[tool.towncrier]
+directory = "changes"
+filename = "CHANGELOG.md"
+name = "astro-weights"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## [{version}] - {project_date}"
+issue_format = "[#{issue}](https://github.com/astro-weights/astro-weights/pull/{issue})"
+underlines = ["", "", ""]
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "deprecated"
+name = "Deprecated"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "security"
+name = "Security"
+showcontent = true
