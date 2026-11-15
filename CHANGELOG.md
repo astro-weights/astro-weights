@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.0.6] - 2026-11-15
+
+### Added
+
+- Added `astro_weights.eval`: paired comparison of two eval arms from per-item JSONL records (paired SE and CI, exact McNemar, bootstrap token CI), numpy only.
+
 ## [0.0.5] - 2026-11-15
 
 ### Added
@@ -53,6 +59,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.0.6]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.6
 [0.0.5]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.5
 [0.0.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.4
 [0.0.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.3
