@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.0.9] - 2026-11-15
+
+### Added
+
+- A recipe file (`load_recipe`, `build_edit`, `save_recipe`) rebuilds an edit from a small JSON description plus the `.npy` arrays it names, so a published adapter can be checked.
+- Add `astro_weights.export.base`: `read_tensor`, `read_base_weight` and `tensor_sha256` read one F32, F16 or BF16 weight of a base model from its safetensors files with numpy only, no torch.
+- Adds `astro-weights build` (recipe file plus base model to a PEFT adapter) and `astro-weights export` (GGUF LoRA adapter and model card), and exports `build_edit`, `load_recipe`, `save_recipe`, `read_base_weight`, `read_tensor` and `tensor_sha256`.
+
 ## [0.0.8] - 2026-11-15
 
 ### Added
@@ -76,6 +84,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.0.9]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.9
 [0.0.8]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.8
 [0.0.7]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.7
 [0.0.6]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.6
