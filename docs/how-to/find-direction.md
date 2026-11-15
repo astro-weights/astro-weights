@@ -35,7 +35,7 @@ True 1.0
 
 ## Read gate
 
-`direction_gate` takes pair differences `[P, H]` (a minus b), at least 4 pairs. `seed` picks random split into two halves. Returns `GateResult` statistics, no pass/fail verdict; field meanings in [reference](../reference/index.md). Pure noise gives split-half cosine near 0 and held-out AUC near 0.5. Package tests count planted direction as passing when `split_half_cos > null_975` (`tests/test_directions.py`).
+`direction_gate` takes pair differences `[P, H]` (a minus b), at least 4 pairs, finite values only, `draws >= 1`; else `ValueError`. Under about 20 pairs, results mean nothing: halves tiny, `null_975` near 1. `seed` picks random split into two halves. Returns `GateResult` statistics, no pass/fail verdict; field meanings in [reference](../reference/index.md). Statistic is NaN when mean it needs has zero norm. Pure noise gives split-half cosine near 0 and held-out AUC near 0.5. Package tests count planted direction as passing when `split_half_cos > null_975` (`tests/test_directions.py`).
 
 `directions_from_pairs(res_a, res_b)` gives one direction per layer, `[L, H]`, from per-pair residual means `[P, L, H]`.
 

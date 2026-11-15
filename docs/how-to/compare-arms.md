@@ -1,6 +1,6 @@
 # Compare two eval arms
 
-`astro_weights.eval` compares base arm and edit arm on same items from per-item records. Never runs model: caller generates outputs, grades them, writes one `Record` per item, seed and arm. Numpy only.
+`astro_weights.eval` compares base arm and edit arm on same items from per-item records. Never runs model: caller generates outputs, grades them, writes one `Record` per item, seed and arm. Numpy only. To generate records from model, see [run eval end to end](run-eval.md).
 
 ## Compare
 
