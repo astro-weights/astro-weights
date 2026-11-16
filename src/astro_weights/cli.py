@@ -299,11 +299,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command", metavar="{build,eval,export,inspect}")
     p = sub.add_parser("inspect", help="summarize and verify a saved PEFT adapter")
-    p.add_argument("directory", metavar="DIR", type=Path)
+    p.add_argument("directory", metavar="DIR", type=Path, help="adapter directory")
     _json_flag(p)
     p = sub.add_parser("eval", help="compare two eval arms from per-item records")
-    p.add_argument("base", metavar="BASE.jsonl", type=Path)
-    p.add_argument("edit", metavar="EDIT.jsonl", type=Path)
+    p.add_argument(
+        "base", metavar="BASE.jsonl", type=Path, help="per-item records, base arm"
+    )
+    p.add_argument(
+        "edit", metavar="EDIT.jsonl", type=Path, help="per-item records, edited arm"
+    )
     p.add_argument("--boot", type=int, default=10000, help="bootstrap resamples")
     p.add_argument("--seed", type=int, default=0, help="bootstrap seed")
     p.add_argument(
@@ -320,10 +324,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     _json_flag(p)
     p = sub.add_parser("build", help="build a PEFT adapter from a recipe file")
-    p.add_argument("recipe", metavar="RECIPE.json", type=Path)
-    p.add_argument("--base", metavar="MODEL_DIR", type=Path, required=True)
-    p.add_argument("--out", metavar="DIR", type=Path, required=True)
-    p.add_argument("--card", metavar="LICENSE", help="also write README.md")
+    p.add_argument("recipe", metavar="RECIPE.json", type=Path, help="recipe file")
+    p.add_argument(
+        "--base",
+        metavar="MODEL_DIR",
+        type=Path,
+        required=True,
+        help="base model directory (safetensors)",
+    )
+    p.add_argument(
+        "--out",
+        metavar="DIR",
+        type=Path,
+        required=True,
+        help="adapter directory to write",
+    )
+    p.add_argument(
+        "--card", metavar="LICENSE", help="also write README.md with this license"
+    )
     _json_flag(p)
     p.add_argument(
         "--force",
@@ -333,10 +351,14 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "export", help="write a GGUF LoRA and/or model card for an adapter"
     )
-    p.add_argument("directory", metavar="DIR", type=Path)
-    p.add_argument("--gguf", metavar="OUT.gguf", type=Path)
+    p.add_argument("directory", metavar="DIR", type=Path, help="adapter directory")
+    p.add_argument(
+        "--gguf", metavar="OUT.gguf", type=Path, help="write a GGUF LoRA to this file"
+    )
     p.add_argument("--arch", help="GGUF architecture, e.g. qwen35")
-    p.add_argument("--card", metavar="LICENSE", help="write README.md into DIR")
+    p.add_argument(
+        "--card", metavar="LICENSE", help="write README.md into DIR with this license"
+    )
     p.add_argument("--force", action="store_true", help="overwrite existing outputs")
     _json_flag(p)
     args = parser.parse_args(argv)
@@ -361,4 +383,4 @@ def main(argv: list[str] | None = None) -> int:
             args.directory, args.gguf, args.arch, args.card, args.force, args.json
         )
     parser.print_help()
-    return 0
+    return 2

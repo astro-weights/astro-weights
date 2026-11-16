@@ -10,21 +10,25 @@ Install [uv](https://docs.astral.sh/uv/), then:
 git clone https://github.com/astro-weights/astro-weights
 cd astro-weights
 uv sync
-uv run pre-commit install   # optional: uvx pre-commit install
+uvx pre-commit install   # optional: runs ruff, zizmor and file checks on each commit
 ```
 
 ## Checks
 
+Run these before opening a PR; CI runs the same set.
+
 ```bash
-uv run ruff check
-uv run ruff format
-uv run mypy src
-uv run pytest
+uv run ruff check                                   # lint
+uv run ruff format                                  # format
+uv run mypy src tests                               # type check (strict)
+uv run lint-imports                                 # layer contract
+uv run pytest                                       # core tests
+uv run --extra hf --extra eval --extra gguf pytest  # tests that need the optional extras
 ```
 
 Docs changes: `uv run --only-group docs zensical build --strict` must pass; preview with `uv run --only-group docs zensical serve`. The Docs workflow here only checks the build. The site is deployed from [astro-weights/astro-weights.github.io](https://github.com/astro-weights/astro-weights.github.io), which builds `docs/` into https://astro-weights.dev/docs/ beside the landing page.
 
-CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release. Tests that need the real 9B files are marked `@pytest.mark.realdata` and skip unless `$ASTRO_REALDATA` is set.
+CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release. `tests/test_exit_0_1.py` is the release check for 0.1.0: it reruns the library against a real 9B base model and published edits. Those tests are marked `@pytest.mark.realdata` and skip unless `$ASTRO_REALDATA` names a directory that holds the files. CI does not set it, and contributors do not need it.
 
 Required CI jobs beyond the checks above: `wheel-smoke` builds the wheel, installs it alone in a clean venv and runs the CLI; `test-lowest` runs the tests with `--resolution lowest-direct`, so a dependency floor in `pyproject.toml` (for example `torch>=2.4` in the `hf` extra) must really work; `test-os` runs the core tests on macOS and Windows. All three are required checks on `main` (`test-os` counts as two: macOS and Windows). A weekly `Canary` workflow tests against peft and transformers `main`; it is not a required check, and a red run means upstream moved, not that a PR broke.
 
@@ -78,7 +82,7 @@ astro-weights follows [SemVer](https://semver.org/) with 0.x rules:
 - Public API is deprecated with a `DeprecationWarning` for at least one minor release before it is removed.
 - The version is set by hand with `uv version`. There are no nightly releases.
 
-Python 3.12, 3.13 and 3.14 are supported. Python 3.12 stays supported until 0.1. After that the project follows [SPEC 0](https://scientific-python.org/specs/spec-0000/): a Python version is dropped 3 years after its release.
+Python 3.12, 3.13 and 3.14 are supported. The project follows [SPEC 0](https://scientific-python.org/specs/spec-0000/): a Python version is dropped 3 years after its release.
 
 Maintainers: see [RELEASING.md](RELEASING.md) for the release steps.
 

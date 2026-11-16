@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Indranil Biswas" }]
 requires-python = ">=3.12"
 dependencies = ["numpy>=2.3", "safetensors>=0.5"]
-keywords = ["llm", "lora", "peft", "model-editing", "interpretability", "mcp"]
+keywords = ["llm", "lora", "peft", "model-editing", "interpretability"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",

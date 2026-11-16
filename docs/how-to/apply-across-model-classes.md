@@ -1,10 +1,10 @@
-# Apply adapter across model classes
+# Apply an adapter across model classes
 
-Same checkpoint gets different module names depending on class that loads it. Qwen3.5 text-only class (`Qwen3_5ForCausalLM`) names layers `model.layers.N...`; multimodal class (`Qwen3_5ForConditionalGeneration`) names them `model.language_model.layers.N...`. `apply` maps edit names to model names itself. `resolve_modules` shows mapping without applying.
+The same checkpoint gets different module names depending on the class that loads it. The Qwen3.5 text-only class (`Qwen3_5ForCausalLM`) names its layers `model.layers.N...`, while the multimodal class (`Qwen3_5ForConditionalGeneration`) names them `model.language_model.layers.N...`. `apply` maps the edit's names to the model's names by itself, and `resolve_modules` shows that mapping without applying anything.
 
-## Check mapping, then apply
+## Check the mapping, then apply
 
-Edit below names its layer the multimodal way; model is text-only.
+The edit below names its layer the multimodal way, and the model is text-only.
 
 ```python
 import numpy as np
@@ -36,7 +36,7 @@ print(resolve_modules(model, edit))
 peft_model = apply(model, edit)
 ```
 
-Prints:
+Output:
 
 ```text
 {'model.language_model.layers.1.mlp.down_proj': 'model.layers.1.mlp.down_proj'}
@@ -44,18 +44,18 @@ Prints:
 
 ## Matching rules
 
-1. Exact name in model wins.
-2. Otherwise match name from last `layers.<int>` onward, among `nn.Linear` layers with edit's shape.
-3. No match, or more than one: `ValueError`. Fix ambiguous match by renaming edit module to model's exact name.
-4. Two edit modules mapping to one layer: `ValueError`.
-5. Name matches module that is not `nn.Linear` (for example GPT-2 `Conv1D`): `ValueError` naming module type.
-6. Model already carries adapter: `ValueError`.
+1. An exact name in the model wins.
+2. Otherwise the name is matched from the last `layers.<int>` onward, among `nn.Linear` layers with the edit's shape.
+3. No match, or more than one, raises `ValueError`. To fix an ambiguous match, rename the edit module to the model's exact name.
+4. Two edit modules that map to one layer raise `ValueError`.
+5. A name that matches a module that is not `nn.Linear` (for example GPT-2's `Conv1D`) raises `ValueError` naming the module type.
+6. A model that already carries an adapter raises `ValueError`.
 
-Every `ValueError` comes before `apply` touches model. After loading, `apply` raises `RuntimeError` when adapter did not wrap every edit module or left unexpected keys, and unwraps model again first.
+Every `ValueError` is raised before `apply` touches the model. After loading, `apply` raises `RuntimeError` if the adapter did not wrap every edit module or left unexpected keys; it unwraps the model again before raising.
 
-## Adapter already applied
+## An adapter is already applied
 
-`apply`, `resolve_modules` and `merged_weights` need plain base model. Continues example above:
+`apply`, `resolve_modules` and `merged_weights` need the plain base model. This continues the example above:
 
 ```python
 from astro_weights.runners.hf import remove
@@ -67,15 +67,15 @@ except ValueError as e:
 model = remove(peft_model)
 ```
 
-Prints:
+Output:
 
 ```text
 an adapter is already applied to this model; use swap() to replace it, or remove() to get the plain base model back
 ```
 
-## Rounding to model dtype
+## Rounding to the model dtype
 
-`apply` casts factors to each weight's dtype. `rounding_error(model, edit)` reports per edit module `|cast(B) @ cast(A) - B @ A|_F / |B @ A|_F`: 0.0 for float32 or float64 model, `inf` when factor overflows dtype. Model not modified. `apply(..., max_rounding_error=...)` refuses edit above limit. Continues example above:
+`apply` casts the factors to each weight's dtype. `rounding_error(model, edit)` reports `|cast(B) @ cast(A) - B @ A|_F / |B @ A|_F` for each edit module: 0.0 for a float32 or float64 model, and `inf` when a factor overflows the dtype. It does not modify the model. `apply(..., max_rounding_error=...)` refuses an edit above that limit. This continues the example above:
 
 ```python
 from astro_weights.runners.hf import rounding_error
@@ -97,7 +97,7 @@ except ValueError as e:
 peft_model = apply(model, edit16, max_rounding_error=1e-2)
 ```
 
-Prints:
+Output:
 
 ```text
 {'model.layers.1.mlp.down_proj': '0.0022'}

@@ -1,7 +1,7 @@
-# Why LoRA output
+# Why the output is LoRA
 
-Every serving stack already loads LoRA adapters: transformers, PEFT, vLLM, llama.cpp and others. Saving edit as LoRA means no custom runtime. Ship adapter, load like any other, drop it to get base model back.
+Every serving stack already loads LoRA adapters: transformers, PEFT, vLLM, llama.cpp and others. Saving an edit as LoRA means it needs no custom runtime. You ship the adapter, load it like any other, and drop it to get the base model back.
 
-Edits here are low rank by construction. `LowRankDelta` stores `dW = B @ A`, `B` shape `[out, r]`, `A` shape `[r, in]`, which is LoRA factor layout. `save_peft` writes factors with scaling 1 (`lora_alpha = r`), so no rescaling on load.
+Edits in astro-weights are low rank by construction. `LowRankDelta` stores `dW = B @ A`, with `B` of shape `[out, r]` and `A` of shape `[r, in]`, which is the LoRA factor layout. `save_peft` writes the factors with scaling 1 (`lora_alpha = r`), so nothing is rescaled on load.
 
-Adapter carries hash manifest (`astro_weights_version`, base model, SHA-256 per factor). `verify_peft` uses it to catch corrupted or altered factors.
+Each adapter carries a hash manifest (`astro_weights_version`, the base model, and a SHA-256 per factor). `verify_peft` uses it to catch corrupted or altered factors.

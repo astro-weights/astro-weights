@@ -31,7 +31,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
-- The run header from `run_header` records the model class under an applied adapter instead of `PeftModel`, so `astro-weights eval` no longer rejects a base arm and an `apply`-ed edit arm as run under different settings. ([#run-header-peft](https://github.com/astro-weights/astro-weights/pull/run-header-peft))
+- The run header from `run_header` records the model class under an applied adapter instead of `PeftModel`, so `astro-weights eval` no longer rejects a base arm and an `apply`-ed edit arm as run under different settings. ([#46](https://github.com/astro-weights/astro-weights/pull/46))
 - GGUF reading now raises `ValueError` for any malformed file, including duplicate keys, and rejects absurd header counts, array lengths, files with more than 2,097,152 kv array items in total (the reader costs about 1 KB per item), and non-regular files such as FIFOs up front instead of hanging or exhausting memory.
 - LowRankDelta now rejects NaN or infinite factors, including float64 values that overflow when cast to float32.
 - Recipe loading now raises `ValueError` instead of `IndexError`, `OverflowError`, `tokenize.TokenError` or an out-of-memory crash on malformed `.npy` side files (wrong rank or dtype, a header claiming more data than the file holds, a file over 256 MiB), on integer parameters too large for a float, and on a `column_shift` `n_in` above 1048576.
@@ -66,7 +66,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Recipes, merged-tensor loading, `swap` and the direction gate now reject bad input (non-finite values, non-integer indices, tampered shapes or dtypes, `draws < 1`) with a `ValueError`, and a failed `swap` leaves the original model usable.
 
-## [0.0.6] - 2026-11-15
+## 0.0.6 - 2026-11-15 (never released; these changes shipped in 0.0.7)
 
 ### Added
 
@@ -78,13 +78,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Add `astro_weights.directions`: difference-of-means directions (`direction_from_means`, `directions_from_pairs`, `neuron_scores`, `stability`) and `direction_gate`, a split-half and shuffled-sign check that a direction is real.
 
-## [0.0.4] - 2026-11-15
+## 0.0.4 - 2026-11-15 (never released; these changes shipped in 0.0.5)
 
 ### Added
 
 - `runners.hf.swap` switches the applied edit on a live model, `merged_weights` computes the edited weights without touching the model, and `save_merged_tensors` / `load_merged_tensors` store them as hash-checked safetensors.
 
-## [0.0.3] - 2026-11-15
+## 0.0.3 - 2026-11-15 (never released; these changes shipped in 0.0.5)
 
 ### Added
 
@@ -126,9 +126,6 @@ First release. Pre-alpha: the API will change.
 [0.0.9]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.9
 [0.0.8]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.8
 [0.0.7]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.7
-[0.0.6]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.6
 [0.0.5]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.5
-[0.0.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.4
-[0.0.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.3
 [0.0.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.2
 [0.0.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.1

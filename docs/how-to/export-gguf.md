@@ -1,10 +1,10 @@
-# Export GGUF and model card
+# Export GGUF and a model card
 
-`astro_weights.export.gguf` writes edit as llama.cpp LoRA adapter GGUF, reads it back, and splices replacement tensors into existing base GGUF. Needs `gguf` extra (`pip install "astro-weights[gguf]"`). `astro_weights.export.card` writes Hugging Face model card; numpy only.
+`astro_weights.export.gguf` writes an edit as a llama.cpp LoRA adapter GGUF, reads it back, and splices replacement tensors into an existing base GGUF. It needs the `gguf` extra (`pip install "astro-weights[gguf]"`). `astro_weights.export.card` writes a Hugging Face model card and needs numpy only.
 
-Saved adapter on disk: `astro-weights export DIR --gguf OUT.gguf --arch ARCH --card LICENSE` does both without Python; see [CLI reference](../reference/cli.md).
+For an adapter already saved on disk, `astro-weights export DIR --gguf OUT.gguf --arch ARCH --card LICENSE` does both without Python; see the [CLI reference](../reference/cli.md).
 
-## Write and read adapter GGUF
+## Write and read an adapter GGUF
 
 ```python
 import numpy as np
@@ -27,22 +27,22 @@ B, A = factors["blk.3.ffn_down.weight"]
 print(B.shape, A.shape, meta["alpha"])
 ```
 
-Prints:
+Output:
 
 ```text
 blk.3.ffn_down.weight
 (32, 1) (1, 96) 1.0
 ```
 
-- Only `mlp.down_proj` (`ffn_down`) and `self_attn.o_proj` (`attn_output`) map; other modules raise `ValueError`. Last `layers.<N>` in name gives block number.
-- `architecture` (third argument) goes into `general.architecture`.
-- Alpha = edit rank, so LoRA scale is 1. `read_lora_gguf` returns raw factors, scale not applied: delta = `(alpha / rank) * B @ A`.
-- Existing file raises `FileExistsError` unless `overwrite=True`. Writes temp file next to target, then renames.
+- Only `mlp.down_proj` (`ffn_down`) and `self_attn.o_proj` (`attn_output`) map to GGUF names; other modules raise `ValueError`. The last `layers.<N>` in the name gives the block number.
+- `architecture` (the third argument) is written to `general.architecture`.
+- Alpha equals the edit rank, so the LoRA scale is 1. `read_lora_gguf` returns the raw factors without the scale applied: delta = `(alpha / rank) * B @ A`.
+- An existing file raises `FileExistsError` unless `overwrite=True`. The writer writes a temp file next to the target, then renames it.
 - `read_lora_gguf` accepts F32 and F16 tensors only.
 
-## Splice tensor into base GGUF
+## Splice a tensor into a base GGUF
 
-`splice_gguf(base, out, replace, out_type="q8_0")` copies base GGUF, replacing named tensors; other tensors copied as raw bytes. `out_type`: `q8_0`, `f16` or `bf16`. Replacement arrays are HF `[out, in]` weights; transposed array gets transposed back. `verify_splice` returns problems found; empty list means ok. Continues example above; tiny synthetic base stands in for real model:
+`splice_gguf(base, out, replace, out_type="q8_0")` copies a base GGUF and replaces the named tensors; all other tensors are copied as raw bytes. `out_type` is `q8_0`, `f16` or `bf16`. Replacement arrays are HF `[out, in]` weights; an array passed transposed is transposed back. `verify_splice` returns the problems it finds, and an empty list means the splice is fine. This continues the example above, with a tiny synthetic base standing in for a real model:
 
 ```python
 import gguf
@@ -64,19 +64,19 @@ splice_gguf("base.gguf", "spliced.gguf", {name: W0 + B @ A})
 print(verify_splice("base.gguf", "spliced.gguf", [name]))
 ```
 
-Prints:
+Output:
 
 ```text
 []
 ```
 
-- Tensor missing from base, NaN/Inf or non-float replacement, or wrong shape: `ValueError`.
-- Blocks at index `block_count - nextn_predict_layers` or above (MTP/nextn blocks) raise `ValueError`; never touched.
-- `out` same file as `base`: `ValueError`.
+- A tensor missing from the base, a NaN/Inf or non-float replacement, or a wrong shape raises `ValueError`.
+- Blocks at index `block_count - nextn_predict_layers` or above (MTP/nextn blocks) raise `ValueError` and are never touched.
+- An `out` that is the same file as `base` raises `ValueError`.
 
 ## Model card
 
-`model_card(edit, kind, license, title=None, summary=None, results=None)` renders card text; `kind` is `"adapter"` or `"gguf"`. `write_card(directory, text)` writes it as `README.md`. Continues example above:
+`model_card(edit, kind, license, title=None, summary=None, results=None)` renders the card text; `kind` is `"adapter"` or `"gguf"`. `write_card(directory, text)` writes it as `README.md`. This continues the example above:
 
 ```python
 from astro_weights.export import model_card, write_card
@@ -93,7 +93,7 @@ print(path)
 print("\n".join(card.splitlines()[:10]))
 ```
 
-Prints:
+Output:
 
 ```text
 my-adapter/README.md
@@ -109,7 +109,7 @@ tags:
 ---
 ```
 
-- Card holds front matter, title (default `<base_model> edit`), summary, edit table (module, shape, rank, Frobenius norm of `BA`), load snippet, optional results table, astro-weights version line.
-- `kind="gguf"` sets `base_model_relation: "quantized"`, tag `gguf`, `llama-cli` load snippet.
-- Empty `edit.base_model`, blank license or unknown `kind`: `ValueError`.
-- `write_card` replaces existing `README.md`; `overwrite=False` raises `FileExistsError` instead.
+- The card holds front matter, a title (by default `<base_model> edit`), the summary, an edit section, a load snippet, an optional results table and an astro-weights version line. The edit section opens with a `Modification:` line stating that the weights of the base model were modified by a low-rank edit of N modules, made with astro-weights without training, followed by a table (module, shape, rank, Frobenius norm of `BA`).
+- `kind="gguf"` sets `base_model_relation: "finetune"`, adds the tag `gguf` and uses a `llama-cli` load snippet.
+- An empty `edit.base_model`, a blank license or an unknown `kind` raises `ValueError`.
+- `write_card` replaces an existing `README.md`; with `overwrite=False` it raises `FileExistsError` instead.

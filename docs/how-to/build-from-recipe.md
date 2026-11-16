@@ -1,10 +1,10 @@
-# Build adapter from recipe file
+# Build an adapter from a recipe file
 
-Recipe file: small JSON plus `.npy` arrays it names. `astro-weights build` turns recipe and base model into PEFT adapter; `astro-weights export` writes GGUF LoRA and model card from that adapter. Anyone with recipe and base model can rebuild published adapter and compare. Core install only; GGUF needs `gguf` extra.
+A recipe file is a small JSON file plus the `.npy` arrays it names. `astro-weights build` turns a recipe and a base model into a PEFT adapter, and `astro-weights export` writes a GGUF LoRA adapter and a model card from that adapter. Anyone with the recipe and the base model can rebuild a published adapter and compare. The core install is enough; GGUF output needs the `gguf` extra.
 
-## Write recipe
+## Write a recipe
 
-Tiny stand-in base model (one safetensors file) and two-step recipe:
+A tiny stand-in base model (one safetensors file) and a two-step recipe:
 
 ```python
 from pathlib import Path
@@ -49,7 +49,7 @@ save_recipe(
 )
 ```
 
-`save_recipe` writes JSON with sorted keys and trailing newline.
+`save_recipe` writes the JSON with sorted keys and a trailing newline.
 
 ## Build, inspect, export
 
@@ -59,7 +59,7 @@ astro-weights inspect my-adapter
 astro-weights export my-adapter --gguf my-adapter.gguf --arch qwen35
 ```
 
-Prints:
+Output:
 
 ```text
 model.layers.1.mlp.down_proj  16x48  rank 1
@@ -75,21 +75,21 @@ manifest: ok
 wrote my-adapter.gguf
 ```
 
-`my-adapter/` holds `adapter_config.json`, `adapter_model.safetensors`, `astro_manifest.json` and `README.md` (from `--card`). Base has no weight for `layers.2`; `rank1` does not read base weight, so build still works. Flags and exit codes: [CLI reference](../reference/cli.md).
+`my-adapter/` holds `adapter_config.json`, `adapter_model.safetensors`, `astro_manifest.json` and `README.md` (from `--card`). The base model has no weight for `layers.2`, but `rank1` does not read the base weight, so the build still works. Flags and exit codes are in the [CLI reference](../reference/cli.md).
 
 ## Recipe format
 
 | Key | Value |
 |---|---|
 | `format` | `1` |
-| `base_model` | non-empty string; goes into adapter |
-| `steps` | non-empty list; one step per module |
-| `steps[].recipe` | recipe name, table below |
-| `steps[].module` | module name, e.g. `model.layers.1.mlp.down_proj` |
-| `steps[].params` | scalars, exact names below; floats finite |
-| `steps[].arrays` | array name to `.npy` file name; plain file name in recipe directory, no subdirectory |
+| `base_model` | non-empty string; written into the adapter |
+| `steps` | non-empty list, one step per module |
+| `steps[].recipe` | recipe name, from the table below |
+| `steps[].module` | module name, for example `model.layers.1.mlp.down_proj` |
+| `steps[].params` | scalars with the exact names below; floats must be finite |
+| `steps[].arrays` | array name to `.npy` file name; a plain file name in the recipe directory, no subdirectory |
 
-Only these recipes allowed in a step. Same names as keyword arguments of functions in `astro_weights.edits`.
+Only these recipes are allowed in a step. Their parameter and array names are the keyword arguments of the functions of the same name in `astro_weights.edits`.
 
 | `recipe` | `params` | `arrays` | reads base weight |
 |---|---|---|---|
@@ -101,18 +101,18 @@ Only these recipes allowed in a step. Same names as keyword arguments of functio
 | `scale_head` | `head` (int), `n_heads` (int), `s` | none | yes |
 | `zero_head` | `head` (int), `n_heads` (int) | none | yes |
 
-- Unknown or missing key in `params` or `arrays`: `ValueError`. Second step on same module: `ValueError`.
-- `.npy` loads with `allow_pickle=False`; path resolving outside recipe directory: `ValueError`.
-- Recipe from someone else is untrusted input: size caps, no pickle, no code run; full list in [SECURITY.md](https://github.com/astro-weights/astro-weights/blob/main/SECURITY.md#untrusted-input).
-- Built edit keeps recipe plus sha256 of every array (`meta["recipe"]["arrays_sha256"]`) in `astro_manifest.json`.
+- An unknown or missing key in `params` or `arrays` raises `ValueError`, and so does a second step on the same module.
+- `.npy` files load with `allow_pickle=False`; a path that resolves outside the recipe directory raises `ValueError`.
+- A recipe from someone else is untrusted input. Loading applies size caps, never unpickles and never runs code; the full list is in [SECURITY.md](https://github.com/astro-weights/astro-weights/blob/main/SECURITY.md#untrusted-input).
+- The built edit keeps the recipe plus the sha256 of every array (`meta["recipe"]["arrays_sha256"]`) in `astro_manifest.json`.
 
 ## Base weights
 
-`build` reads `<module>.weight` from `--base` directory: follows `model.safetensors.index.json` when present, else reads `model.safetensors`. `read_base_weight(model_dir, key)` does same in Python; `read_tensor(file, key)` reads one tensor from one file; `tensor_sha256(file, key)` hashes raw stored bytes. F32, F16 and BF16 only, returned as float32. numpy only, no torch. Any problem (missing key, unsupported dtype, truncated file, unsafe shard name in index): `ValueError`.
+`build` reads `<module>.weight` from the `--base` directory. It follows `model.safetensors.index.json` when that file exists and reads `model.safetensors` otherwise. `read_base_weight(model_dir, key)` does the same in Python, `read_tensor(file, key)` reads one tensor from one file, and `tensor_sha256(file, key)` hashes the raw stored bytes. Only F32, F16 and BF16 are supported, and they are returned as float32. These functions need numpy only, no torch. Any problem (a missing key, an unsupported dtype, a truncated file, an unsafe shard name in the index) raises `ValueError`.
 
-## Same in Python
+## The same in Python
 
-`build_edit` plus `save_peft` do what `build` does. Continues example above:
+`build_edit` plus `save_peft` do what `build` does. This continues the example above:
 
 ```python
 from astro_weights.edits import build_edit, load_recipe
@@ -134,11 +134,11 @@ print(
 )
 ```
 
-Prints:
+Output:
 
 ```text
 ['a.npy', 'b.npy', 'v.npy']
 [] True
 ```
 
-To check shipped adapter against recipe, compare `edit.meta["recipe"]["arrays_sha256"]` with same field from `read_peft("my-adapter")`.
+To check a shipped adapter against its recipe, compare `edit.meta["recipe"]["arrays_sha256"]` with the same field from `read_peft("my-adapter")`.

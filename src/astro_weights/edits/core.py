@@ -42,6 +42,7 @@ class LowRankDelta:
         return (int(self.B.shape[0]), int(self.A.shape[1]))
 
     def dense(self) -> np.ndarray:
+        """Return the dense `B @ A` as float32."""
         return np.asarray(self.B @ self.A, dtype=np.float32)
 
     def padded(self, rank: int) -> "LowRankDelta":

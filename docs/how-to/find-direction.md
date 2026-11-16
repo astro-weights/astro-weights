@@ -1,8 +1,8 @@
-# Find and gate direction
+# Find and gate a direction
 
-`astro_weights.directions` turns residual activations from paired prompts into unit direction, then reports whether direction stands out from noise. Numpy only: collecting activations is caller's job. Direction is `[hidden]` vector pointing from set `b` to set `a`.
+`astro_weights.directions` turns residual activations from paired prompts into a unit direction, then reports whether that direction stands out from noise. It needs numpy only; collecting the activations is up to you. A direction is a `[hidden]` vector that points from set `b` to set `a`.
 
-## Gate, then project out
+## Gate it, then project it out
 
 ```python
 import numpy as np
@@ -26,21 +26,21 @@ delta = project_out("model.layers.10.mlp.down_proj", W0, u)
 print(delta.rank)
 ```
 
-Prints:
+Output:
 
 ```text
 True 1.0
 1
 ```
 
-## Read gate
+## Read the gate
 
-`direction_gate` takes pair differences `[P, H]` (a minus b), at least 4 pairs, finite values only, `draws >= 1`; else `ValueError`. Under about 20 pairs, results mean nothing: halves tiny, `null_975` near 1. `seed` picks random split into two halves. Returns `GateResult` statistics, no pass/fail verdict; field meanings in [reference](../reference/index.md). Statistic is NaN when mean it needs has zero norm. Pure noise gives split-half cosine near 0 and held-out AUC near 0.5. Package tests count planted direction as passing when `split_half_cos > null_975` (`tests/test_directions.py`).
+`direction_gate` takes pair differences `[P, H]` (a minus b). It needs at least 4 pairs, finite values only and `draws >= 1`, and raises `ValueError` otherwise. Under about 20 pairs the results mean nothing: the halves are tiny and `null_975` is near 1. `seed` picks the random split into two halves. The function returns `GateResult` statistics, not a pass/fail verdict; the field meanings are in the [reference](../reference/index.md). A statistic is NaN when the mean it needs has zero norm. Pure noise gives a split-half cosine near 0 and a held-out AUC near 0.5. The package's own tests count a planted direction as passing when `split_half_cos > null_975` (`tests/test_directions.py`).
 
 `directions_from_pairs(res_a, res_b)` gives one direction per layer, `[L, H]`, from per-pair residual means `[P, L, H]`.
 
-## Remove direction from layer
+## Remove a direction from a layer
 
-`project_out(module, W0, v, strength=1.0)` returns rank-1 `LowRankDelta` with `W = W0 - strength * outer(vhat, vhat @ W0)`. `W0` rows must match length of `v`: weight writes to residual, for example `mlp.down_proj.weight`, `[hidden, intermediate]`. Delta saves as LoRA adapter like any other.
+`project_out(module, W0, v, strength=1.0)` returns a rank-1 `LowRankDelta` with `W = W0 - strength * outer(vhat, vhat @ W0)`. The rows of `W0` must match the length of `v`, so the weight must be one that writes to the residual, for example `mlp.down_proj.weight` with shape `[hidden, intermediate]`. The delta saves as a LoRA adapter like any other.
 
-Same module has `scale_column`, `scale_head` and `zero_head`. `scale_head` delta has rank equal to head size; combine deltas of different rank with `Edit.from_deltas`, which zero-pads each to largest rank.
+The same module has `scale_column`, `scale_head` and `zero_head`. A `scale_head` delta has a rank equal to the head size; to combine deltas of different rank, use `Edit.from_deltas`, which zero-pads each one to the largest rank.

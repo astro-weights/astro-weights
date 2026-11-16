@@ -1,6 +1,6 @@
 # Reference
 
-Built from docstrings on each docs build.
+This page is built from the docstrings on every docs build.
 
 ::: astro_weights.edits
 

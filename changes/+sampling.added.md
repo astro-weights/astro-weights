@@ -1,0 +1,1 @@
+`generate_records` and `run_header` take `sampling=` (temperature, top_p, top_k, presence_penalty) for sampled decoding; the settings go into the run header so `astro-weights eval` rejects arms sampled differently.
