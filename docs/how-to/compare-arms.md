@@ -111,6 +111,38 @@ WARNING: only 4 clusters (<100); intervals are unreliable
 - `small_n` is also `True` under 100 clusters. The McNemar line ends with `; ignores clustering`, because McNemar always treats items as independent.
 - Without `cluster_id`, items are treated as independent.
 
+## Cap-hit censoring
+
+A record with `hit_cap=True` stopped at `max_new_tokens`. A capped answer usually has no final answer, so it is graded wrong and its token count is cut short; the score and token diffs over all items are then censored by the cap. `format_report` adds a `WARNING: cap-hit censoring` block when either arm's cap-hit rate is above 5%, or when the exact McNemar p-value on `hit_cap` between the arms is below 0.05. The block shows the comparison over the items where neither arm hit the cap, and counts loops: capped outputs whose last 400 characters are one chunk of at most 100 characters repeated 3 or more times (`is_loop`). The same numbers are in `PairedResult` (`cap_hit_p`, `n_uncapped`, `uncapped_diff`, `uncapped_tokens_diff`, `loops_base`, `loops_edit`) and in `astro-weights eval --json`. This continues the example above:
+
+```python
+# the edit arm loops on two items and hits the cap there
+looped = [
+    replace(r, output="and so on. " * 40, score=0.0, n_output_tokens=512, hit_cap=True)
+    if r.item_id in ("q0", "q1")
+    else r
+    for r in edit
+]
+capped = compare(base, looped)
+print(capped.cap_hit_edit, capped.n_uncapped, capped.loops_edit)
+print("\n".join(format_report(capped).splitlines()[-7:]))
+```
+
+Output:
+
+```text
+0.25 6 2
+WARNING: cap-hit censoring
+  cap-hit rate: base=0.0%  edit=25.0%  (McNemar exact p=0.5)
+  A capped answer usually has no final answer, so it is graded wrong and its token count is cut short.
+  The score and token diffs over all items above are censored by the cap.
+  items where neither arm hit the cap: n=6 items  score diff=+0.1667  tokens diff=-50.0
+  loops (capped, tail repeats one chunk): base=0  edit=2
+  Raise max_new_tokens and rerun; pick it from a short base-arm pilot so that cap-hit is near 0.
+```
+
+To avoid the warning, pick `max_new_tokens` from a short pilot of the base arm: raise it until almost no output hits the cap, then run both arms with that value. Arms should also use the same decoding; see [Run an eval end to end](run-eval.md#greedy-or-sampled).
+
 ## Store records
 
 `write_jsonl(path, records)` writes one JSON object per line. `read_jsonl(path)` reads them back and skips blank lines. It raises `ValueError` with the line number on invalid JSON, missing or unknown keys, a wrong value type or a non-finite score. `prompt_hash(text)` is the SHA-256 hex digest of the UTF-8 prompt.

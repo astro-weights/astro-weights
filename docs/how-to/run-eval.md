@@ -1,6 +1,6 @@
 # Run an eval end to end
 
-`generate_records` runs one arm with greedy decoding and returns one scored `Record` per item. Run it on the base model, then on the edited model, write both arms as JSONL, and compare them with `astro-weights eval`. Generating needs the `hf` extra. `grade_math` needs the `eval` extra (`pip install "astro-weights[eval]"`).
+`generate_records` runs one arm, greedy unless you pass `sampling`, and returns one scored `Record` per item. Run it on the base model, then on the edited model, write both arms as JSONL, and compare them with `astro-weights eval`. Generating needs the `hf` extra. `grade_math` needs the `eval` extra (`pip install "astro-weights[eval]"`).
 
 ## Generate both arms
 
@@ -113,7 +113,7 @@ Output:
 
 ## Run headers
 
-`run_header(model, tokenizer, max_new_tokens, seed, chat, batch_size=...)` returns the settings that decide the outputs: the model class (for an `apply` result, the class under the adapter), dtype, device, `max_new_tokens`, seed, chat, `batch_size`, the chat template sha256, and the torch, transformers and peft versions. `write_header(header_path("X.jsonl"), header)` stores it beside the records as `X.header.json`. This continues the example above:
+`run_header(model, tokenizer, max_new_tokens, seed, chat, batch_size=..., sampling=...)` returns the settings that decide the outputs: the model class (for an `apply` result, the class under the adapter), dtype, device, `max_new_tokens`, seed, chat, `batch_size`, the chat template sha256, the torch, transformers and peft versions, and `sampling` when it is given. `write_header(header_path("X.jsonl"), header)` stores it beside the records as `X.header.json`. This continues the example above:
 
 ```python
 from astro_weights.eval import check_headers, header_path, write_header
@@ -138,6 +138,45 @@ LlamaForCausalLM LlamaForCausalLM
 
 `check_headers(base, edit, ignore=("device",))` raises an error that lists every key that differs or is missing on one side.
 
+## Greedy or sampled
+
+Decoding is greedy by default. Greedy is a stress condition: some models repeat one sentence until they hit the cap. For the headline number, use the sampling settings that the model card recommends, and use the same settings on both arms. `sampling` maps any of `temperature` (> 0), `top_p`, `top_k` and `presence_penalty` to a number and turns sampling on. Pass the same `sampling` to `run_header`, which records it under `"sampling"`, so `check_headers` rejects a greedy arm paired with a sampled one, or two arms sampled differently. This continues the example above:
+
+```python
+from astro_weights.runners.hf import remove
+
+model = remove(peft_model)
+# placeholder values: copy the ones your model's card recommends
+SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
+
+sampled = generate_records(
+    model, tok, items, "base", grade_exact, 6, chat=False, sampling=SAMPLING
+)
+again = generate_records(
+    model, tok, items, "base", grade_exact, 6, chat=False, sampling=SAMPLING
+)
+print([r.output for r in sampled] == [r.output for r in again])
+
+sampled_h = run_header(model, tok, 6, 0, False, sampling=SAMPLING)
+print(sampled_h["sampling"])
+try:
+    check_headers(base_h, sampled_h)
+except ValueError as e:
+    print(e)
+```
+
+Output:
+
+```text
+True
+{'presence_penalty': 1.5, 'temperature': 0.7, 'top_k': 20, 'top_p': 0.8}
+arms ran under different settings and are not comparable: sampling: base='<missing>' edit={'presence_penalty': 1.5, 'temperature': 0.7, 'top_k': 20, 'top_p': 0.8}
+```
+
+- Sampled outputs repeat for the same model, items, `seed`, `sampling` and `batch_size`, also across a resume: each batch is reseeded from `seed` and its position in `items`.
+- `presence_penalty` subtracts that value from the logit of every token among the last 64 (prompt included), as llama.cpp does.
+- An unknown key or a temperature that is not above 0 raises `ValueError`.
+
 ## Compare arms
 
 ```bash
@@ -153,7 +192,17 @@ McNemar exact p=1  (base-only right=0, edit-only right=0)
 tokens: base=6.0  edit=6.0  diff=+0.0 (+0.0%)  bootstrap 95% CI [+0.0, +0.0]; not significant; smallest detectable difference at this n is 0.0
 cap-hit rate: base=1.000  edit=1.000
 WARNING: only 4 items (<100); intervals are unreliable
+
+WARNING: cap-hit censoring
+  cap-hit rate: base=100.0%  edit=100.0%  (McNemar exact p=1)
+  A capped answer usually has no final answer, so it is graded wrong and its token count is cut short.
+  The score and token diffs over all items above are censored by the cap.
+  items where neither arm hit the cap: n=0 items
+  loops (capped, tail repeats one chunk): base=0  edit=1
+  Raise max_new_tokens and rerun; pick it from a short base-arm pilot so that cap-hit is near 0.
 ```
+
+With `max_new_tokens=6` every output hits the cap, so the report warns that the diffs are censored. Pick `max_new_tokens` from a short pilot of the base arm: raise it until almost no output hits the cap, then run both arms with that value. The warning and its fields are described in [Compare two eval arms](compare-arms.md#cap-hit-censoring).
 
 - When `BASE.header.json` and `EDIT.header.json` both exist, `eval` compares them (ignoring `device`) and exits 1 on any difference, with `error: arms ran under different settings ...` on stderr. `--ignore-header` skips the check.
 - `--floor A.jsonl B.jsonl` takes two runs of the base arm under the same settings, and the report adds noise-floor lines. See [Compare two eval arms](compare-arms.md#noise-floor).
