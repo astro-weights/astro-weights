@@ -1,0 +1,11 @@
+{#- Consent banner: Accept and Reject only, same look, no pre-ticked box (Legal spec 2026-11-16, M2 + M3).
+    Replaces the theme partial, whose settings list starts ticked. Accept submits the one hidden
+    analytics box; Reject is the theme's reset, which clears it. Stored under scope "/" (extra.scope),
+    so one choice covers /, /docs/ and /blog/. Written against zensical-ui 0.0.42. -#}
+<h4>{{ config.extra.consent.title }}</h4>
+<p>{{ config.extra.consent.description }}</p>
+<input type="checkbox" name="analytics" checked hidden>
+<div class="md-consent__controls">
+  <button class="md-button md-button--primary">Accept</button>
+  <button type="reset" class="md-button md-button--primary">Reject</button>
+</div>

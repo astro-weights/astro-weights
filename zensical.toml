@@ -5,7 +5,7 @@ site_description = "Agent-driven weight edits. Democratizing AI for all."
 repo_url = "https://github.com/astro-weights/astro-weights"
 repo_name = "astro-weights/astro-weights"
 edit_uri = "edit/main/docs/"
-copyright = "Apache-2.0. Logo based on Noto Emoji, Copyright Google LLC, Apache-2.0."
+copyright = 'Apache-2.0. Logo based on Noto Emoji, Copyright Google LLC, Apache-2.0. <a href="#__consent">Cookie settings</a> · <a href="/privacy/">Privacy</a>'
 # docs/blog/ is built by zensical.blog.toml to /blog/, not here.
 exclude_docs = "blog/"
 extra_css = ["assets/brand.css"]
@@ -32,6 +32,13 @@ nav = [
 # Logo goes to the landing page, not the docs home.
 [project.extra]
 homepage = "https://astro-weights.dev/"
+# One storage scope for docs and blog, so one consent choice covers both (and the landing page).
+scope = "/"
+
+# Consent banner (partials/consent.html override). Wording: Legal, 2026-11-16.
+[project.extra.consent]
+title = "Cookies on astro-weights.dev"
+description = "We'd like to use Google Analytics, loaded through Google Tag Manager, to count page views and see which pages help people. It sets cookies and sends details of your visit to Google. Nothing loads unless you accept. <a href=\"/privacy/\">Privacy</a>"
 
 # Google Tag Manager; the tag lives in overrides/partials/integrations/analytics/custom.html.
 [project.extra.analytics]
