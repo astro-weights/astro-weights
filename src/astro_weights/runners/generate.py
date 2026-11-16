@@ -29,7 +29,7 @@ _SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "presence_penalty"}
 _WINDOW = 64  # llama.cpp's default penalty window
 
 
-class _PresencePenalty(LogitsProcessor):
+class _PresencePenalty(LogitsProcessor):  # type: ignore[misc, unused-ignore]
     """Subtract a flat `penalty` from the logit of each token in the last 64.
 
     The window covers prompt and generated tokens. `lead[i]` is the number of
