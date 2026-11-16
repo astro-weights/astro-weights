@@ -12,7 +12,7 @@ astro-weights: agent-driven weight edits. Democratizing AI for all. Edits to ope
 - `src/astro_weights/directions/`: difference-of-means directions and `direction_gate`, numpy only.
 - `src/astro_weights/eval/`: per-item `Record` JSONL, run headers (`header.py`: `header_path`, `write_header`, `read_header`, `check_headers`), paired comparison of two arms (`compare`, `format_report`, `exceeds_floor`, `is_loop`; minimum detectable effect and cap-hit censoring fields in `PairedResult`; `format_report` warns on cap-hit censoring) and answer graders (`grade_exact`, `grade_choice`, `grade_math`). Never runs a model. `grade_math` imports math-verify lazily, from the `eval` extra.
 - `src/astro_weights/cli.py`: the `astro-weights` command (`build`, `eval`, `export`, `inspect`; each takes `--json`; no command exits 2). `__main__.py` runs it as `python -m astro_weights`.
-- `docs/`: user docs site (Zensical, `zensical.toml`), Diátaxis folders `tutorials/`, `how-to/`, `reference/` (built from docstrings by mkdocstrings), `explanation/`. `docs.yml` runs strict build check only. Site deploys from `astro-weights/astro-weights.github.io`: landing page at https://astro-weights.dev/, these docs built into https://astro-weights.dev/docs/.
+- `docs/`: user docs site (Zensical, `zensical.toml`), Diátaxis folders `tutorials/`, `how-to/`, `reference/` (built from docstrings by mkdocstrings), `explanation/`. `docs/blog/` is the blog: `zensical.blog.toml` builds it on its own (`zensical.toml` excludes it) to https://astro-weights.dev/blog/. `docs.yml` runs strict build check of both configs only. Site deploys from `astro-weights/astro-weights.github.io`: landing page at https://astro-weights.dev/, these docs built into https://astro-weights.dev/docs/.
 - Layer rule, enforced by import-linter: `cli > runners > export > edits`. A lower layer never imports a higher one. `directions` and `eval` are outside the contract and import no other `astro_weights` package.
 - Core dependencies are numpy and safetensors only. torch, transformers and peft are imported only inside `runners/`, and only through the `hf` extra. Importing `runners.hf`, `runners.generate` or `export.gguf` without its extra raises `ModuleNotFoundError` naming the extra to install.
 
@@ -28,6 +28,7 @@ uv run pytest            # core tests
 uv run --extra hf --extra eval --extra gguf pytest  # tests that need optional extras (CI test-hf job)
 uv run --extra hf --extra eval --extra gguf pytest --cov=astro_weights --cov-branch --cov-fail-under=95  # coverage gate, as test-hf runs it
 uv run --only-group docs zensical build --strict  # docs site; `zensical serve` to preview
+uv run --only-group docs zensical build -f zensical.blog.toml --strict  # blog
 ```
 
 Run all of them before opening a PR; CI runs the same set.

@@ -26,7 +26,7 @@ uv run pytest                                       # core tests
 uv run --extra hf --extra eval --extra gguf pytest  # tests that need the optional extras
 ```
 
-Docs changes: `uv run --only-group docs zensical build --strict` must pass; preview with `uv run --only-group docs zensical serve`. The Docs workflow here only checks the build. The site is deployed from [astro-weights/astro-weights.github.io](https://github.com/astro-weights/astro-weights.github.io), which builds `docs/` into https://astro-weights.dev/docs/ beside the landing page.
+Docs changes: `uv run --only-group docs zensical build --strict` must pass; preview with `uv run --only-group docs zensical serve`. Blog posts live in `docs/blog/posts/` and build with their own config: `uv run --only-group docs zensical build -f zensical.blog.toml --strict` must pass too. The Docs workflow here only checks the build. The site is deployed from [astro-weights/astro-weights.github.io](https://github.com/astro-weights/astro-weights.github.io), which builds `docs/` into https://astro-weights.dev/docs/ beside the landing page.
 
 CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release. `tests/test_exit_0_1.py` is the release check for 0.1.0: it reruns the library against a real 9B base model and published edits. Those tests are marked `@pytest.mark.realdata` and skip unless `$ASTRO_REALDATA` names a directory that holds the files. CI does not set it, and contributors do not need it.
 
