@@ -1,12 +1,13 @@
 [project]
 site_name = "astro-weights"
 site_url = "https://astro-weights.dev/docs/"
-site_description = "Agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters."
+site_description = "Agent-driven weight edits, democratizing AI for all."
 repo_url = "https://github.com/astro-weights/astro-weights"
 repo_name = "astro-weights/astro-weights"
 edit_uri = "edit/main/docs/"
 copyright = "Apache-2.0. Logo based on Noto Emoji, Copyright Google LLC, Apache-2.0."
 extra_css = ["assets/brand.css"]
+extra_javascript = ["assets/home-link.js"]
 nav = [
   { "Home" = "index.md" },
   { "Tutorials" = ["tutorials/first-edit.md"] },
@@ -24,6 +25,10 @@ nav = [
   { "Reference" = ["reference/index.md", "reference/cli.md"] },
   { "Explanation" = ["explanation/why-lora.md"] },
 ]
+
+# Logo goes to the landing page, not the docs home.
+[project.extra]
+homepage = "https://astro-weights.dev/"
 
 [project.theme]
 logo = "assets/logo.svg"

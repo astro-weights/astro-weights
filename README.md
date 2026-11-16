@@ -4,7 +4,7 @@
 
 <h1 align="center">astro-weights</h1>
 
-<p align="center"><b>Small course corrections for open LLMs.</b><br>Agent-driven weight-space edits, exported as standard LoRA adapters.</p>
+<p align="center"><b>Small course corrections for open LLMs.</b><br>Agent-driven weight edits, democratizing AI for all.</p>
 
 <p align="center">
   <a href="https://pypi.org/project/astro-weights/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/astro-weights"></a>
