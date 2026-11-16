@@ -15,6 +15,11 @@ _SMALL_N = 100
 _BOOT_CHUNK = 500  # bootstrap rows drawn at a time; bounds memory at chunk * n ints
 _Z = 1.96  # two-sided 5%
 _Z_POWER = 0.84  # 80% power
+_CAP_WARN_RATE = 0.05  # warn when either arm's cap-hit rate is above this
+_CAP_WARN_P = 0.05  # ... or the cap-hit McNemar p-value is below this
+_LOOP_TAIL = 400  # characters of a capped output checked for a repeating tail
+_LOOP_MAX_PERIOD = 100
+_LOOP_MIN_REPEATS = 3
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,12 @@ class PairedResult:
     `n_clusters` is the number of distinct `cluster_id`s, or None when records carry none.
     When set, `se`, `ci95`, `tokens_se`, both MDEs and `tokens_ci95` account for clustering,
     and `small_n` also flags fewer than 100 clusters. McNemar always treats items as independent.
+
+    The cap fields come last. `cap_hit_p` is the exact McNemar p-value on `hit_cap` between the
+    arms (1.0 when no record differs). `n_uncapped`, `uncapped_diff` and `uncapped_tokens_diff`
+    cover the items with at least one (item, seed) pair where neither arm hit the cap, using only
+    those pairs; the diffs are None when `n_uncapped` is 0. `loops_base` and `loops_edit` count
+    capped records whose output ends in one short chunk repeated (see `is_loop`).
     """
 
     n_items: int
@@ -50,6 +61,12 @@ class PairedResult:
     tokens_se: float
     tokens_mde: float
     n_clusters: int | None = None
+    cap_hit_p: float = 1.0
+    n_uncapped: int = 0
+    uncapped_diff: float | None = None
+    uncapped_tokens_diff: float | None = None
+    loops_base: int = 0
+    loops_edit: int = 0
 
 
 def _index(records: Sequence[Record], arm: str) -> dict[_Key, Record]:
@@ -199,6 +216,26 @@ def _mcnemar_exact(b: int, c: int) -> float:
     return float(min(1.0, 2 * tail))
 
 
+def is_loop(output: str) -> bool:
+    """True when the last 400 characters are one chunk of at most 100 repeated 3 or more times."""
+    tail = output[-_LOOP_TAIL:]
+    return any(
+        len(tail) >= _LOOP_MIN_REPEATS * p and tail[p:] == tail[:-p]
+        for p in range(1, _LOOP_MAX_PERIOD + 1)
+    )
+
+
+def _uncapped(
+    pairs: list[tuple[Record, Record]],
+) -> tuple[int, float | None, float | None]:
+    """Items, score diff and token diff over the pairs where neither arm hit the cap."""
+    ok = [p for p in pairs if not (p[0].hit_cap or p[1].hit_cap)]
+    if not ok:
+        return 0, None, None
+    sb, se_, tb, te = _per_item(ok)
+    return sb.size, float((se_ - sb).mean()), float((te - tb).mean())
+
+
 def compare(
     base: Sequence[Record], edit: Sequence[Record], n_boot: int = 10000, seed: int = 0
 ) -> PairedResult:
@@ -244,6 +281,7 @@ def compare(
     tokens_diff = float(dt.mean())
     tokens_se = _paired_se(dt) if g is None else _clustered_se(dt, g, n_g)
 
+    n_uncapped, uncapped_diff, uncapped_tokens_diff = _uncapped(pairs)
     return PairedResult(
         n_items=n,
         mean_base=float(sb.mean()),
@@ -267,6 +305,15 @@ def compare(
         tokens_se=tokens_se,
         tokens_mde=(_Z + _Z_POWER) * tokens_se,
         n_clusters=None if g is None else n_g,
+        cap_hit_p=_mcnemar_exact(
+            sum(b.hit_cap and not e.hit_cap for b, e in pairs),
+            sum(e.hit_cap and not b.hit_cap for b, e in pairs),
+        ),
+        n_uncapped=n_uncapped,
+        uncapped_diff=uncapped_diff,
+        uncapped_tokens_diff=uncapped_tokens_diff,
+        loops_base=sum(b.hit_cap and is_loop(b.output) for b, _ in pairs),
+        loops_edit=sum(e.hit_cap and is_loop(e.output) for _, e in pairs),
     )
 
 
@@ -308,6 +355,41 @@ def _floor_line(
         f"noise floor ({name}): |diff|={abs(diff):{fmt}} {verdict} "
         f"|floor diff| + 1.96 SE = {bar:{fmt}}"
     )
+
+
+def _cap_warning(r: PairedResult) -> list[str]:
+    """Warning block when cap-hit is high or unequal; empty otherwise."""
+    if (
+        max(r.cap_hit_base, r.cap_hit_edit) <= _CAP_WARN_RATE
+        and r.cap_hit_p >= _CAP_WARN_P
+    ):
+        return []
+    if r.n_uncapped and r.uncapped_diff is not None:
+        both = (
+            f"n={r.n_uncapped} items  score diff={r.uncapped_diff:+.4f}  "
+            f"tokens diff={r.uncapped_tokens_diff:+.1f}"
+        )
+    else:
+        both = "n=0 items"
+    return [
+        "",
+        "WARNING: cap-hit censoring",
+        (
+            f"  cap-hit rate: base={r.cap_hit_base:.1%}  edit={r.cap_hit_edit:.1%}  "
+            f"(McNemar exact p={r.cap_hit_p:.4g})"
+        ),
+        (
+            "  A capped answer usually has no final answer, so it is graded wrong and its "
+            "token count is cut short."
+        ),
+        "  The score and token diffs over all items above are censored by the cap.",
+        f"  items where neither arm hit the cap: {both}",
+        f"  loops (capped, tail repeats one chunk): base={r.loops_base}  edit={r.loops_edit}",
+        (
+            "  Raise max_new_tokens and rerun; pick it from a short base-arm pilot so that "
+            "cap-hit is near 0."
+        ),
+    ]
 
 
 def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
@@ -355,4 +437,4 @@ def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
             else f"{r.n_clusters} clusters"
         )
         lines.append(f"WARNING: only {few} (<{_SMALL_N}); intervals are unreliable")
-    return "\n".join(lines)
+    return "\n".join(lines + _cap_warning(r))

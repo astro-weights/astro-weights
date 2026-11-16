@@ -61,7 +61,7 @@ def _longest_run(s: str) -> int:
 def _front_matter(edit: Edit, kind: str, license: str) -> list[str]:
     q = _q
     lines = ["---", f"base_model: {q(edit.base_model)}"]
-    relation = "adapter" if kind == "adapter" else "quantized"
+    relation = "adapter" if kind == "adapter" else "finetune"
     lines.append(f"base_model_relation: {q(relation)}")
     if kind == "adapter":
         lines.append(f"library_name: {q('peft')}")
@@ -119,7 +119,13 @@ def model_card(
     lines += ["", f"# {_line(title or '') or f'{edit.base_model} edit'}", ""]
     if summary and summary.strip():
         lines += ["\n".join(summary.strip().splitlines()), ""]
-    lines += ["## Edit", "", *_edit_table(edit), "", "## How to load", ""]
+    n = len(edit.deltas)
+    notice = (
+        f"Modification: the weights of {edit.base_model} were modified by a low-rank "
+        f"edit of {n} {'module' if n == 1 else 'modules'}, made with astro-weights "
+        "without training."
+    )
+    lines += ["## Edit", "", notice, "", *_edit_table(edit), "", "## How to load", ""]
     lines += [*_how_to_load(edit, kind), ""]
     if results:
         lines += ["## Results", "", "| metric | value |", "| --- | --- |"]

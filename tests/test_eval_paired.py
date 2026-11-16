@@ -13,6 +13,7 @@ from astro_weights.eval import (
     compare,
     exceeds_floor,
     format_report,
+    is_loop,
     pair,
     prompt_hash,
     read_jsonl,
@@ -514,7 +515,19 @@ def test_unclustered_results_bit_identical_to_before(binary: bool) -> None:
     # correlation goes through BLAS dot products: last-bit differences across platforms
     assert r.correlation == pytest.approx(want.correlation, rel=1e-12)
     # every other field: exact float equality
-    assert dataclasses.replace(r, correlation=want.correlation) == want
+    # (the cap fields were added later and are checked in their own tests)
+    cap = {
+        f: getattr(want, f)
+        for f in (
+            "cap_hit_p",
+            "n_uncapped",
+            "uncapped_diff",
+            "uncapped_tokens_diff",
+            "loops_base",
+            "loops_edit",
+        )
+    }
+    assert dataclasses.replace(r, correlation=want.correlation, **cap) == want
     assert r.n_clusters is None
 
 
@@ -673,3 +686,119 @@ def test_clustered_ci_coverage_simulation() -> None:
     assert time.perf_counter() - t0 < 30
     assert 0.92 <= covered_c / reps <= 0.98
     assert covered_u / reps < 0.90
+
+
+def test_is_loop_repeating_and_not() -> None:
+    assert is_loop("some reasoning. " + "so the answer is 4. " * 30)
+    assert is_loop("x" * 500)
+    assert not is_loop("so the answer is 4. " * 2)  # only 2 repeats in the tail
+    text = "".join(f"step {k}: {k * k} then " for k in range(80))
+    assert not is_loop(text)
+    assert not is_loop("")
+
+
+def test_is_loop_period_limit() -> None:
+    assert is_loop("head" + ("b" * 99 + "c") * 4)  # period 100
+    assert not is_loop("".join(chr(0x4E00 + k) for k in range(150)) * 3)  # period 150
+
+
+def _cap_arms(
+    n: int, base_cap: set[int], edit_cap: set[int], loop: bool = False
+) -> tuple[list[Record], list[Record]]:
+    spin = "I will check it again. " * 40
+
+    def one(arm: str, k: int, cap: bool) -> Record:
+        out = spin if cap and loop else "answer"
+        score = 0.0 if cap else float(k % 2)
+        tokens = 1000 if cap else 100 + k
+        return Record(f"i{k}", 0, arm, f"h{k}", out, score, tokens, cap, None)
+
+    return (
+        [one("base", k, k in base_cap) for k in range(n)],
+        [one("edit", k, k in edit_cap) for k in range(n)],
+    )
+
+
+def test_cap_stats_uncapped_subset_and_loops() -> None:
+    base, edit = _cap_arms(10, {0, 1, 2, 3}, {0}, loop=True)
+    r = compare(base, edit, n_boot=10)
+    assert r.n_uncapped == 6  # items 4..9
+    assert r.uncapped_diff == pytest.approx(0.0)  # same scores where neither capped
+    assert r.uncapped_tokens_diff == pytest.approx(0.0)
+    assert r.diff == pytest.approx(0.2)  # capped base items 1 and 3 would be right
+    assert (r.loops_base, r.loops_edit) == (4, 1)
+    # base-only capped = 3, edit-only = 0: p = 2 * 0.5**3
+    assert r.cap_hit_p == pytest.approx(0.25)
+
+
+def test_cap_stats_no_loops_for_short_capped_output() -> None:
+    base, edit = _cap_arms(4, {0}, set())
+    r = compare(base, edit, n_boot=10)
+    assert (r.loops_base, r.loops_edit) == (0, 0)
+
+
+def test_cap_stats_all_capped_has_no_uncapped_row() -> None:
+    base, edit = _cap_arms(4, {0, 1, 2, 3}, {0, 1, 2, 3})
+    r = compare(base, edit, n_boot=10)
+    assert r.n_uncapped == 0
+    assert r.uncapped_diff is None
+    assert r.uncapped_tokens_diff is None
+    assert r.cap_hit_p == 1.0
+    assert "n=0 items" in format_report(r)
+
+
+def test_pairedresult_old_constructor_still_works() -> None:
+    base, edit = _cap_arms(4, set(), set())
+    r = compare(base, edit, n_boot=10)
+    old = {
+        f.name: getattr(r, f.name)
+        for f in dataclasses.fields(r)
+        if f.name
+        not in {
+            "cap_hit_p",
+            "n_uncapped",
+            "uncapped_diff",
+            "uncapped_tokens_diff",
+            "loops_base",
+            "loops_edit",
+        }
+    }
+    r2 = PairedResult(**old)
+    assert (r2.cap_hit_p, r2.n_uncapped, r2.uncapped_diff, r2.loops_base) == (
+        1.0,
+        0,
+        None,
+        0,
+    )
+
+
+def test_report_cap_warning_high_rate() -> None:
+    base, edit = _cap_arms(20, {0, 1, 2, 3, 4, 5}, {0, 1}, loop=True)
+    text = format_report(compare(base, edit, n_boot=10))
+    assert "WARNING: cap-hit censoring" in text
+    assert "base=30.0%  edit=10.0%" in text
+    assert "censored by the cap" in text
+    assert "items where neither arm hit the cap: n=14 items" in text
+    assert "base=6  edit=2" in text
+    assert "max_new_tokens" in text
+    assert "base-arm pilot" in text
+
+
+def test_report_cap_warning_on_unequal_rates_alone() -> None:
+    # rates 4.5% and 0 (both <= 5%) but 9 base-only caps: McNemar p = 2 * 0.5**9 < 0.05
+    base, edit = _cap_arms(200, set(range(9)), set())
+    r = compare(base, edit, n_boot=10)
+    assert max(r.cap_hit_base, r.cap_hit_edit) <= 0.05
+    assert r.cap_hit_p < 0.05
+    assert "WARNING: cap-hit censoring" in format_report(r)
+
+
+def test_report_no_cap_warning_unchanged() -> None:
+    # at the threshold (5%) and balanced: no block, report is the 0.1.1 text
+    base, edit = _cap_arms(20, {0}, {1})
+    r = compare(base, edit, n_boot=10)
+    text = format_report(r)
+    assert "cap-hit censoring" not in text
+    assert text.splitlines()[-1].startswith(("cap-hit rate:", "WARNING: only"))
+    base, edit = _cap_arms(20, set(), set())
+    assert "cap-hit censoring" not in format_report(compare(base, edit, n_boot=10))

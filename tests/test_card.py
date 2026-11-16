@@ -40,7 +40,7 @@ def test_front_matter_adapter() -> None:
 def test_front_matter_gguf() -> None:
     assert _front(model_card(_edit(), "gguf", "mit")) == [
         'base_model: "org/base"',
-        'base_model_relation: "quantized"',
+        'base_model_relation: "finetune"',
         'license: "mit"',
         "tags:",
         '  - "astro-weights"',
@@ -143,3 +143,24 @@ def test_write_card_no_overwrite(tmp_path: Path) -> None:
     assert (tmp_path / "README.md").read_text() == "one\n"
     write_card(tmp_path, "two\n")
     assert (tmp_path / "README.md").read_text() == "two\n"
+
+
+def test_gguf_card_is_not_quantized() -> None:
+    # a full-model GGUF holds edited weights; "quantized" would say they are unchanged
+    text = model_card(_edit(), "gguf", "mit")
+    assert 'base_model_relation: "finetune"' in text
+    assert "quantized" not in text
+
+
+def test_modification_notice_on_every_card() -> None:
+    for kind in ("adapter", "gguf"):
+        text = model_card(_edit(), kind, "mit")
+        assert (
+            "Modification: the weights of org/base were modified by a low-rank edit "
+            "of 2 modules, made with astro-weights without training.\n"
+        ) in text
+        assert (
+            text.index("## Edit") < text.index("Modification:") < text.index("| module")
+        )
+    one = Edit.from_deltas(list(_edit().deltas[:1]), "org/base")
+    assert "edit of 1 module," in model_card(one, "adapter", "mit")

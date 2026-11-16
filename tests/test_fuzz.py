@@ -150,9 +150,10 @@ _LINE = {
     ("line", "match"),
     [
         (json.dumps({**_LINE, "score": 10**400}), "finite"),
-        # Python 3.14 parses deep nesting without RecursionError; any ValueError is fine
-        ("[" * 100_000 + "]" * 100_000, ""),
-        ('{"a":' * 100_000, ""),
+        # Python 3.14 parses deep nesting without RecursionError; the message differs by
+        # version, but it always names the line
+        ("[" * 100_000 + "]" * 100_000, "^line 1: "),
+        ('{"a":' * 100_000, "^line 1: "),
     ],
 )
 def test_read_jsonl_rejects_overflow_and_deep_nesting(

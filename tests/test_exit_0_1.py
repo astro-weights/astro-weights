@@ -199,12 +199,13 @@ def _leg_a_real(realdata: Path, tmp_path: Path, numbers: dict[str, float]) -> No
 
 @pytest.mark.realdata
 def test_leg_b_dense_real(realdata: Path, tmp_path: Path) -> None:
+    manifest = json.loads((realdata / "adapter" / "lora_manifest.json").read_text())
     numbers = leg_b(
         realdata / "base",
         realdata / "fable1",
         realdata / "adapter",
         tmp_path,
-        expect_count=5,
+        expect_count=len(manifest["tensors"]),
     )
     _record("leg_b", numbers)
 
