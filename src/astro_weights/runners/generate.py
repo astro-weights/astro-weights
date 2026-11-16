@@ -29,7 +29,7 @@ _SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "presence_penalty"}
 _WINDOW = 64  # llama.cpp's default penalty window
 
 
-class PresencePenalty(LogitsProcessor):
+class _PresencePenalty(LogitsProcessor):
     """Subtract a flat `penalty` from the logit of each token in the last 64.
 
     The window covers prompt and generated tokens. `lead[i]` is the number of
@@ -71,9 +71,11 @@ def _gen_kwargs(sampling: Mapping[str, float] | None, lead: Any) -> dict[str, An
         return {"do_sample": False}
     kwargs: dict[str, Any] = {"do_sample": True}
     kwargs.update({k: v for k, v in sampling.items() if k != "presence_penalty"})
+    if "top_k" in kwargs:
+        kwargs["top_k"] = int(kwargs["top_k"])  # transformers rejects 20.0
     if sampling.get("presence_penalty"):
         kwargs["logits_processor"] = LogitsProcessorList(
-            [PresencePenalty(sampling["presence_penalty"], lead)]
+            [_PresencePenalty(sampling["presence_penalty"], lead)]
         )
     return kwargs
 

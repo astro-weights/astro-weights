@@ -30,7 +30,7 @@
   "zero_head": "(module: str, W0: numpy.ndarray, head: int, n_heads: int) -> astro_weights.edits.core.LowRankDelta"
  },
  "astro_weights.eval": {
-  "PairedResult": "(n_items: int, mean_base: float, mean_edit: float, diff: float, se: float, ci95: tuple[float, float], correlation: float, mcnemar_p: float | None, n_base_only: int, n_edit_only: int, tokens_base: float, tokens_edit: float, tokens_diff: float, tokens_diff_pct: float, tokens_ci95: tuple[float, float], cap_hit_base: float, cap_hit_edit: float, small_n: bool, score_mde: float, tokens_se: float, tokens_mde: float, n_clusters: int | None = None) -> None",
+  "PairedResult": "(n_items: int, mean_base: float, mean_edit: float, diff: float, se: float, ci95: tuple[float, float], correlation: float, mcnemar_p: float | None, n_base_only: int, n_edit_only: int, tokens_base: float, tokens_edit: float, tokens_diff: float, tokens_diff_pct: float, tokens_ci95: tuple[float, float], cap_hit_base: float, cap_hit_edit: float, small_n: bool, score_mde: float, tokens_se: float, tokens_mde: float, n_clusters: int | None = None, cap_hit_p: float = 1.0, n_uncapped: int = 0, uncapped_diff: float | None = None, uncapped_tokens_diff: float | None = None, loops_base: int = 0, loops_edit: int = 0) -> None",
   "Record": "(item_id: str, seed: int, arm: str, prompt_hash: str, output: str, score: float, n_output_tokens: int, hit_cap: bool, cluster_id: str | None = None) -> None",
   "answer_part": "(text: str) -> str",
   "check_headers": "(base: dict[str, Any], edit: dict[str, Any], ignore: collections.abc.Collection[str] = ('device',)) -> None",
@@ -41,6 +41,7 @@
   "grade_exact": "(gold: str, answer: str) -> bool",
   "grade_math": "(gold: str, answer: str, strip_commas: bool = False) -> bool",
   "header_path": "(records_path: str | pathlib.Path) -> pathlib.Path",
+  "is_loop": "(output: str) -> bool",
   "last_boxed": "(s: str) -> str | None",
   "pair": "(base: collections.abc.Sequence[astro_weights.eval.records.Record], edit: collections.abc.Sequence[astro_weights.eval.records.Record]) -> list[tuple[astro_weights.eval.records.Record, astro_weights.eval.records.Record]]",
   "prompt_hash": "(text: str) -> str",
@@ -74,8 +75,8 @@
   "run_header_http": "(base_url: str, model: str, max_new_tokens: int, seed: int, extra_body: collections.abc.Mapping[str, Any] | None = None, *, api_key: str | None = None, timeout: float = 120.0) -> dict[str, Any]"
  },
  "astro_weights.runners.generate": {
-  "generate_records": "(model: Any, tokenizer: Any, items: collections.abc.Sequence[collections.abc.Mapping[str, Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, seed: int = 0, chat: bool = True, *, out: pathlib.Path | str | None = None, resume: bool = False, batch_size: int = 1) -> list[astro_weights.eval.records.Record]",
-  "run_header": "(model: Any, tokenizer: Any, max_new_tokens: int, seed: int, chat: bool, *, batch_size: int = 1) -> dict[str, Any]"
+  "generate_records": "(model: Any, tokenizer: Any, items: collections.abc.Sequence[collections.abc.Mapping[str, Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, seed: int = 0, chat: bool = True, *, out: pathlib.Path | str | None = None, resume: bool = False, batch_size: int = 1, sampling: collections.abc.Mapping[str, float] | None = None) -> list[astro_weights.eval.records.Record]",
+  "run_header": "(model: Any, tokenizer: Any, max_new_tokens: int, seed: int, chat: bool, *, batch_size: int = 1, sampling: collections.abc.Mapping[str, float] | None = None) -> dict[str, Any]"
  },
  "astro_weights.runners.hf": {
   "apply": "(model: torch.nn.modules.module.Module, edit: astro_weights.edits.core.Edit, adapter_name: str = 'astro', *, max_rounding_error: float | None = None) -> peft.peft_model.PeftModel",

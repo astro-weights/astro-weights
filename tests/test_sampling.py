@@ -11,7 +11,7 @@ tokenizers = pytest.importorskip("tokenizers")
 transformers = pytest.importorskip("transformers")
 
 from astro_weights.runners.generate import (
-    PresencePenalty,
+    _PresencePenalty,
     generate_records,
     run_header,
 )
@@ -19,7 +19,7 @@ from astro_weights.runners.generate import (
 ITEMS = [
     {"item_id": f"i{k}", "prompt": f"w1 w2 w{k + 3}", "gold": "w5"} for k in range(5)
 ]
-SAMPLING = {"temperature": 1.5, "top_p": 0.95, "top_k": 20, "presence_penalty": 1.0}
+SAMPLING = {"temperature": 1.5, "top_p": 0.95, "top_k": 20.0, "presence_penalty": 1.0}
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def test_presence_penalty_on_hand_made_tensor() -> None:
     ids = torch.tensor([[0, 0, 2, 3], [1, 1, 1, 5]])
     scores = torch.zeros(2, 8)
     # row 0 has two left-pad positions (ids 0 there are padding), row 1 none
-    out = PresencePenalty(1.5, torch.tensor([2, 0]))(ids, scores)
+    out = _PresencePenalty(1.5, torch.tensor([2, 0]))(ids, scores)
     assert out[0].tolist() == [0, 0, -1.5, -1.5, 0, 0, 0, 0]
     assert out[1].tolist() == [0, -1.5, 0, 0, 0, -1.5, 0, 0]
     assert scores.abs().sum() == 0  # input untouched
@@ -53,7 +53,7 @@ def test_presence_penalty_on_hand_made_tensor() -> None:
 
 def test_presence_penalty_counts_once_and_keeps_dtype() -> None:
     ids = torch.tensor([[4, 4, 4]])
-    out = PresencePenalty(0.5, torch.tensor([0]))(
+    out = _PresencePenalty(0.5, torch.tensor([0]))(
         ids, torch.ones(1, 6, dtype=torch.bfloat16)
     )
     assert out.dtype == torch.bfloat16
@@ -62,7 +62,7 @@ def test_presence_penalty_counts_once_and_keeps_dtype() -> None:
 
 def test_presence_penalty_window_is_last_64() -> None:
     ids = torch.cat([torch.full((1, 1), 7), torch.full((1, 64), 3)], dim=1)
-    out = PresencePenalty(1.0, torch.tensor([0]))(ids, torch.zeros(1, 10))
+    out = _PresencePenalty(1.0, torch.tensor([0]))(ids, torch.zeros(1, 10))
     assert out[0, 7] == 0  # fell out of the window
     assert out[0, 3] == -1
 
