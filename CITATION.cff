@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use astro-weights, please cite it as below."
 type: software
 title: "astro-weights"
-abstract: "Agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters."
+abstract: "Agent-driven weight edits, democratizing AI for all."
 authors:
   - family-names: Biswas
     given-names: Indranil

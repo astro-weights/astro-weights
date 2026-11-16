@@ -2,7 +2,7 @@
 
 Instructions for coding agents and human contributors. `CLAUDE.md` is a symlink to this file.
 
-astro-weights: agent-driven weight-space edits for open LLMs, exported as standard LoRA adapters. Pre-alpha; the API may change in any 0.x release.
+astro-weights: agent-driven weight edits, democratizing AI for all. Edits to open LLMs are exported as standard LoRA adapters. Pre-alpha; the API may change in any 0.x release.
 
 ## Layout
 
