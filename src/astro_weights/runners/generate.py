@@ -1,7 +1,8 @@
-"""Run one eval arm: greedy, records written as made, settings recorded."""
+"""Run one eval arm: greedy or sampled, records written as made, settings recorded."""
 
 import hashlib
 import json
+import random
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
@@ -9,13 +10,72 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import peft
-import torch
-import transformers
-
 from astro_weights.eval import Record, prompt_hash, read_jsonl
 
+try:
+    import peft
+    import torch
+    import transformers
+    from transformers import LogitsProcessor, LogitsProcessorList
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        f"{__name__} needs torch, transformers and peft: "
+        "pip install 'astro-weights[hf]'",
+        name=e.name,
+    ) from e
+
 _KEYS = ("item_id", "prompt", "gold")
+_SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "presence_penalty"})
+_WINDOW = 64  # llama.cpp's default penalty window
+
+
+class PresencePenalty(LogitsProcessor):
+    """Subtract a flat `penalty` from the logit of each token in the last 64.
+
+    The window covers prompt and generated tokens. `lead[i]` is the number of
+    left-padding positions of row `i`; those are not counted as seen.
+    """
+
+    def __init__(self, penalty: float, lead: Any) -> None:
+        self.penalty = penalty
+        self.lead = lead
+
+    def __call__(self, input_ids: Any, scores: Any) -> Any:
+        n, vocab = scores.shape
+        end = input_ids.shape[1]
+        start = max(end - _WINDOW, 0)
+        pos = torch.arange(start, end, device=input_ids.device)
+        real = pos[None, :] >= self.lead.to(input_ids.device)[:, None]
+        # padding goes to an extra column that is dropped, so writes never clash
+        ids = torch.where(real, input_ids[:, start:], vocab)
+        seen = torch.zeros(n, vocab + 1, dtype=torch.bool, device=scores.device)
+        seen.scatter_(1, ids.to(scores.device), True)
+        return scores - self.penalty * seen[:, :vocab].to(scores.dtype)
+
+
+def _check_sampling(sampling: Mapping[str, float] | None) -> None:
+    if sampling is None:
+        return
+    unknown = sorted(set(sampling) - _SAMPLING_KEYS)
+    if unknown:
+        raise ValueError(
+            f"unknown sampling keys {unknown}; allowed: {sorted(_SAMPLING_KEYS)}"
+        )
+    if "temperature" in sampling and not sampling["temperature"] > 0:
+        raise ValueError(f"temperature must be > 0, got {sampling['temperature']!r}")
+
+
+def _gen_kwargs(sampling: Mapping[str, float] | None, lead: Any) -> dict[str, Any]:
+    """`model.generate` arguments for greedy (None) or sampled decoding."""
+    if sampling is None:
+        return {"do_sample": False}
+    kwargs: dict[str, Any] = {"do_sample": True}
+    kwargs.update({k: v for k, v in sampling.items() if k != "presence_penalty"})
+    if sampling.get("presence_penalty"):
+        kwargs["logits_processor"] = LogitsProcessorList(
+            [PresencePenalty(sampling["presence_penalty"], lead)]
+        )
+    return kwargs
 
 
 def _prompt_text(tokenizer: Any, prompt: str, chat: bool) -> tuple[str, bool]:
@@ -120,6 +180,7 @@ def generate_records(
     out: Path | str | None = None,
     resume: bool = False,
     batch_size: int = 1,
+    sampling: Mapping[str, float] | None = None,
 ) -> list[Record]:
     """Generate and score each item; items carry `item_id`, `prompt`, `gold`.
 
@@ -146,7 +207,20 @@ def generate_records(
     same `batch_size` rebuilds the batches of an uninterrupted run. (Records an
     earlier run wrote with another `batch_size` are kept as they are.) The default `batch_size=1` runs each prompt
     alone, unpadded.
+
+    Decoding is greedy by default. Greedy is a stress condition: some models
+    repeat one sentence until the cap. For the headline number use the model
+    card's recommended sampling settings. `sampling` maps any of `temperature`
+    (> 0), `top_p`, `top_k` and `presence_penalty` to a number and turns
+    sampling on; an unknown key or a non-positive temperature raises
+    `ValueError`. `presence_penalty` subtracts that value from the logit of
+    every token among the last 64 (prompt included), as llama.cpp does.
+    Sampled outputs repeat for the same model, items, `seed`, `sampling` and
+    `batch_size`, also across a resume: each batch is reseeded from `seed` and
+    its position in `items`. Both arms of a paired comparison need the same
+    `sampling`.
     """
+    _check_sampling(sampling)
     _check_items(items)
     if (
         isinstance(batch_size, bool)
@@ -178,7 +252,7 @@ def generate_records(
         with path.open("a", encoding="utf-8") if path else nullcontext() as sink:
             for rec in _generate(
                 model, tokenizer, entries, set(done), arm, scorer,
-                max_new_tokens, seed, batch_size,
+                max_new_tokens, seed, batch_size, sampling,
             ):  # fmt: skip
                 done[rec.item_id] = rec
                 if sink is not None:
@@ -199,6 +273,7 @@ def _generate(
     max_new_tokens: int,
     seed: int,
     batch_size: int,
+    sampling: Mapping[str, float] | None,
 ) -> Iterator[Record]:
     torch.manual_seed(seed)
     eos = model.generation_config.eos_token_id
@@ -213,16 +288,22 @@ def _generate(
         ]
         if not chunk:
             continue
+        if sampling is not None:  # a resume reaches this batch with the same state
+            torch.manual_seed(random.Random(f"{seed}:{start}").getrandbits(63))
         if batch_size == 1:
             _, text, templated = chunk[0]
             rows = [
-                _run_one(model, tokenizer, text, templated, max_new_tokens, eos_ids)
-            ]
+                _run_one(
+                    model, tokenizer, text, templated, max_new_tokens, eos_ids,
+                    sampling,
+                )
+            ]  # fmt: skip
         else:
             texts = [text for _, text, _ in chunk]
             rows = _run_batch(
-                model, tokenizer, texts, chunk[0][2], max_new_tokens, eos_ids
-            )
+                model, tokenizer, texts, chunk[0][2], max_new_tokens, eos_ids,
+                sampling,
+            )  # fmt: skip
         # Score the whole batch before yielding any of it: a crash while scoring
         # then leaves no half-written batch, and a resume restarts at a boundary.
         records = [
@@ -248,6 +329,7 @@ def _run_one(
     templated: bool,
     max_new_tokens: int,
     eos_ids: set[int],
+    sampling: Mapping[str, float] | None = None,
 ) -> tuple[str, int, bool]:
     """(output, n_output_tokens, hit_cap) for one unpadded prompt."""
     enc = tokenizer(text, return_tensors="pt", add_special_tokens=not templated)
@@ -256,7 +338,7 @@ def _run_one(
         out = model.generate(
             **enc,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
+            **_gen_kwargs(sampling, torch.zeros(1, dtype=torch.long)),
             pad_token_id=tokenizer.pad_token_id or 0,
         )
     new = out[0, enc["input_ids"].shape[1] :]
@@ -272,6 +354,7 @@ def _run_batch(
     templated: bool,
     max_new_tokens: int,
     eos_ids: set[int],
+    sampling: Mapping[str, float] | None = None,
 ) -> list[tuple[str, int, bool]]:
     """Like `_run_one` for several prompts, left-padded; rows cut at the first EOS."""
     side = tokenizer.padding_side
@@ -290,7 +373,7 @@ def _run_batch(
         out = model.generate(
             **enc,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
+            **_gen_kwargs(sampling, (enc["attention_mask"] == 0).sum(1)),
             pad_token_id=tokenizer.pad_token_id,
         )
     rows: list[tuple[str, int, bool]] = []
@@ -311,10 +394,20 @@ def run_header(
     chat: bool,
     *,
     batch_size: int = 1,
+    sampling: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Settings that decide the outputs, for the run log."""
+    """Settings that decide the outputs, for the run log.
+
+    Pass the same `sampling` as to `generate_records`. It is recorded under
+    "sampling" (sorted keys) only when given, so a greedy header has no such key
+    and `check_headers` rejects a greedy arm paired with a sampled one, or two
+    arms sampled differently. Greedy is the default and a stress condition; for
+    the headline number use the model card's recommended sampling settings, on
+    both arms.
+    """
+    _check_sampling(sampling)
     template = getattr(tokenizer, "chat_template", None)
-    return {
+    header: dict[str, Any] = {
         # the class under an applied adapter, so a base arm and an edit arm compare equal
         "model": type(getattr(model, "get_base_model", lambda: model)()).__name__,
         "dtype": str(model.dtype),
@@ -333,3 +426,6 @@ def run_header(
         "transformers": transformers.__version__,
         "peft": peft.__version__,
     }
+    if sampling is not None:
+        header["sampling"] = dict(sorted(sampling.items()))
+    return header

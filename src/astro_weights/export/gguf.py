@@ -19,13 +19,19 @@ import struct
 from collections.abc import Mapping
 from pathlib import Path
 
-import gguf
 import numpy as np
-from gguf import GGMLQuantizationType as Q
-from gguf import GGUFValueType as VT
-from gguf.quants import dequantize, quantize
 
 from astro_weights.edits import Edit
+
+try:
+    import gguf
+    from gguf import GGMLQuantizationType as Q
+    from gguf import GGUFValueType as VT
+    from gguf.quants import dequantize, quantize
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        f"{__name__} needs gguf: pip install 'astro-weights[gguf]'", name=e.name
+    ) from e
 
 SUFFIXES = {
     "mlp.down_proj": "ffn_down",

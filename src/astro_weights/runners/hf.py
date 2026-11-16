@@ -3,15 +3,22 @@
 import math
 from typing import Any
 
-import torch
-from peft import LoraConfig, PeftModel, get_peft_model, set_peft_model_state_dict
-from peft.tuners.tuners_utils import BaseTunerLayer
-from torch import nn
-
 from astro_weights.edits import Edit
 from astro_weights.export.peft import PREFIX, SUFFIX_A, SUFFIX_B
 
-# ponytail: one anchor name; add "h"/"blocks" when a real adapter needs them
+try:
+    import torch
+    from peft import LoraConfig, PeftModel, get_peft_model, set_peft_model_state_dict
+    from peft.tuners.tuners_utils import BaseTunerLayer
+    from torch import nn
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        f"{__name__} needs torch, transformers and peft: "
+        "pip install 'astro-weights[hf]'",
+        name=e.name,
+    ) from e
+
+# Only the `layers` anchor is recognized.
 _ANCHOR = "layers"
 
 
