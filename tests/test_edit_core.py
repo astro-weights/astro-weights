@@ -112,3 +112,9 @@ def test_duplicate_module_names_message() -> None:
     d = rand_delta("m", 1)
     with pytest.raises(ValueError, match=r"^duplicate module names in edit$"):
         Edit((d, d), "base")
+
+
+def test_dense_is_float32_product() -> None:
+    d = rand_delta("m", 2)
+    assert d.dense().dtype == np.float32
+    assert np.allclose(d.dense(), d.B @ d.A, atol=1e-5)

@@ -18,6 +18,7 @@ from astro_weights.eval.paired import (
     compare,
     exceeds_floor,
     format_report,
+    is_loop,
     pair,
 )
 from astro_weights.eval.records import Record, prompt_hash, read_jsonl, write_jsonl
@@ -34,6 +35,7 @@ __all__ = [
     "grade_exact",
     "grade_math",
     "header_path",
+    "is_loop",
     "last_boxed",
     "pair",
     "prompt_hash",

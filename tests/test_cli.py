@@ -580,3 +580,66 @@ def test_epilog_documents_exit_codes(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit):
         main(["--help"])
     assert "exit codes" in capsys.readouterr().out
+
+
+def test_bare_command_prints_help_and_exits_2(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main([]) == 2
+    assert "usage: astro-weights" in capsys.readouterr().out
+
+
+def test_python_dash_m_runs_cli(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import runpy
+
+    monkeypatch.setattr(sys, "argv", ["astro-weights", "--version"])
+    with pytest.raises(SystemExit) as e:
+        runpy.run_module("astro_weights", run_name="__main__")
+    assert e.value.code == 0
+    assert __version__ in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["astro-weights"])
+    with pytest.raises(SystemExit) as e:
+        runpy.run_module("astro_weights", run_name="__main__")
+    assert e.value.code == 2
+
+
+def test_every_subcommand_and_option_has_help(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import argparse
+
+    class _Seen(Exception):
+        def __init__(self, parser: argparse.ArgumentParser) -> None:
+            self.parser = parser
+
+    def grab(self: argparse.ArgumentParser, *a: object, **k: object) -> None:
+        raise _Seen(self)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", grab)
+    with pytest.raises(_Seen) as seen:
+        main([])
+    parser = seen.value.parser
+    subs = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    assert len(subs) == 1
+    assert {c.dest for c in subs[0]._choices_actions if c.help} == set(subs[0].choices)
+    for sub in subs[0].choices.values():
+        for action in sub._actions:
+            assert action.help, action.dest
+
+
+def test_eval_json_carries_cap_fields(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    b, e = _arm_files(tmp_path)
+    assert main(["eval", str(b), str(e), "--boot", "20", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["cap_hit_p"] == 1.0
+    assert out["n_uncapped"] == 6
+    assert out["uncapped_diff"] == pytest.approx(out["diff"])
+    assert out["uncapped_tokens_diff"] == 0
+    assert (out["loops_base"], out["loops_edit"]) == (0, 0)
+    assert {"n_items", "diff", "ci95", "cap_hit_base", "floor"} <= set(out)
