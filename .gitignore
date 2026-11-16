@@ -16,6 +16,7 @@ wheels/
 .orca/
 CLAUDE.local.md
 site/
+site-blog/
 
 # Coverage data
 .coverage
