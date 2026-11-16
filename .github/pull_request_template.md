@@ -32,4 +32,4 @@ What they produced:
 
 ## DCO
 
-- [ ] Every commit is signed off by me (`git commit -s`). My agent did not add `Signed-off-by` (maintainers: unless I told it to after review).
+- [ ] Every commit is signed off by me (`git commit -s`). My agent did not add `Signed-off-by` (maintainers: my agent signs off on my standing instruction, and I review before merge).
