@@ -109,7 +109,7 @@ tags:
 ---
 ```
 
-- The card holds front matter, a title (by default `<base_model> edit`), the summary, an edit table (module, shape, rank, Frobenius norm of `BA`), a load snippet, an optional results table and an astro-weights version line.
-- `kind="gguf"` sets `base_model_relation: "quantized"`, adds the tag `gguf` and uses a `llama-cli` load snippet.
+- The card holds front matter, a title (by default `<base_model> edit`), the summary, an edit section, a load snippet, an optional results table and an astro-weights version line. The edit section opens with a `Modification:` line stating that the weights of the base model were modified by a low-rank edit of N modules, made with astro-weights without training, followed by a table (module, shape, rank, Frobenius norm of `BA`).
+- `kind="gguf"` sets `base_model_relation: "finetune"`, adds the tag `gguf` and uses a `llama-cli` load snippet.
 - An empty `edit.base_model`, a blank license or an unknown `kind` raises `ValueError`.
 - `write_card` replaces an existing `README.md`; with `overwrite=False` it raises `FileExistsError` instead.

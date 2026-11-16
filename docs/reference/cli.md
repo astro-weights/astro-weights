@@ -11,13 +11,14 @@ astro-weights [--version] {build,eval,export,inspect} ...
 | `build RECIPE.json --base MODEL_DIR --out DIR [--card LICENSE] [--force]` | build a PEFT adapter from a recipe file and the base model weights; print one line per module (`out x in`, rank), then `wrote DIR`; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) |
 | `export DIR [--gguf OUT.gguf --arch ARCH] [--card LICENSE] [--force]` | verify the adapter in `DIR`, then write a GGUF LoRA adapter, a model card or both; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) |
 
-Every command takes `--json`, which prints one JSON object on stdout instead of text.
+Every command takes `--json`, which prints one JSON object on stdout instead of text. Run without a command, `astro-weights` prints the help and exits 2. `python -m astro_weights` runs the same command line, for example `python -m astro_weights inspect DIR`.
 
 ## eval
 
 - Run headers: when `BASE.header.json` and `EDIT.header.json` (beside `BASE.jsonl` and `EDIT.jsonl`) both exist, their keys must match, ignoring `device`. A difference exits 1. If one is missing, or with `--ignore-header`, there is no check.
 - `--floor A.jsonl B.jsonl` adds `noise floor (score)` and `noise floor (tokens)` lines to the report; see [How-to: compare two eval arms](../how-to/compare-arms.md#noise-floor).
-- `--json` prints the `PairedResult` fields plus `floor` (`null`, or `result` and `exceeds`), with non-finite numbers as `null`.
+- The report ends with a `WARNING: cap-hit censoring` block when an arm hits the token cap often or unevenly; see [How-to: compare two eval arms](../how-to/compare-arms.md#cap-hit-censoring).
+- `--json` prints the `PairedResult` fields (including the cap-hit fields) plus `floor` (`null`, or `result` and `exceeds`), with non-finite numbers as `null`.
 
 ## build
 
@@ -43,7 +44,7 @@ Every command takes `--json`, which prints one JSON object on stdout instead of 
 
 ## Exit codes
 
-- All commands: 0 means ok, 1 means problems were found or a check failed, 2 means a usage error or unreadable input.
+- All commands: 0 means ok, 1 means problems were found or a check failed, 2 means a usage error or unreadable input. No command at all is a usage error (exit 2).
 - `inspect` exits 1 on hash problems (`problem:` lines on stderr, also with `--json`).
 - `eval` exits 1 when the run headers differ, and 2 on an unreadable file or arms that do not pair.
 - `build` and `export` exit 0 on success and 2 on any error.

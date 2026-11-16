@@ -34,7 +34,7 @@ SKIP: dict[tuple[str, int], str] = {
     ("README.md", 1): "downloads a real base model and needs an adapter built for it",
     (
         "docs/how-to/run-eval.md",
-        3,
+        4,
     ): "needs an OpenAI-compatible server (llama-server, vLLM)",
 }
 
