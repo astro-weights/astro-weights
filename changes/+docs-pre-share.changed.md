@@ -1,1 +1,0 @@
-Docs and README now read as plain English, say plainly that 0.1 is a toolkit and the edit agent is still the goal, list every feature, cite the clustered-SE paper, and show an honest "apply" example that links the first-edit tutorial. The code of conduct contact is now conduct@astro-weights.dev, and the `mcp` package keyword is gone.

@@ -4,13 +4,34 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.1.2] - 2026-11-16
+
+### Added
+
+- `astro-weights eval` and `format_report` now print a warning when an arm hits the token cap often or unevenly, with the neither-capped comparison and loop counts, and `--json` carries the new fields.
+- `generate_records` and `run_header` take `sampling=` (temperature, top_p, top_k, presence_penalty) for sampled decoding; the settings go into the run header so `astro-weights eval` rejects arms sampled differently.
+- `python -m astro_weights` now runs the command line.
+
+### Changed
+
+- Docs and README now read as plain English, say plainly that 0.1 is a toolkit and the edit agent is still the goal, list every feature, cite the clustered-SE paper, and show an honest "apply" example that links the first-edit tutorial. The code of conduct contact is now conduct@astro-weights.dev, and the `mcp` package keyword is gone.
+- Docs moved to https://astro-weights.dev/docs/; old URLs redirect.
+- Docs open in dark mode by default and pick up a light starfield from the landing page.
+- New tagline: "Agent-driven weight edits. Democratizing AI for all." Docs header logo and site name link to the landing page.
+- The docs site at https://astro-weights.dev/docs/ now loads Google Tag Manager for visitor analytics.
+
+### Fixed
+
+- Importing the runners or GGUF export without the `hf` or `gguf` extra now says which extra to install instead of a bare `No module named 'torch'`.
+- Model cards for edited GGUF models no longer say `base_model_relation: quantized` (now `finetune`), and every card states that the base model's weights were modified by a low-rank edit.
+- Running `astro-weights` with no subcommand now prints help and exits 2 instead of 0, and every option has a help string.
+
 ## [0.1.1] - 2026-11-15
 
 ### Changed
 
 - Docs moved to https://astro-weights.dev; old github.io URLs redirect.
 - The logo astronaut has larger eyes, a slimmer face and a softer smile.
-
 
 ## [0.1.0] - 2026-11-15
 
@@ -121,6 +142,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.1.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.2
 [0.1.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.1
 [0.1.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.0
 [0.0.9]: https://github.com/astro-weights/astro-weights/releases/tag/v0.0.9
