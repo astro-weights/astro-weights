@@ -147,6 +147,26 @@ def body_merged_weights(model: Any, tok: Any, edit: Edit) -> None:
     assert _state_sha(model) == before
 
 
+def _bf16_ulp(x: Any) -> Any:
+    """Spacing of bf16 numbers at the magnitude of `x` (8 significant bits)."""
+    return torch.ldexp(torch.ones_like(x), torch.frexp(x.abs())[1] - 8)
+
+
+def _clear_positions(logits: Any) -> Any:
+    """Bool [tokens]: top-2 logit gap is more than one bf16 ulp at the top logit."""
+    top = logits.topk(2, dim=-1).values
+    return (top[:, 0] - top[:, 1]) > _bf16_ulp(top[:, 0])
+
+
+def _agreement(a: Any, b: Any) -> tuple[int, int]:
+    """(positions where argmax agrees, positions compared), skipping near ties.
+
+    An exact bf16 tie in either arm can flip between GPUs, so it says nothing.
+    """
+    keep = _clear_positions(a) & _clear_positions(b)
+    return int((a.argmax(-1) == b.argmax(-1))[keep].sum()), int(keep.sum())
+
+
 def body_apply_vs_merged(model: Any, tok: Any, edit: Edit) -> None:
     names = resolve_modules(model, edit)
     merged = merged_weights(model, edit)
@@ -166,15 +186,11 @@ def body_apply_vs_merged(model: Any, tok: Any, edit: Edit) -> None:
     assert all(torch.equal(weights[n].detach(), saved[n]) for n in saved)
 
     max_diff = max(float((a - b).abs().max()) for a, b in zip(lora, dense, strict=True))
-    agree = float(
-        torch.cat(
-            [a.argmax(-1) == b.argmax(-1) for a, b in zip(lora, dense, strict=True)]
-        )
-        .float()
-        .mean()
-    )
+    counts = [_agreement(a, b) for a, b in zip(lora, dense, strict=True)]
+    agreed, compared = (sum(c) for c in zip(*counts, strict=True))
     assert max_diff < 1.0, max_diff
-    assert agree > 0.97, agree
+    assert compared, "every position was a near tie"
+    assert agreed == compared, (agreed, compared)
 
 
 def body_swap(model: Any, tok: Any, edit: Edit) -> None:
@@ -357,6 +373,23 @@ def test_cpu_smoke_leak_check_catches_held_layer(
     held.clear()
     _assert_freed(refs)
     assert not _has_adapter(tiny_llama)
+
+
+def test_near_ties_are_skipped() -> None:
+    # H100 case from the issue: lora ties at 13.0, merged is 1 ulp (0.0625) apart
+    lora = torch.tensor([[13.0, 13.0, 1.0], [5.0, 9.0, 1.0]])
+    merged = torch.tensor([[13.0, 13.0625, 1.0], [5.0, 9.0, 1.0]])
+    assert lora.argmax(-1)[0] != merged.argmax(-1)[0]
+    assert _clear_positions(lora).tolist() == [False, True]
+    assert _clear_positions(merged).tolist() == [False, True]
+    assert _agreement(lora, merged) == (1, 1)
+
+
+def test_clear_disagreement_is_counted() -> None:
+    lora = torch.tensor([[9.0, 1.0, 0.0]])
+    merged = torch.tensor([[1.0, 9.0, 0.0]])
+    assert _agreement(lora, merged) == (0, 1)
+    assert _bf16_ulp(torch.tensor([13.0, 0.5, 100.0])).tolist() == [0.0625, 2**-8, 0.5]
 
 
 def test_skip_reason_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
