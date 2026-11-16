@@ -1,4 +1,4 @@
-/* Brand palette: D19 (violet + visor gold). Landing-page touches: D20 (Rubik 600), plates, 4px radius. */
+/* Brand palette (violet + visor gold). Landing-page touches: Rubik 600, plates, 4px radius. */
 :root, [data-md-color-scheme="default"] {
   --md-primary-fg-color: #7852EE;
   --md-primary-fg-color--light: #8A5CF5;

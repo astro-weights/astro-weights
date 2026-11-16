@@ -1,6 +1,6 @@
-# Inspect and verify adapter
+# Inspect and verify an adapter
 
-Check saved adapter before shipping or after download. Downloaded adapter is untrusted input: what reading checks and what it does not (hash is not signature) in [SECURITY.md](https://github.com/astro-weights/astro-weights/blob/main/SECURITY.md#untrusted-input).
+Check a saved adapter before you ship it or after you download it. A downloaded adapter is untrusted input; [SECURITY.md](https://github.com/astro-weights/astro-weights/blob/main/SECURITY.md#untrusted-input) lists what reading it checks and what it does not (a hash is not a signature).
 
 ## Command line
 
@@ -10,11 +10,11 @@ astro-weights inspect DIR
 
 | Exit code | Meaning |
 |---|---|
-| 0 | adapter reads, hashes match (or no manifest) |
-| 1 | adapter reads, but `problem:` lines on stderr (for example hash mismatch) |
-| 2 | not directory, missing `adapter_config.json` or `adapter_model.safetensors`, or unreadable |
+| 0 | the adapter reads and the hashes match (or there is no manifest) |
+| 1 | the adapter reads, but there are `problem:` lines on stderr (for example a hash mismatch) |
+| 2 | not a directory, `adapter_config.json` or `adapter_model.safetensors` missing, or unreadable |
 
-On success prints base model, rank, module count, one row per module (`out x in`, `|B|_F`, `|A|_F`, `|BA|_F`), then `manifest: ok` or `manifest: none`.
+On success it prints the base model, the rank, the module count and one row per module (`out x in`, `|B|_F`, `|A|_F`, `|BA|_F`), then `manifest: ok` or `manifest: none`.
 
 ## Python
 
@@ -35,7 +35,7 @@ edit, problems = read_peft("my-edit")  # edit plus problems, one pass
 print(problems, edit.base_model)
 ```
 
-Prints:
+Output:
 
 ```text
 [] org/tiny
@@ -43,10 +43,10 @@ Prints:
 
 `read_peft` raises `ValueError` on adapters it cannot represent:
 
-- `peft_type` not `LORA`; `use_dora`, `use_rslora` or `fan_in_fan_out` true.
-- `rank_pattern`, `alpha_pattern` or `modules_to_save` set; `bias` other than `none`.
-- `r` not int >= 1; `lora_alpha` not number, or `lora_alpha / r` not finite.
-- tensors for module outside list-form `target_modules`.
-- malformed JSON or manifest fields.
+- `peft_type` is not `LORA`, or `use_dora`, `use_rslora` or `fan_in_fan_out` is true.
+- `rank_pattern`, `alpha_pattern` or `modules_to_save` is set, or `bias` is other than `none`.
+- `r` is not an int >= 1, `lora_alpha` is not a number, or `lora_alpha / r` is not finite.
+- There are tensors for a module outside a list-form `target_modules`.
+- The JSON or the manifest fields are malformed.
 
-Hash problems come back in list. `verify_peft` never raises: every problem, structural or hash, comes back as string. `load_peft` raises when list not empty.
+Hash problems come back in the list instead. `verify_peft` never raises: every problem, structural or hash, comes back as a string. `load_peft` raises when the list is not empty.
