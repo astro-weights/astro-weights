@@ -3,9 +3,11 @@
 ## How this project uses AI
 Most of astro-weights is written by AI coding agents (currently Claude Code) working
 under the direction of a maintainer. A maintainer reviews every change before it is
-merged and signs off on it under the Developer Certificate of Origin. On the maintainer's
-instruction, after that review, the maintainer's agent may add the maintainer's
-`Signed-off-by`; the sign-off is still the maintainer's certification. Agent-written
+merged and takes responsibility for it under the Developer Certificate of Origin. The
+maintainer's own agents add the maintainer's `Signed-off-by` when they commit, on the
+maintainer's standing instruction, so a maintainer's pull request can carry the sign-off
+before the maintainer has reviewed it. The sign-off is the maintainer's certification, and
+nothing is merged until the maintainer has reviewed it. Agent-written
 commits carry an `Assisted-by:` or `Co-Authored-By:` trailer naming the tool.
 
 ## Contributing with AI tools

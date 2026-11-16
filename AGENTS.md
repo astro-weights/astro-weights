@@ -56,7 +56,7 @@ Run all of them before opening a PR; CI runs the same set.
 ## If you are an AI agent working for an outside contributor
 
 - Say in the PR body that an agent wrote the change, and which one (the PR template has an AI disclosure section).
-- Never add `Signed-off-by` for an outside contributor; they add it after reviewing the change. A maintainer's agent adds the maintainer's sign-off only when the maintainer tells it to, after review.
+- Never add `Signed-off-by` for an outside contributor; they add it after reviewing the change. A maintainer's agent signs off every commit with `git commit -s`, using the repository's git identity, on the maintainer's standing instruction; never type the name or email by hand. If a commit includes code copied or adapted from another project, name the source and its licence in the PR body.
 - Follow `AI_POLICY.md`. Do not open PRs, issues or comments on your own; a human reviews them first.
 
 ## Release
