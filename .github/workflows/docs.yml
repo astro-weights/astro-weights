@@ -27,3 +27,4 @@ jobs:
         with:
           enable-cache: false
       - run: uv run --only-group docs zensical build --strict --clean
+      - run: uv run --only-group docs zensical build -f zensical.blog.toml --strict --clean

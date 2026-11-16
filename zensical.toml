@@ -6,6 +6,8 @@ repo_url = "https://github.com/astro-weights/astro-weights"
 repo_name = "astro-weights/astro-weights"
 edit_uri = "edit/main/docs/"
 copyright = "Apache-2.0. Logo based on Noto Emoji, Copyright Google LLC, Apache-2.0."
+# docs/blog/ is built by zensical.blog.toml to /blog/, not here.
+exclude_docs = "blog/"
 extra_css = ["assets/brand.css"]
 extra_javascript = ["assets/home-link.js"]
 nav = [
@@ -24,6 +26,7 @@ nav = [
   ] },
   { "Reference" = ["reference/index.md", "reference/cli.md"] },
   { "Explanation" = ["explanation/why-lora.md"] },
+  { "Blog" = "https://astro-weights.dev/blog/" },
 ]
 
 # Logo goes to the landing page, not the docs home.
