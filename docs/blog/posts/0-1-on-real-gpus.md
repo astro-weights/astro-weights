@@ -6,7 +6,7 @@ categories:
 ---
 # 0.1 on real GPUs: what held, what didn't
 
-astro-weights makes small edits to open model's weights and exports them as standard LoRA adapters. Until 2026-11-15, 9B numbers came from one 3090 and quantized GGUF file; 27B numbers came from research harness, not from library. On 2026-11-15 we took 0.1 code path to HPC cluster and reran MATH-500 and GSM8K at bf16 with paired statistics, full sets where noted, and added Python code tasks.
+astro-weights makes small edits to open model's weights and exports them as standard LoRA adapters. Until 2026-11-15, 9B numbers came from one 3090 and quantized GGUF file; 27B numbers came from research harness, not from library. On 2026-11-15 we ran 0.1 code path on one H100 and one H200 and reran MATH-500 and GSM8K at bf16 with paired statistics, full sets where noted, and added Python code tasks.
 
 Short version. 27B adapter did what we said: about 30% fewer tokens on MATH-500 with no measured accuracy change (n=500). 9B adapter did not hold everywhere: about 10% fewer tokens on held-out MATH-500 (n=244) with no measured accuracy change there, but on full GSM8K (n=1319) it loses about 2 points and saves no tokens. Our earlier 300-item GSM8K check was too small to see that loss. Source file name sits beside every number; raw files are not public yet.
 
@@ -30,7 +30,7 @@ env MODEL=<snapshot> ADAPTER=<adapter> ITEMS=<bench dir>/<set>.jsonl OUT=<dir> [
 
 Code rows: same with `ITEMS=code_<set>.jsonl MODE=code MAX_NEW=2048`, then `evalplus.sanitize`, `evalplus.evaluate --dataset <set>`, `code_bench.py report`. Rows marked "greedy 1024" used older `paired_eval.py`; exact shell line for those was not logged.
 
-Source file paths below are relative to `aw-hpc/` on cluster, with raw `base.jsonl` and `edit.jsonl` beside each report. Raw files are not public yet.
+Source file paths below are relative to run directory, with raw `base.jsonl` and `edit.jsonl` beside each report. Raw files are not public yet.
 
 ## What held
 
@@ -81,7 +81,7 @@ One caveat on that loss: it was measured on bf16 base plus LoRA. Published GGUF 
 
 ### Our 300-item GSM8K check was too small
 
-Earlier 9B GSM8K claim rested on 300 items with CI of ±2.62 pp (record: `wsp/results/p5-reg-diffs.txt`, wsp commit `bed9329`). Same 300 item ids on cluster with card sampling give −1.00 pp [−4.27, +2.27] and tokens −6.3% [−97.5, +37.5], not significant (`x9/gsm8k-confirm-card/report.txt`). Set that size cannot see 2 pp loss. Full set can, and did.
+Earlier 9B GSM8K claim rested on 300 items with CI of ±2.62 pp (record: `wsp/results/p5-reg-diffs.txt`, wsp commit `bed9329`). Same 300 item ids on H100 at bf16 with card sampling give −1.00 pp [−4.27, +2.27] and tokens −6.3% [−97.5, +37.5], not significant (`x9/gsm8k-confirm-card/report.txt`). Set that size cannot see 2 pp loss. Full set can, and did.
 
 ### 9B token cut does not show on full MATH-500 with greedy decoding, nor on code
 
@@ -113,23 +113,18 @@ First 27B MATH-500 run used cap of 1024 tokens: accuracy 0.5980 / 0.7460, cap-hi
 
 ## Confounds on every number here
 
-1. No random-direction control arm on cluster. Control exists only in older 9B GGUF record.
+1. No random-direction control arm in these runs. Control exists only in older 9B GGUF record.
 2. One edit per model and one generation run per row. Run-to-run variance under sampling was not measured.
 3. Thinking off only.
-4. Jobs ran in interactive OnDemand sessions, not `sbatch`.
+4. Jobs were started by hand in interactive sessions, not as queued batch jobs.
 
 ## Not run
 
 - Other model families. LiveCodeBench, SWE-bench Verified.
 - IFEval, MMLU-Pro, MATH fresh sets.
-- Thinking on, on cluster. GGUF path at full-set size. 27B full GSM8K with card sampling.
+- Thinking on, on H100 or H200. GGUF path at full-set size. 27B full GSM8K with card sampling.
 - Any paired eval on `v0.1.0` or `0.1.1` build.
 
 ## About the base models
 
 Qwen3.5-9B and Qwen3.8-27B are models from the Qwen team at Alibaba Cloud, released under Apache-2.0. The terse adapters are unofficial community derivatives, not affiliated with or endorsed by the Qwen team or Alibaba Cloud.
-
-## Acknowledgement
-
-The authors acknowledge the High Performance Computing at The University of Texas at Dallas (HPC@UTD) for providing the computing resources and support.
-
