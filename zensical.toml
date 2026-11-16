@@ -1,7 +1,7 @@
 [project]
 site_name = "astro-weights"
 site_url = "https://astro-weights.dev/docs/"
-site_description = "Agent-driven weight edits, democratizing AI for all."
+site_description = "Agent-driven weight edits. Democratizing AI for all."
 repo_url = "https://github.com/astro-weights/astro-weights"
 repo_name = "astro-weights/astro-weights"
 edit_uri = "edit/main/docs/"
