@@ -1,14 +1,14 @@
 # First edit
 
-Build rank-1 edit on small random Llama, save as LoRA adapter, inspect, apply, remove. Runs on CPU in seconds. Needs `hf` extra:
+In this tutorial you build a rank-1 edit on a small random Llama, save it as a LoRA adapter, inspect it, apply it and remove it again. Everything runs on CPU in a few seconds. You need the `hf` extra:
 
 ```bash
 pip install "astro-weights[hf]"
 ```
 
-## 1. Make model
+## 1. Make a model
 
-Two-layer random Llama, no download.
+A two-layer random Llama stands in for a real model, so nothing is downloaded.
 
 ```python
 import numpy as np
@@ -28,9 +28,9 @@ config = transformers.LlamaConfig(
 model = transformers.LlamaForCausalLM(config).eval()
 ```
 
-## 2. Build edit
+## 2. Build an edit
 
-`masked_rank1` returns low-rank form of `W = W0 - alpha * outer(u, mask * (u @ W0))`: removes direction `u` from output of masked input columns. `top_k_mask` picks columns.
+`masked_rank1` returns the low-rank form of `W = W0 - alpha * outer(u, mask * (u @ W0))`. It removes the direction `u` from the output of the masked input columns. `top_k_mask` picks those columns.
 
 ```python
 from astro_weights.edits import Edit, masked_rank1, top_k_mask
@@ -45,7 +45,7 @@ delta = masked_rank1(MODULE, w0, u, mask, alpha=1.0)
 edit = Edit(deltas=(delta,), base_model="tiny-llama")
 ```
 
-## 3. Save as LoRA adapter
+## 3. Save it as a LoRA adapter
 
 ```python
 from astro_weights.export import save_peft
@@ -53,17 +53,17 @@ from astro_weights.export import save_peft
 save_peft(edit, "my-edit")
 ```
 
-`my-edit/` now holds `adapter_config.json`, `adapter_model.safetensors` and hash manifest. Any PEFT-aware stack loads it. `save_peft` writes files to temp directory first, then moves them in; on failure temp directory is removed. Non-empty `my-edit/` raises `FileExistsError`; `save_peft(edit, "my-edit", overwrite=True)` replaces adapter files, keeps others.
+`my-edit/` now holds `adapter_config.json`, `adapter_model.safetensors` and a hash manifest. Any PEFT-aware stack can load it. `save_peft` writes the files to a temp directory first and then moves them in; if anything fails, the temp directory is removed. If `my-edit/` is not empty, `save_peft` raises `FileExistsError`. `save_peft(edit, "my-edit", overwrite=True)` replaces the adapter files and keeps any other files in the directory.
 
-## 4. Inspect
+## 4. Inspect it
 
 ```bash
 astro-weights inspect my-edit
 ```
 
-Prints base model, rank, one row per module with factor norms, manifest status. Exit code 1 means hash problem; see [How-to: inspect adapter](../how-to/inspect-adapter.md).
+This prints the base model, the rank, one row per module with its factor norms, and the manifest status. Exit code 1 means a hash problem; see [How-to: inspect an adapter](../how-to/inspect-adapter.md).
 
-## 5. Apply and remove
+## 5. Apply and remove it
 
 ```python
 from astro_weights.export import load_peft
@@ -85,9 +85,9 @@ print("edit changed logits:", not torch.allclose(before, edited))
 print("remove restored base:", torch.allclose(before, after))
 ```
 
-`apply` wraps only edited modules in LoRA layers. `remove` unloads them without merging, so base weights never change.
+`apply` wraps only the edited modules in LoRA layers. `remove` unloads them without merging, so the base weights never change.
 
 ## Next
 
-- Other recipes (`rank1`, `column_shift`, `orthogonal_random`): [Reference](../reference/index.md).
-- Why adapter format: [Explanation: why LoRA](../explanation/why-lora.md).
+- The other recipes (`rank1`, `column_shift`, `orthogonal_random`) are in the [Reference](../reference/index.md).
+- Why edits are saved as adapters: [Explanation: why LoRA](../explanation/why-lora.md).

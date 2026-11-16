@@ -1,6 +1,6 @@
-# Convert dense update to low-rank delta
+# Convert a dense update to a low-rank delta
 
-`from_dense` turns dense `dW` (for example `W_tuned - W0`) into `LowRankDelta` by truncated SVD and returns relative residual `|dW - B @ A|_F / |dW|_F`, measured on stored float32 factors. numpy only.
+`from_dense` turns a dense `dW` (for example `W_tuned - W0`) into a `LowRankDelta` by truncated SVD. It also returns the relative residual `|dW - B @ A|_F / |dW|_F`, measured on the stored float32 factors. It needs numpy only.
 
 ```python
 import numpy as np
@@ -24,13 +24,13 @@ except ValueError as e:
 edit = Edit(deltas=(delta,), base_model="tiny-llama")
 ```
 
-Prints:
+Output:
 
 ```text
 (32, 64) 2 0.0078
 model.layers.1.mlp.down_proj: rel_residual 0.6071 exceeds max_rel_residual 0.05 at rank 1
 ```
 
-- `max_rel_residual` set: residual above it raises `ValueError`, so rank too low for update fails loudly.
-- `dW` not 2-D, not finite or all zero: `ValueError`. `rank` not int, or outside `[1, min(dW.shape)]`: `ValueError`.
-- Save `edit` as adapter like any other: [Tutorial: first edit](../tutorials/first-edit.md).
+- When `max_rel_residual` is set, a residual above it raises `ValueError`, so a rank too low for the update fails loudly.
+- A `dW` that is not 2-D, not finite or all zero raises `ValueError`. So does a `rank` that is not an int or lies outside `[1, min(dW.shape)]`.
+- Save `edit` as an adapter like any other edit: see [Tutorial: first edit](../tutorials/first-edit.md).
