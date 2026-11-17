@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -675,3 +676,359 @@ def test_mcp_bad_run_dir_exits_2(
     pytest.importorskip("mcp")
     assert main(["mcp", str(tmp_path)]) == 2
     assert "run.json" in capsys.readouterr().err
+
+
+# export --splice
+
+SPLICE_MODULE = "model.layers.1.mlp.down_proj"
+SPLICE_KEY = SPLICE_MODULE + ".weight"
+SPLICE_NAME = "blk.1.ffn_down.weight"
+SW0 = np.random.default_rng(11).standard_normal((16, 64)).astype(np.float32)
+SB = np.random.default_rng(12).standard_normal((16, 2)).astype(np.float32)
+SA = np.random.default_rng(13).standard_normal((2, 64)).astype(np.float32)
+
+
+class Splice:
+    """A tiny base model dir, base GGUF and adapter that line up."""
+
+    def __init__(self, root: Path) -> None:
+        gguf = pytest.importorskip("gguf")
+        from gguf import GGMLQuantizationType as Q
+        from gguf.quants import quantize
+
+        rng = np.random.default_rng(14)
+        self.model = root / "hf"
+        self.model.mkdir()
+        save_file({SPLICE_KEY: SW0}, str(self.model / "model.safetensors"))
+        self.base = root / "base.gguf"
+        w = gguf.GGUFWriter(self.base, "qwen35")
+        w.add_block_count(3)
+        w.add_string("general.name", "tiny")
+        w.add_tensor(SPLICE_NAME, quantize(SW0, Q.Q8_0), raw_dtype=Q.Q8_0)
+        w.add_tensor("token_embd.weight", rng.standard_normal((20, 16)).astype("f4"))
+        w.add_tensor(
+            "blk.1.ffn_gate.weight",
+            rng.integers(0, 256, (4, 144), dtype=np.uint8),
+            raw_dtype=Q.Q4_K,
+        )
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file(progress=False)
+        w.close()
+        self.adapter = root / "adapter"
+        self.save(self.adapter, SPLICE_MODULE, True)
+        self.out = root / "merged.gguf"
+
+    def save(self, directory: Path, module: str, sha: bool) -> None:
+        from astro_weights.export import tensor_sha256
+
+        hashes = {}
+        if sha:
+            hashes = {
+                SPLICE_KEY: tensor_sha256(self.model / "model.safetensors", SPLICE_KEY)
+            }
+        delta = LowRankDelta(module, SB, SA)
+        save_peft(
+            Edit((delta,), "org/tiny", base_sha256=hashes), directory, overwrite=True
+        )
+
+    def argv(self, *extra: str) -> list[str]:
+        return [
+            "export",
+            str(self.adapter),
+            "--splice",
+            str(self.base),
+            "--base-model",
+            str(self.model),
+            "--merged",
+            str(self.out),
+            *extra,
+        ]
+
+
+@pytest.fixture
+def sp(tmp_path: Path) -> Splice:
+    return Splice(tmp_path)
+
+
+def _tensors(path: Path) -> dict[str, tuple[str, bytes]]:
+    import gguf
+
+    return {
+        t.name: (t.tensor_type.name, bytes(t.data.tobytes()))
+        for t in gguf.GGUFReader(path).tensors
+    }
+
+
+def _dequant(path: Path, name: str) -> np.ndarray:
+    import gguf
+    from gguf.quants import dequantize
+
+    t = next(t for t in gguf.GGUFReader(path).tensors if t.name == name)
+    return np.asarray(dequantize(t.data, t.tensor_type)).reshape(
+        tuple(int(d) for d in reversed(t.shape.tolist()))
+    )
+
+
+def _no_files(sp: Splice) -> None:
+    assert not sp.out.exists()
+    assert not list(sp.out.parent.glob("*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("out_type", "tol"), [("q8_0", 2e-2), ("f16", 2e-3), ("bf16", 2e-2)]
+)
+def test_splice_round_trip(
+    sp: Splice,
+    capsys: pytest.CaptureFixture[str],
+    out_type: str,
+    tol: float,
+) -> None:
+    assert main(sp.argv("--out-type", out_type, "--json")) == 0
+    got = json.loads(capsys.readouterr().out)
+    assert got == {
+        "written": [str(sp.out)],
+        "replaced": [SPLICE_NAME],
+        "out_type": out_type,
+    }
+    want = SW0 + SB @ SA
+    have = _dequant(sp.out, SPLICE_NAME)
+    assert np.linalg.norm(have - want) / np.linalg.norm(want) < tol
+    old, new = _tensors(sp.base), _tensors(sp.out)
+    assert list(old) == list(new)
+    for name in old:
+        if name != SPLICE_NAME:
+            assert new[name] == old[name]
+    assert new[SPLICE_NAME][0] == out_type.upper()
+    assert not list(sp.out.parent.glob("*.tmp"))
+
+
+def test_splice_default_is_q8_0_text(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(sp.argv()) == 0
+    assert f"wrote {sp.out}" in capsys.readouterr().out
+    assert _tensors(sp.out)[SPLICE_NAME][0] == "Q8_0"
+
+
+def test_splice_without_recorded_hash(sp: Splice) -> None:
+    sp.save(sp.adapter, SPLICE_MODULE, False)
+    assert main(sp.argv("--force")) == 0
+
+
+def test_splice_wrong_base_hash(sp: Splice, capsys: pytest.CaptureFixture[str]) -> None:
+    save_file({SPLICE_KEY: SW0 + 1.0}, str(sp.model / "model.safetensors"))
+    assert main(sp.argv()) == 2
+    err = capsys.readouterr().err
+    assert SPLICE_MODULE in err
+    assert "hash" in err
+    _no_files(sp)
+
+
+def test_splice_base_shape_mismatch(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sp.save(sp.adapter, SPLICE_MODULE, False)
+    save_file({SPLICE_KEY: SW0[:, :32]}, str(sp.model / "model.safetensors"))
+    assert main(sp.argv("--force")) == 2
+    assert "shape" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_q8_0_row_length(sp: Splice, capsys: pytest.CaptureFixture[str]) -> None:
+    w0 = np.ones((16, 50), np.float32)
+    save_file({SPLICE_KEY: w0}, str(sp.model / "model.safetensors"))
+    delta = LowRankDelta(SPLICE_MODULE, SB, SA[:, :50].copy())
+    save_peft(Edit((delta,), "org/tiny"), sp.adapter, overwrite=True)
+    assert main(sp.argv()) == 2
+    assert "divisible by 32" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_unsupported_module(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sp.save(sp.adapter, "model.embed_tokens", False)
+    assert main(sp.argv("--force")) == 2
+    assert "unsupported module" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_two_modules_one_tensor(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    other = "model.language_model.layers.1.mlp.down_proj"
+    deltas = (LowRankDelta(SPLICE_MODULE, SB, SA), LowRankDelta(other, SB, SA))
+    save_peft(Edit(deltas, "org/tiny"), sp.adapter, overwrite=True)
+    assert main(sp.argv()) == 2
+    assert "same GGUF tensor" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_base_tensor_not_in_gguf(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sp.save(sp.adapter, "model.layers.2.mlp.down_proj", False)
+    save_file(
+        {"model.layers.2.mlp.down_proj.weight": SW0},
+        str(sp.model / "model.safetensors"),
+    )
+    assert main(sp.argv()) == 2
+    assert "not in base" in capsys.readouterr().err
+    _no_files(sp)
+
+
+@pytest.mark.parametrize("drop", ["--base-model", "--merged"])
+def test_splice_missing_flag(
+    sp: Splice, capsys: pytest.CaptureFixture[str], drop: str
+) -> None:
+    argv = sp.argv()
+    i = argv.index(drop)
+    del argv[i : i + 2]
+    assert main(argv) == 2
+    assert "--splice needs" in capsys.readouterr().err
+    _no_files(sp)
+
+
+@pytest.mark.parametrize(
+    "extra", [["--merged", "x.gguf"], ["--base-model", "d"], ["--out-type", "f16"]]
+)
+def test_splice_flags_need_splice(
+    adapter: Path, capsys: pytest.CaptureFixture[str], extra: list[str]
+) -> None:
+    assert main(["export", str(adapter), "--card", "mit", *extra]) == 2
+    assert "need --splice" in capsys.readouterr().err
+    assert not (adapter / "README.md").exists()
+
+
+def test_export_nothing_lists_splice(
+    adapter: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["export", str(adapter)]) == 2
+    assert "--splice" in capsys.readouterr().err
+
+
+def test_splice_bad_out_type(sp: Splice) -> None:
+    with pytest.raises(SystemExit) as e:
+        main(sp.argv("--out-type", "q4_0"))
+    assert e.value.code == 2
+
+
+def test_splice_overwrite_refused_then_forced(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(sp.argv()) == 0
+    first = sp.out.read_bytes()
+    assert main(sp.argv()) == 2
+    assert "pass --force" in capsys.readouterr().err
+    assert sp.out.read_bytes() == first
+    assert main(sp.argv("--force", "--out-type", "f16")) == 0
+    assert sp.out.read_bytes() != first
+    assert not list(sp.out.parent.glob("*.tmp"))
+
+
+def test_splice_out_is_base(sp: Splice, capsys: pytest.CaptureFixture[str]) -> None:
+    before = sp.base.read_bytes()
+    argv = sp.argv("--force")
+    argv[argv.index("--merged") + 1] = str(sp.base)
+    assert main(argv) == 2
+    assert "--splice base file" in capsys.readouterr().err
+    assert sp.base.read_bytes() == before
+    argv.remove("--force")  # no misleading "pass --force" hint
+    assert main(argv) == 2
+    err = capsys.readouterr().err
+    assert "--splice base file" in err
+    assert "pass --force" not in err
+    assert sp.base.read_bytes() == before
+
+
+def test_splice_gguf_same_as_merged(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = sp.argv("--gguf", str(sp.out), "--arch", "qwen35", "--force")
+    assert main(argv) == 2
+    assert "both" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_gguf_same_as_base(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = sp.base.read_bytes()
+    argv = sp.argv("--gguf", str(sp.base), "--arch", "qwen35", "--force")
+    assert main(argv) == 2
+    assert "--splice base file" in capsys.readouterr().err
+    assert sp.base.read_bytes() == before
+    _no_files(sp)
+
+
+def test_splice_merged_dir_missing(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = sp.argv()
+    argv[argv.index("--merged") + 1] = str(sp.out.parent / "nope" / "m.gguf")
+    assert main(argv) == 2
+    err = capsys.readouterr().err
+    assert "does not exist" in err
+    assert str(sp.out.parent / "nope") in err
+
+
+def test_splice_out_inside_adapter_dir(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = sp.argv()
+    argv[argv.index("--merged") + 1] = str(sp.adapter / "m.gguf")
+    assert main(argv) == 2
+    assert "inside the adapter" in capsys.readouterr().err
+    assert not (sp.adapter / "m.gguf").exists()
+
+
+def test_splice_base_not_a_file(sp: Splice, capsys: pytest.CaptureFixture[str]) -> None:
+    sp.base.unlink()
+    assert main(sp.argv()) == 2
+    assert "not a file" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_unreadable_base(sp: Splice, capsys: pytest.CaptureFixture[str]) -> None:
+    sp.base.write_bytes(b"not a gguf")
+    assert main(sp.argv()) == 2
+    assert "error" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_verify_failure_leaves_no_file(
+    sp: Splice, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import astro_weights.export.gguf as g
+
+    monkeypatch.setattr(g, "verify_splice", lambda *a, **k: ["boom"])
+    assert main(sp.argv()) == 2
+    assert "failed verification: boom" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_with_gguf_and_card(sp: Splice) -> None:
+    lora = sp.out.parent / "lora.gguf"
+    argv = sp.argv("--gguf", str(lora), "--arch", "qwen35", "--card", "mit")
+    assert main(argv) == 0
+    assert sp.out.exists()
+    assert lora.exists()
+    assert (sp.adapter / "README.md").exists()
+
+
+def test_splice_failure_writes_no_card(sp: Splice) -> None:
+    save_file({SPLICE_KEY: SW0 + 1.0}, str(sp.model / "model.safetensors"))
+    assert main(sp.argv("--card", "mit")) == 2
+    assert not (sp.adapter / "README.md").exists()
+
+
+def test_splice_missing_gguf_package(
+    sp: Splice,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setitem(sys.modules, "astro_weights.export.gguf", None)
+    assert main(sp.argv()) == 2
+    assert "astro-weights[gguf]" in capsys.readouterr().err
+    _no_files(sp)

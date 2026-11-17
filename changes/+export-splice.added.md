@@ -1,0 +1,1 @@
+Adapters can now be merged into a quantized base GGUF with `astro-weights export ADAPTER --splice BASE.gguf --base-model DIR --merged OUT.gguf`, giving one file that Ollama and LM Studio load directly.
