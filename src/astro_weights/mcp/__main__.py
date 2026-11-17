@@ -1,3 +1,5 @@
+import sys
+
 from astro_weights.mcp.server import main
 
-main()
+sys.exit(main())

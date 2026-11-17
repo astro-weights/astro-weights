@@ -76,9 +76,9 @@ extend-select = ["B", "I", "UP", "PT", "PTH", "RUF"]
 [tool.mypy]
 strict = true
 
-# The core CI job has no `hf` extra installed; runners/hf.py imports these.
+# The core CI job has no extras installed; runners/hf.py and mcp/server.py import these.
 [[tool.mypy.overrides]]
-module = ["torch.*", "peft.*", "transformers.*", "math_verify.*", "gguf.*"]
+module = ["torch.*", "peft.*", "transformers.*", "math_verify.*", "gguf.*", "mcp.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -96,7 +96,8 @@ root_package = "astro_weights"
 name = "astro-weights layers"
 type = "layers"
 layers = [
-    "astro_weights.cli | astro_weights.mcp",
+    "astro_weights.cli",
+    "astro_weights.mcp",
     "astro_weights.runners",
     "astro_weights.export",
     "astro_weights.edits",
