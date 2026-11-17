@@ -282,6 +282,14 @@ def _inside_adapter(gguf: Path, directory: Path) -> bool:
     return gguf.resolve() in {(directory / n).resolve() for n in own}
 
 
+def _mcp(run_dir: Path) -> int:
+    try:
+        from astro_weights.mcp.server import main as serve
+    except ModuleNotFoundError:
+        return _error("the MCP server needs: pip install 'astro-weights[mcp]'")
+    return serve([str(run_dir)])
+
+
 def _json_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--json", action="store_true", help="print one JSON object instead of text"
@@ -297,7 +305,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--version", action="version", version=f"astro-weights {__version__}"
     )
-    sub = parser.add_subparsers(dest="command", metavar="{build,eval,export,inspect}")
+    sub = parser.add_subparsers(
+        dest="command", metavar="{build,eval,export,inspect,mcp}"
+    )
     p = sub.add_parser("inspect", help="summarize and verify a saved PEFT adapter")
     p.add_argument("directory", metavar="DIR", type=Path, help="adapter directory")
     _json_flag(p)
@@ -361,6 +371,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--force", action="store_true", help="overwrite existing outputs")
     _json_flag(p)
+    p = sub.add_parser("mcp", help="serve the agent tools over stdio MCP")
+    p.add_argument(
+        "run_dir", metavar="RUN_DIR", type=Path, help="run directory with run.json"
+    )
     args = parser.parse_args(argv)
     if args.command == "inspect":
         return _inspect(args.directory, args.json)
@@ -382,5 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         return _export(
             args.directory, args.gguf, args.arch, args.card, args.force, args.json
         )
+    if args.command == "mcp":
+        return _mcp(args.run_dir)
     parser.print_help()
     return 2
