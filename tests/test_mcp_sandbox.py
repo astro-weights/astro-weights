@@ -35,6 +35,13 @@ from astro_weights.mcp.sandbox import (
     wrap,
 )
 
+NAMESPACES = [
+    "--unshare-all",
+    "--unshare-user",
+    "--disable-userns",
+    "--die-with-parent",
+    "--new-session",
+]
 MODE = probe()
 posix_paths = pytest.mark.skipif(sys.platform == "win32", reason="uses POSIX paths")
 needs_sandbox = pytest.mark.skipif(
@@ -117,7 +124,7 @@ def test_bwrap_command_flags_and_order() -> None:
     ro = [Path("/opt/py"), Path("/sp/x/numpy")]
     hide = [Path("/sp/x")]
     cmd = bwrap_command(["/opt/py/bin/python", "-c", "1"], ro, Path("/w"), hide)
-    assert cmd[:4] == ["bwrap", "--unshare-all", "--die-with-parent", "--new-session"]
+    assert cmd[:6] == ["bwrap", *NAMESPACES]
     assert cmd[-4:] == ["--", "/opt/py/bin/python", "-c", "1"]
     s = " ".join(cmd)
     assert "--proc /proc" in s
@@ -235,12 +242,8 @@ def test_probe_linux_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     assert probe() == "bwrap"
     assert probe() == "bwrap"
     assert len(calls) == 1
-    assert calls[0][:4] == [
-        "bwrap",
-        "--unshare-all",
-        "--die-with-parent",
-        "--new-session",
-    ]
+    # the probe runs the same namespace flags as wrap, --disable-userns included
+    assert calls[0][:6] == ["bwrap", *NAMESPACES]
 
 
 @pytest.mark.usefixtures("fresh_probe")
@@ -673,4 +676,109 @@ def test_macos_gpu_not_openable(work: Path, code: str) -> None:
     if not control.stdout.startswith("ESCAPED"):
         pytest.skip(f"no GPU service on this Mac: {control.stdout.strip()}")
     r = _inside(_attack(code), work)
-    assert r.stdout.startswith("BLOCKED"), r.stdout + r.stderr
+    # Metal's init may trap (SIGTRAP) when denied, instead of returning NULL
+    assert "ESCAPED" not in r.stdout
+    assert r.stdout.startswith("BLOCKED") or r.returncode < 0, r.stdout + r.stderr
+
+
+_SYSCTL = """
+import ctypes, os
+libc = ctypes.CDLL(None, use_errno=True)
+def sysctl(mib):
+    arr = (ctypes.c_int * len(mib))(*mib)
+    size = ctypes.c_size_t(0)
+    if libc.sysctl(arr, len(mib), None, ctypes.byref(size), None, 0) != 0:
+        return None
+    buf = ctypes.create_string_buffer(size.value)
+    if libc.sysctl(arr, len(mib), buf, ctypes.byref(size), None, 0) != 0:
+        return None
+    return buf.raw[: size.value]
+"""
+
+
+@macos_sandbox
+def test_macos_parent_argv_env_and_process_list_hidden(work: Path) -> None:
+    """KERN_PROCARGS2 shows another process's exec-time argv and env, KERN_PROC_ALL
+    the process list. The secret is in the intermediate parent's exec-time env."""
+    secret = f"sk-parent-{uuid.uuid4().hex}"
+    code = (
+        PRELUDE
+        + _SYSCTL
+        + (
+            f"secret = {secret[::-1]!r}[::-1].encode()  # reversed: not in any argv\n"
+            "args = sysctl([1, 49, os.getppid()])  # CTL_KERN, KERN_PROCARGS2\n"
+            "procs = sysctl([1, 14, 0])  # CTL_KERN, KERN_PROC, KERN_PROC_ALL\n"
+            "print('args', 'none' if args is None else secret in args,\n"
+            "      'procs', 'none' if procs is None else len(procs))\n"
+        )
+    )
+    child = [sys.executable, "-I", "-S", "-c", code]
+    parent = (
+        "import json, subprocess, sys\n"
+        "cmd, env = json.loads(sys.argv[1]), json.loads(sys.argv[2])\n"
+        "r = subprocess.run(cmd, env=env, capture_output=True, text=True)\n"
+        "print(r.stdout, r.stderr)"
+    )
+    (work / "tmp").mkdir(exist_ok=True)
+
+    def via_parent(cmd: list[str]) -> list[str]:
+        env = {**child_env(work), "AW_PARENT_SECRET": secret}
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                parent,
+                json.dumps(cmd),
+                json.dumps(child_env(work)),
+            ],
+            env=env,
+            cwd=work,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        return r.stdout.split()
+
+    control = via_parent(child)
+    assert control[:2] == ["args", "True"], control
+    assert int(control[3]) > 0
+    out = via_parent(wrap(child, ro=python_paths(), rw=work))
+    assert out == ["args", "none", "procs", "none"], out
+
+
+_MACH = (
+    "import ctypes\n"
+    "libc = ctypes.CDLL(None)\n"
+    "bp = ctypes.c_uint.in_dll(libc, 'bootstrap_port').value\n"
+    "port = ctypes.c_uint(0)\n"
+    "kr = libc.bootstrap_look_up(bp, b'com.apple.pasteboard.1', ctypes.byref(port))\n"
+    "assert kr == 0, f'bootstrap_look_up returned {kr}'"
+)
+
+
+@macos_sandbox
+@pytest.mark.parametrize(
+    "code", ["import os\nos.kill(os.getppid(), 0)", _MACH], ids=["signal", "mach"]
+)
+def test_macos_ipc_denied(work: Path, code: str) -> None:
+    _blocked(code, work)
+
+
+@linux_sandbox
+def test_linux_no_nested_user_namespace(work: Path) -> None:
+    # no numpy import here: its BLAS threads make unshare(CLONE_NEWUSER) fail anyway
+    code = (
+        "import ctypes, errno\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        "rc = libc.unshare(0x10000000)  # CLONE_NEWUSER\n"
+        "print('ESCAPED' if rc == 0 else errno.errorcode[ctypes.get_errno()])"
+    )
+    cmd = wrap([sys.executable, "-I", "-S", "-c", code], ro=python_paths(), rw=work)
+    assert "--disable-userns" in cmd
+    # control: the same sandbox without --disable-userns lets the child unshare
+    control = _run([a for a in cmd if a != "--disable-userns"], work)
+    assert control.stdout.strip() == "ESCAPED", control.stdout + control.stderr
+    r = _run(cmd, work)
+    # --disable-userns sets user.max_user_namespaces to 0 in the sandbox
+    assert r.stdout.strip() == "ENOSPC", r.stdout + r.stderr

@@ -40,9 +40,17 @@ Mode = Literal["bwrap", "seatbelt"]
 
 UNSAFE_HINT = "pass allow_unsafe=True to run agent code without a sandbox"
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
-# Every namespace (user, ipc, pid, net, uts, cgroup); die with the parent; own session,
-# so the child cannot push keystrokes into the parent's terminal.
-BWRAP_NAMESPACES = ("--unshare-all", "--die-with-parent", "--new-session")
+# Every namespace (user, ipc, pid, net, uts, cgroup); no nested user namespaces (the
+# kernel surface behind most unprivileged exploits; needs bwrap >= 0.8, older bwrap
+# fails the probe); die with the parent; own session, so the child cannot push
+# keystrokes into the parent's terminal.
+BWRAP_NAMESPACES = (
+    "--unshare-all",
+    "--unshare-user",
+    "--disable-userns",
+    "--die-with-parent",
+    "--new-session",
+)
 # System files the interpreter and numpy load from. /sys, /run, /var, /home and the
 # rest of /etc stay out of view.
 BWRAP_SYSTEM = ("/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache")
@@ -59,8 +67,14 @@ SEATBELT_HEAD = """\
 (deny default)
 ; run the wrapped program only; process-fork stays denied, so nothing else runs
 (allow process-exec (literal (param "EXE")))
-; libSystem reads hw.* and kern.* sysctls at start; Python aborts without them
-(allow sysctl-read)
+; sysctls by name only. hw.*: CPU count and features (libSystem at start, BLAS
+; threads). kern.ostype, osrelease, version, hostname: os.uname(), which numpy's
+; import calls. Not kern.procargs2 or kern.proc: other processes' argv, env, list.
+(allow sysctl-read (sysctl-name-prefix "hw.") (sysctl-name "kern.ostype")
+  (sysctl-name "kern.osrelease") (sysctl-name "kern.version")
+  (sysctl-name "kern.hostname"))
+; KERN_PROCARGS2 / KERN_PROC_ALL leak unless both the allowlist and this deny apply
+(deny process-info*)
 ; dyld shared cache, system frameworks and libSystem
 (allow file-read* (subpath "/System/Library") (subpath "/usr/lib"))
 ; Python lists the root directory while it computes its paths
