@@ -643,3 +643,35 @@ def test_eval_json_carries_cap_fields(
     assert out["uncapped_tokens_diff"] == 0
     assert (out["loops_base"], out["loops_edit"]) == (0, 0)
     assert {"n_items", "diff", "ci95", "cap_hit_base", "floor"} <= set(out)
+
+
+# mcp
+
+
+def test_mcp_without_extra_exits_2_with_hint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("mcp", "mcp.server", "mcp.server.mcpserver"):
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.delitem(sys.modules, "astro_weights.mcp.server", raising=False)
+    assert main(["mcp", str(tmp_path)]) == 2
+    assert "pip install 'astro-weights[mcp]'" in capsys.readouterr().err
+
+
+def test_help_works_without_extra(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("mcp", "mcp.server", "mcp.server.mcpserver"):
+        monkeypatch.setitem(sys.modules, name, None)
+    with pytest.raises(SystemExit) as e:
+        main(["--help"])
+    assert e.value.code == 0
+    assert "mcp" in capsys.readouterr().out
+
+
+def test_mcp_bad_run_dir_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("mcp")
+    assert main(["mcp", str(tmp_path)]) == 2
+    assert "run.json" in capsys.readouterr().err
