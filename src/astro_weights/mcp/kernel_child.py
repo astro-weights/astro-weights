@@ -173,7 +173,11 @@ def main(argv: list[str]) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_APPEND
     out = os.open(work / OUTPUT, flags, 0o600)
     os.dup2(out, 1)
-    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+    # utf-8 and \n on every OS (Windows defaults: locale code page, \r\n)
+    sys.stdout.reconfigure(  # type: ignore[union-attr]
+        encoding="utf-8", newline="\n", line_buffering=True
+    )
+    sys.stderr.reconfigure(encoding="utf-8", newline="\n")  # type: ignore[union-attr]
     ppid = os.getppid()
     threading.Thread(target=exit_with_parent, args=(ppid,), daemon=True).start()
     server = Server(proto_in, proto_out, work)

@@ -189,6 +189,23 @@ def test_seatbelt_profile_rules_and_params() -> None:
 
 
 @posix_paths
+def test_seatbelt_allows_framework_app_exec(tmp_path: Path) -> None:
+    """python.org framework builds re-exec Resources/Python.app at start."""
+    exe = tmp_path / "bin" / "python3.12"
+    app = tmp_path / "Resources/Python.app/Contents/MacOS/Python"
+    for f in (exe, app):
+        f.parent.mkdir(parents=True)
+        f.write_text("")
+    cmd = seatbelt_command([str(exe)], [tmp_path], tmp_path / "w")
+    defs = dict(cmd[i + 1].split("=", 1) for i, a in enumerate(cmd) if a == "-D")
+    assert defs["EXE2"] == str(app)
+    assert '(allow process-exec (literal (param "EXE2")))' in cmd[2]
+    app.unlink()
+    cmd = seatbelt_command([str(exe)], [tmp_path], tmp_path / "w")
+    assert "EXE2" not in cmd[2]
+
+
+@posix_paths
 def test_seatbelt_hostile_path_stays_a_parameter() -> None:
     rw = Path("/tmp") / HOSTILE
     cmd = seatbelt_command(["/bin/x"], [], rw)

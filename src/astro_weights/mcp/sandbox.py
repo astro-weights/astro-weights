@@ -60,6 +60,7 @@ SYSTEM_SITE_GLOBS = (
     "/usr/local/lib*/python3*/*-packages",
 )
 PR_SET_DUMPABLE = 4
+_FRAMEWORK_APP = "Resources/Python.app"
 
 # Seatbelt rules. Later rules override earlier ones. Paths arrive as -D parameters.
 SEATBELT_HEAD = """\
@@ -163,7 +164,8 @@ def python_paths(packages: Sequence[str] = ("numpy",)) -> list[Path]:
     out += [Path(p) for p in sys.path if Path(p).name == "lib-dynload"]
     # shared libs lib-dynload links against: libpython, and libffi etc. on conda builds
     out += sorted(f for g in ("lib*.so*", "lib*.dylib") for f in (base / "lib").glob(g))
-    out += [f for f in (base / "Python",) if f.is_file()]  # macOS framework build
+    # macOS framework build (python.org): shared lib, and the app it re-execs into
+    out += [f for f in (base / "Python", base / _FRAMEWORK_APP) if f.exists()]
     for name in packages:
         spec = importlib.util.find_spec(name)
         if spec is None or not spec.submodule_search_locations:
@@ -237,6 +239,11 @@ def seatbelt_command(
     exe = _check_abs(Path(argv[0]))
     params: list[tuple[str, Path]] = [("EXE", exe), ("RW", rw)]
     lines = [SEATBELT_HEAD]
+    app = exe.parent.parent / _FRAMEWORK_APP / "Contents/MacOS/Python"
+    if app.is_file():
+        lines.append("; framework python re-execs its app binary at start\n")
+        params.append(("EXE2", app))
+        lines.append('(allow process-exec (literal (param "EXE2")))\n')
 
     def rule(allow: str, kind: str, key: str, paths: Sequence[Path]) -> None:
         if paths:
