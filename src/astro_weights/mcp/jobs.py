@@ -7,6 +7,7 @@ requests cost nothing. Standard library only.
 
 import contextlib
 import json
+import math
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -36,6 +37,9 @@ class RunConfig:
     editor: str
     model: str | None
     limits: Limits
+    model_dir: Path | None = None
+    kernel_timeout_s: float = 600.0
+    kernel_mem_gib: int = 16
 
 
 def load_run_config(run_dir: Path) -> RunConfig:
@@ -66,7 +70,35 @@ def load_run_config(run_dir: Path) -> RunConfig:
         parsed = Limits(**limits)
     except ValueError as exc:
         raise ValueError(f"{path}: {exc}") from exc
-    return RunConfig(seed, editor, model, parsed)
+    model_dir = raw.get("model_dir")
+    if not (model_dir is None or (isinstance(model_dir, str) and model_dir)):
+        raise ValueError(f"{path}: model_dir must be a non-empty string or absent")
+    timeout_s, mem_gib = _kernel_config(path, raw.get("kernel", {}))
+    return RunConfig(
+        seed,
+        editor,
+        model,
+        parsed,
+        None if model_dir is None else Path(run_dir) / model_dir,
+        timeout_s,
+        mem_gib,
+    )
+
+
+def _kernel_config(path: Path, kernel: Any) -> tuple[float, int]:
+    """(timeout_s, mem_gib) from the optional ``kernel`` object of run.json."""
+    if not isinstance(kernel, dict) or not set(kernel) <= {"timeout_s", "mem_gib"}:
+        raise ValueError(
+            f"{path}: kernel must be an object with keys from ['timeout_s', 'mem_gib']"
+        )
+    timeout_s = kernel.get("timeout_s", 600.0)
+    mem_gib = kernel.get("mem_gib", 16)
+    number = isinstance(timeout_s, int | float) and not isinstance(timeout_s, bool)
+    if not number or not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError(f"{path}: kernel.timeout_s must be a positive number")
+    if not isinstance(mem_gib, int) or isinstance(mem_gib, bool) or mem_gib < 1:
+        raise ValueError(f"{path}: kernel.mem_gib must be an int >= 1")
+    return float(timeout_s), mem_gib
 
 
 class JobRunner:

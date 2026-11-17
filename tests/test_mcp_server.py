@@ -22,9 +22,14 @@ def write_run(run_dir: Path, **over: Any) -> Path:
 
 pytest.importorskip("mcp")
 
+import itertools
+
 import anyio  # type: ignore[import-not-found, unused-ignore]
 from mcp import Client, StdioServerParameters
+from mcp_fakes import fake_model_dir
 
+from astro_weights.mcp import kernel as kernel_mod
+from astro_weights.mcp import sandbox
 from astro_weights.mcp.server import build_server, main
 
 
@@ -40,8 +45,8 @@ async def call(client: Client, tool: str, args: dict[str, Any]) -> dict[str, Any
     return dict(result.structured_content)
 
 
-async def poll(client: Client, handle: str) -> dict[str, Any]:
-    with anyio.fail_after(10):
+async def poll(client: Client, handle: str, timeout: float = 10) -> dict[str, Any]:
+    with anyio.fail_after(timeout):
         while True:
             out = await call(client, "status", {"handle": handle})
             if out["state"] in {"done", "failed"}:
@@ -305,3 +310,199 @@ def test_stdio_bad_run_dir_exits_2(tmp_path: Path) -> None:
     )
     assert proc.returncode == 2
     assert "run.json" in proc.stderr
+
+
+# ---------------------------------------------------------------- kernel
+
+N0 = "model.layers.0.mlp.down_proj.weight"
+NEEDS_SANDBOX = "no working OS sandbox"
+
+
+def kernel_run(run_dir: Path, **over: Any) -> Path:
+    fake_model_dir(run_dir / "model")
+    cfg = {"limits": {**LIMITS, "code_runs": 10}, **over}
+    return write_run(run_dir, model_dir="model", kernel={"timeout_s": 20}, **cfg)
+
+
+@pytest.fixture
+def no_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox, "_detect", lambda: (None, "disabled for this test"))
+
+
+@pytest.fixture
+def unsafe(request: pytest.FixtureRequest) -> bool:
+    """True: kernel runs unsandboxed (sandbox disabled); False: real sandbox."""
+    if sandbox.probe() is None:
+        request.getfixturevalue("no_sandbox")
+        return True
+    return False
+
+
+async def run_cell(client: Client, code: str) -> dict[str, Any]:
+    started = await call(client, "exec_python", {"code": code})
+    return await poll(client, started["handle"], timeout=60)
+
+
+@pytest.mark.anyio
+async def test_exec_python_runs_in_kernel(tmp_path: Path, unsafe: bool) -> None:
+    run = kernel_run(tmp_path)
+    server = build_server(run, allow_unsafe_kernel=unsafe)
+    async with Client(server) as client:
+        out = await run_cell(client, "x = 20\nx + 22")
+        assert out["state"] == "done"
+        assert out["result"] == {"ok": True, "output": "42\n", "restarted": False}
+        assert out["budget"]["used"]["code_runs"] == 1
+        bad = await run_cell(client, "raise ValueError('boom')")
+        assert bad["state"] == "done"  # a failing cell is still a code run
+        assert not bad["result"]["ok"]
+        assert bad["budget"]["used"]["code_runs"] == 2
+        assert bad["budget"]["streaks"]["code_runs"] == 0
+        saved = await run_cell(
+            client, f"W = load('{N0}'); W[0] += 0.3; save_edit('{N0}', W)"
+        )
+        assert saved["result"]["ok"], saved["result"]["output"]
+        rejected = await run_cell(
+            client, f"save_edit('{N0}', load_original('{N0}') * 2)"
+        )
+        assert "scalar multiple" in rejected["result"]["output"]
+        dropped = await run_cell(client, f"drop_edit('{N0}'); edited()")
+        assert dropped["result"]["output"] == "[]\n"
+    events = RunRecord.open(run / "record.jsonl").read()
+    names = [e["event"] for e in events]
+    assert names[1:] == ["edit_saved", "edit_rejected", "edit_dropped"]
+    assert events[1]["tensor"] == N0
+    assert 0 < events[1]["rel_frobenius"] < 0.5
+    assert "scalar multiple" in events[2]["error"]
+
+
+@pytest.mark.anyio
+async def test_timeout_is_a_code_run_and_restarts(tmp_path: Path, unsafe: bool) -> None:
+    run = kernel_run(tmp_path)
+    write_run(
+        run,
+        model_dir="model",
+        kernel={"timeout_s": 1},
+        limits={**LIMITS, "code_runs": 10},
+    )
+    async with Client(build_server(run, allow_unsafe_kernel=unsafe)) as client:
+        slow = await run_cell(client, "import time; time.sleep(30)")
+        assert slow["state"] == "done"
+        assert "killed after 1 s" in slow["result"]["output"]
+        nxt = await run_cell(client, "1")
+        assert nxt["result"]["restarted"]
+        assert nxt["budget"]["used"]["code_runs"] == 2
+    names = [e["event"] for e in RunRecord.open(run / "record.jsonl").read()]
+    assert names[1:] == ["kernel_restarted"]
+
+
+@pytest.mark.anyio
+async def test_sandbox_missing_refuses_free(tmp_path: Path, no_sandbox: None) -> None:
+    run = kernel_run(tmp_path)
+    async with Client(build_server(run)) as client:
+        out = await call(client, "exec_python", {"code": "1"})
+    assert "no OS sandbox: disabled for this test" in out["error"]
+    assert "allow_unsafe" in out["error"]
+    events = RunRecord.open(run / "record.jsonl").read()
+    assert events[-1]["event"] == "sandbox_unavailable"
+    assert events[-1]["tool"] == "exec_python"
+    assert not (run / "ledger.jsonl").exists()
+
+
+@pytest.mark.anyio
+async def test_unsafe_flag_allows(tmp_path: Path, no_sandbox: None) -> None:
+    run = kernel_run(tmp_path)
+    async with Client(build_server(run, allow_unsafe_kernel=True)) as client:
+        out = await run_cell(client, "print('hi')")
+    assert out["result"]["output"] == "hi\n"
+    events = RunRecord.open(run / "record.jsonl").read()
+    assert [e["event"] for e in events] == ["start", "unsafe_kernel"]
+
+
+@pytest.mark.anyio
+async def test_given_exec_executor_wins(tmp_path: Path) -> None:
+    run = kernel_run(tmp_path)
+    async with Client(build_server(run, {"exec": echo})) as client:
+        out = await run_cell(client, "1")
+    assert out["result"] == {"echo": {"code": "1"}}
+    assert not (run / "kernel").exists()
+
+
+@pytest.mark.anyio
+async def test_kernel_start_failure_is_a_failed_job(
+    tmp_path: Path, unsafe: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(self: kernel_mod.Kernel) -> Any:
+        raise kernel_mod.KernelError("kernel failed to start: numpy missing")
+
+    monkeypatch.setattr(kernel_mod.Kernel, "_start", broken)
+    run = kernel_run(tmp_path)
+    async with Client(build_server(run, allow_unsafe_kernel=unsafe)) as client:
+        out = await run_cell(client, "1")
+    assert out["state"] == "failed"
+    assert "numpy missing" in out["error"]
+    assert out["budget"]["used"]["code_runs"] == 0
+    assert out["budget"]["streaks"]["code_runs"] == 1
+
+
+@pytest.mark.anyio
+async def test_restart_reports_lost_vars_and_keeps_edits(
+    tmp_path: Path, unsafe: bool
+) -> None:
+    run = kernel_run(tmp_path)
+    async with Client(build_server(run, allow_unsafe_kernel=unsafe)) as client:
+        await run_cell(client, f"W = load('{N0}'); W[0] += 0.3; save_edit('{N0}', W)")
+    async with Client(build_server(run, allow_unsafe_kernel=unsafe)) as client:
+        first = await run_cell(client, "edited(), 'W' in globals()")
+        second = await run_cell(client, "1")
+    assert first["result"] == {
+        "ok": True,
+        "output": f"(['{N0}'], False)\n",
+        "restarted": True,
+    }
+    assert not second["result"]["restarted"]
+    assert second["budget"]["used"]["code_runs"] == 3
+
+
+@pytest.mark.anyio
+async def test_concurrent_exec_runs_one_at_a_time(tmp_path: Path, unsafe: bool) -> None:
+    run = kernel_run(tmp_path, limits={**LIMITS, "code_runs": 10})
+    cell = (
+        "import time\nt0 = time.monotonic(); time.sleep(0.2)\n"
+        "spans = globals().get('spans', []) + [(t0, time.monotonic())]"
+    )
+    async with Client(build_server(run, allow_unsafe_kernel=unsafe)) as client:
+        started: list[dict[str, Any]] = []
+
+        async def one() -> None:
+            started.append(await call(client, "exec_python", {"code": cell}))
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(4):
+                tg.start_soon(one)
+        outs = [await poll(client, s["handle"], timeout=60) for s in started]
+        spans = await run_cell(client, "import json; print(json.dumps(sorted(spans)))")
+    assert [o["state"] for o in outs] == ["done"] * 4
+    assert all(o["result"]["ok"] for o in outs)
+    got = json.loads(spans["result"]["output"])
+    assert len(got) == 4
+    assert all(a[1] <= b[0] for a, b in itertools.pairwise(got))
+    assert spans["budget"]["used"]["code_runs"] == 5
+
+
+def test_bad_model_dir_refused(tmp_path: Path) -> None:
+    run = write_run(tmp_path, model_dir="missing")
+    with pytest.raises(ValueError, match="model"):
+        build_server(run)
+    assert main([str(run)]) == 2
+
+
+def test_main_unsafe_kernel_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_sandbox: None
+) -> None:
+    from mcp.server.mcpserver import MCPServer
+
+    monkeypatch.setattr(MCPServer, "run", lambda self, transport: None)
+    run = kernel_run(tmp_path)
+    assert main([str(run), "--unsafe-kernel"]) == 0
+    events = RunRecord.open(run / "record.jsonl").read()
+    assert [e["event"] for e in events] == ["start", "unsafe_kernel"]

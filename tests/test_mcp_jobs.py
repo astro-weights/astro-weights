@@ -162,6 +162,18 @@ def test_run_config_ok(tmp_path: Path) -> None:
     cfg = load_run_config(write_run(tmp_path, model="m"))
     assert (cfg.seed, cfg.editor, cfg.model) == (7, "scripted", "m")
     assert cfg.limits == Limits(3, 3, 100, 1.0)
+    assert (cfg.model_dir, cfg.kernel_timeout_s, cfg.kernel_mem_gib) == (None, 600, 16)
+
+
+def test_run_config_model_dir_and_kernel(tmp_path: Path) -> None:
+    kernel = {"timeout_s": 30, "mem_gib": 4}
+    cfg = load_run_config(write_run(tmp_path, model_dir="weights", kernel=kernel))
+    assert cfg.model_dir == tmp_path / "weights"
+    assert (cfg.kernel_timeout_s, cfg.kernel_mem_gib) == (30.0, 4)
+    absolute = str(tmp_path.resolve() / "elsewhere")
+    cfg = load_run_config(write_run(tmp_path, model_dir=absolute, kernel={}))
+    assert cfg.model_dir == Path(absolute)
+    assert (cfg.kernel_timeout_s, cfg.kernel_mem_gib) == (600, 16)
 
 
 @pytest.mark.parametrize(
@@ -175,6 +187,17 @@ def test_run_config_ok(tmp_path: Path) -> None:
         ({"limits": {"forward_passes": 1}}, "limits"),
         ({"limits": {**LIMITS, "code_runs": -1}}, "code_runs"),
         ({"limits": {**LIMITS, "tokens": 1.5}}, "tokens"),
+        ({"model_dir": 3}, "model_dir"),
+        ({"model_dir": ""}, "model_dir"),
+        ({"kernel": []}, "kernel must be an object"),
+        ({"kernel": {"timeout": 5}}, "kernel must be an object"),
+        ({"kernel": {"timeout_s": 0}}, "timeout_s"),
+        ({"kernel": {"timeout_s": True}}, "timeout_s"),
+        ({"kernel": {"timeout_s": "5"}}, "timeout_s"),
+        ({"kernel": {"timeout_s": float("inf")}}, "timeout_s"),
+        ({"kernel": {"mem_gib": 0}}, "mem_gib"),
+        ({"kernel": {"mem_gib": 2.5}}, "mem_gib"),
+        ({"kernel": {"mem_gib": True}}, "mem_gib"),
     ],
 )
 def test_run_config_bad(tmp_path: Path, over: dict[str, Any], match: str) -> None:
