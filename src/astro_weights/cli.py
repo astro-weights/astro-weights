@@ -399,12 +399,12 @@ def _inside_adapter(gguf: Path, directory: Path) -> bool:
     return gguf.resolve() in {(directory / n).resolve() for n in own}
 
 
-def _mcp(run_dir: Path) -> int:
+def _mcp(run_dir: Path, unsafe_kernel: bool) -> int:
     try:
         from astro_weights.mcp.server import main as serve
     except ModuleNotFoundError:
         return _error("the MCP server needs: pip install 'astro-weights[mcp]'")
-    return serve([str(run_dir)])
+    return serve([str(run_dir), *(["--unsafe-kernel"] if unsafe_kernel else [])])
 
 
 def _json_flag(p: argparse.ArgumentParser) -> None:
@@ -516,6 +516,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "run_dir", metavar="RUN_DIR", type=Path, help="run directory with run.json"
     )
+    p.add_argument(
+        "--unsafe-kernel",
+        action="store_true",
+        help="run agent code without an OS sandbox when none works (never safe)",
+    )
     args = parser.parse_args(argv)
     if args.command == "inspect":
         return _inspect(args.directory, args.json)
@@ -547,6 +552,6 @@ def main(argv: list[str] | None = None) -> int:
             args.out_type,
         )
     if args.command == "mcp":
-        return _mcp(args.run_dir)
+        return _mcp(args.run_dir, args.unsafe_kernel)
     parser.print_help()
     return 2

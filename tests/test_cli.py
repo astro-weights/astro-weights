@@ -678,6 +678,29 @@ def test_mcp_bad_run_dir_exits_2(
     assert "run.json" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("flags", "forwarded"), [([], []), (["--unsafe-kernel"], ["--unsafe-kernel"])]
+)
+def test_mcp_forwards_unsafe_kernel_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    forwarded: list[str],
+) -> None:
+    pytest.importorskip("mcp")
+    from astro_weights.mcp import server
+
+    seen: list[list[str] | None] = []
+
+    def fake_main(argv: list[str] | None = None) -> int:
+        seen.append(argv)
+        return 0
+
+    monkeypatch.setattr(server, "main", fake_main)
+    assert main(["mcp", str(tmp_path), *flags]) == 0
+    assert seen == [[str(tmp_path), *forwarded]]
+
+
 # export --splice
 
 SPLICE_MODULE = "model.layers.1.mlp.down_proj"

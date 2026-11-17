@@ -1,8 +1,10 @@
 """Stdio MCP server: four tools over the handle store, budget ledger and run record.
 
 Needs the ``mcp`` extra. All state lives under the run directory (``run.json``,
-``jobs/``, ``ledger.jsonl``, ``record.jsonl``); one store, one ledger and one record
-are built per server process and shared by every tool call.
+``jobs/``, ``ledger.jsonl``, ``record.jsonl``, ``edits/``, ``kernel/``); one store,
+one ledger and one record are built per server process and shared by every tool
+call. When run.json names a ``model_dir``, ``exec_python`` runs code in a sandboxed
+numpy kernel (one per server process) that saves edits through the edit store.
 """
 
 import argparse
@@ -22,9 +24,12 @@ except ModuleNotFoundError as e:
     ) from e
 
 from astro_weights.mcp.budget import BudgetExceeded, Kind, Ledger, TooManyFailures
+from astro_weights.mcp.edit_store import EditStore
 from astro_weights.mcp.handles import HandleStore, UnknownHandle
 from astro_weights.mcp.jobs import Executor, JobRunner, RunConfig, load_run_config
+from astro_weights.mcp.kernel import Kernel
 from astro_weights.mcp.record import RunRecord
+from astro_weights.mcp.sandbox import SandboxUnavailable
 
 __all__ = ["build_server", "main"]
 
@@ -52,10 +57,38 @@ def _open_record(run_dir: Path, cfg: RunConfig) -> RunRecord:
     )
 
 
+def _kernel_executor(
+    run_dir: Path, cfg: RunConfig, record: RunRecord, allow_unsafe: bool
+) -> Executor | str:
+    """``exec`` executor running cells in a new Kernel, or why there is none."""
+    assert cfg.model_dir is not None
+    store = EditStore(run_dir, cfg.model_dir)
+    try:
+        kernel = Kernel(
+            run_dir,
+            store,
+            allow_unsafe=allow_unsafe,
+            timeout_s=cfg.kernel_timeout_s,
+            mem_gib=cfg.kernel_mem_gib,
+            on_event=lambda name, fields: record.event(name, **fields),
+        )
+    except SandboxUnavailable as exc:
+        return str(exc)
+    return lambda params: kernel.exec(params["code"])
+
+
 def build_server(
-    run_dir: Path, executors: Mapping[str, Executor] | None = None
+    run_dir: Path,
+    executors: Mapping[str, Executor] | None = None,
+    *,
+    allow_unsafe_kernel: bool = False,
 ) -> MCPServer[Any]:
-    """Build the server for ``run_dir``. With no executors the work tools say so."""
+    """Build the server for ``run_dir``. With no executors the work tools say so.
+
+    With ``model_dir`` in run.json and no ``exec`` executor given, ``exec_python``
+    runs in a sandboxed kernel. Without an OS sandbox it returns an error, unless
+    ``allow_unsafe_kernel`` runs the kernel unsandboxed.
+    """
     run_dir = Path(run_dir)
     cfg = load_run_config(run_dir)
     store = HandleStore(run_dir)
@@ -65,6 +98,15 @@ def build_server(
         if job.state in ("queued", "running"):
             store.fail(job.handle, "server restarted")
     available = dict(executors or {})
+    unavailable: dict[str, str] = {}
+    if allow_unsafe_kernel:
+        record.event("unsafe_kernel")
+    if cfg.model_dir is not None and "exec" not in available:
+        made = _kernel_executor(run_dir, cfg, record, allow_unsafe_kernel)
+        if isinstance(made, str):
+            unavailable["exec"] = made
+        else:
+            available["exec"] = made
     runner = JobRunner(store, ledger, available, _BUDGET_KIND)
     finish_lock = threading.Lock()
     finished = any(e["event"] == "finish" for e in record.read())
@@ -74,6 +116,9 @@ def build_server(
         with finish_lock:
             if finished:
                 return {"error": "run already finished"}
+            if kind in unavailable:
+                record.event("sandbox_unavailable", tool=tool, error=unavailable[kind])
+                return {"error": unavailable[kind]}
             if kind not in available:
                 record.event("tool_unavailable", tool=tool)
                 return {"error": f"{tool} is not available yet"}
@@ -129,9 +174,14 @@ def main(argv: list[str] | None = None) -> int:
     """Run the server on stdio for ``RUN_DIR``; exit code 2 if the run directory is bad."""
     parser = argparse.ArgumentParser(prog="python -m astro_weights.mcp")
     parser.add_argument("run_dir", metavar="RUN_DIR", type=Path, help="run directory")
+    parser.add_argument(
+        "--unsafe-kernel",
+        action="store_true",
+        help="run agent code without an OS sandbox when none works (never safe)",
+    )
     args = parser.parse_args(argv)
     try:
-        server = build_server(args.run_dir)
+        server = build_server(args.run_dir, allow_unsafe_kernel=args.unsafe_kernel)
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
