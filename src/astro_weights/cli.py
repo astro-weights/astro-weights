@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import secrets
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -11,7 +12,7 @@ import numpy as np
 from safetensors import SafetensorError
 
 from astro_weights import __version__
-from astro_weights.edits import LowRankDelta, build_edit, load_recipe
+from astro_weights.edits import Edit, LowRankDelta, build_edit, load_recipe
 from astro_weights.eval import (
     Record,
     check_headers,
@@ -27,8 +28,10 @@ from astro_weights.export import (
     read_base_weight,
     read_peft,
     save_peft,
+    tensor_sha256,
     write_card,
 )
+from astro_weights.export.base import _shard
 from astro_weights.export.peft import CONFIG, MANIFEST, WEIGHTS
 
 _ERRORS = (
@@ -226,6 +229,81 @@ def _build(
     return 0
 
 
+def _splice_merged(
+    edit: Edit, base_model: Path, splice: Path, merged: Path, out_type: str
+) -> tuple[str, list[str]]:
+    """Write `splice` with the edit merged in to `merged`; return (path, tensor names).
+
+    Raises ValueError (message ready to print) before any file exists, except the
+    temp file, which is removed on failure.
+    """
+    try:
+        from astro_weights.export.gguf import (
+            gguf_tensor_name,
+            splice_gguf,
+            verify_splice,
+        )
+    except ImportError as e:
+        raise ValueError("--splice needs: pip install 'astro-weights[gguf]'") from e
+    names: dict[str, str] = {}
+    for d in edit.deltas:
+        names[d.module] = gguf_tensor_name(d.module)
+    if len(set(names.values())) != len(names):
+        raise ValueError("two modules map to the same GGUF tensor")
+    replace: dict[str, np.ndarray] = {}
+    for d in edit.deltas:
+        key = d.module + ".weight"
+        want = edit.base_sha256.get(key)
+        if want is not None and tensor_sha256(_shard(base_model, key), key) != want:
+            raise ValueError(
+                f"{d.module}: base weight in {base_model} does not match the "
+                "adapter's recorded base hash; wrong base model?"
+            )
+        w0 = read_base_weight(base_model, key)
+        if w0.shape != d.shape:
+            raise ValueError(
+                f"{d.module}: base weight shape {w0.shape} vs adapter delta {d.shape}"
+            )
+        replace[names[d.module]] = w0 + d.dense()
+    tmp = merged.with_name(f"{merged.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        splice_gguf(splice, tmp, replace, out_type)
+        problems = verify_splice(splice, tmp, list(replace))
+        if problems:
+            raise ValueError("spliced GGUF failed verification: " + "; ".join(problems))
+        tmp.replace(merged)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return str(merged), sorted(replace)
+
+
+def _splice_args_error(
+    directory: Path,
+    splice: Path | None,
+    base_model: Path | None,
+    merged: Path | None,
+    out_type: str | None,
+    force: bool,
+) -> str | None:
+    """First problem with the --splice flags, or None."""
+    if splice is None:
+        if base_model or merged or out_type:
+            return "--base-model, --merged and --out-type need --splice"
+        return None
+    if base_model is None or merged is None:
+        return "--splice needs --base-model DIR and --merged OUT.gguf"
+    if not splice.is_file():
+        return f"--splice {splice} is not a file"
+    if merged.exists() and not force:
+        return f"{merged} exists; pass --force to overwrite"
+    if merged.exists() and merged.samefile(splice):
+        return f"--merged {merged} is the --splice base file"
+    if merged.resolve().is_relative_to(directory.resolve()):
+        return f"--merged {merged} is inside the adapter directory {directory}"
+    return None
+
+
 def _export(
     directory: Path,
     gguf: Path | None,
@@ -233,9 +311,16 @@ def _export(
     card: str | None,
     force: bool,
     as_json: bool,
+    splice: Path | None = None,
+    base_model: Path | None = None,
+    merged: Path | None = None,
+    out_type: str | None = None,
 ) -> int:
-    if gguf is None and card is None:
-        return _error("nothing to export; pass --gguf and/or --card")
+    if gguf is None and card is None and splice is None:
+        return _error("nothing to export; pass --gguf, --card and/or --splice")
+    bad = _splice_args_error(directory, splice, base_model, merged, out_type, force)
+    if bad is not None:
+        return _error(bad)
     if gguf is not None and not (arch and arch.strip()):
         return _error("--gguf needs a non-empty --arch, e.g. --arch qwen35")
     if gguf is not None and gguf.exists() and not force:
@@ -255,8 +340,16 @@ def _export(
     if problems:
         return _error("adapter failed verification: " + "; ".join(problems))
     written: list[str] = []
+    replaced: list[str] = []
+    kind = out_type or "q8_0"
     try:
         text = model_card(edit, "adapter", card) if card is not None else None
+        if splice is not None and base_model is not None and merged is not None:
+            try:
+                path, replaced = _splice_merged(edit, base_model, splice, merged, kind)
+            except ValueError as e:
+                return _error(str(e))
+            written.append(path)
         if gguf is not None and arch is not None:
             try:
                 from astro_weights.export.gguf import save_lora_gguf
@@ -269,7 +362,10 @@ def _export(
     except _ERRORS as e:
         return _fail(directory, e)
     if as_json:
-        _emit({"written": written})
+        extra: dict[str, object] = (
+            {"replaced": replaced, "out_type": kind} if splice is not None else {}
+        )
+        _emit({"written": written, **extra})
     else:
         for w in written:
             print(f"wrote {w}")
@@ -349,7 +445,8 @@ def main(argv: list[str] | None = None) -> int:
         help="write into a non-empty DIR (other files, e.g. an old README.md, are kept)",
     )
     p = sub.add_parser(
-        "export", help="write a GGUF LoRA and/or model card for an adapter"
+        "export",
+        help="write a GGUF LoRA, a merged GGUF and/or model card for an adapter",
     )
     p.add_argument("directory", metavar="DIR", type=Path, help="adapter directory")
     p.add_argument(
@@ -358,6 +455,29 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--arch", help="GGUF architecture, e.g. qwen35")
     p.add_argument(
         "--card", metavar="LICENSE", help="write README.md into DIR with this license"
+    )
+    p.add_argument(
+        "--splice",
+        metavar="BASE.gguf",
+        type=Path,
+        help="write a merged GGUF: this base GGUF with the adapter folded in",
+    )
+    p.add_argument(
+        "--base-model",
+        metavar="DIR",
+        type=Path,
+        help="with --splice: the base model directory (safetensors)",
+    )
+    p.add_argument(
+        "--merged",
+        metavar="OUT.gguf",
+        type=Path,
+        help="with --splice: the merged GGUF to write",
+    )
+    p.add_argument(
+        "--out-type",
+        choices=("q8_0", "f16", "bf16"),
+        help="with --splice: storage type of the changed tensors (default q8_0)",
     )
     p.add_argument("--force", action="store_true", help="overwrite existing outputs")
     _json_flag(p)
@@ -380,7 +500,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "export":
         return _export(
-            args.directory, args.gguf, args.arch, args.card, args.force, args.json
+            args.directory,
+            args.gguf,
+            args.arch,
+            args.card,
+            args.force,
+            args.json,
+            args.splice,
+            args.base_model,
+            args.merged,
+            args.out_type,
         )
     parser.print_help()
     return 2
