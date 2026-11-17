@@ -6,6 +6,7 @@ import json
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -441,3 +442,32 @@ def test_non_str_keys_rejected(
     with pytest.raises(ValueError, match="params"):
         store.submit("k", params)  # type: ignore[arg-type]
     assert list(_jobs_dir(store).iterdir()) == []
+
+
+def test_mapping_proxy_non_str_key_rejected(store: HandleStore) -> None:
+    with pytest.raises(ValueError, match="params"):
+        store.submit("k", MappingProxyType({1: "a"}))  # type: ignore[dict-item]
+    assert list(_jobs_dir(store).iterdir()) == []
+
+
+def test_mapping_proxy_str_keys_ok(store: HandleStore) -> None:
+    job = store.submit("k", MappingProxyType({"a": 1}))
+    assert store.get(job.handle).params == {"a": 1}
+
+
+def test_circular_params_rejected(store: HandleStore) -> None:
+    params: dict[str, object] = {"a": []}
+    params["a"].append(params)  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="params"):
+        store.submit("k", params)
+    assert list(_jobs_dir(store).iterdir()) == []
+
+
+def test_circular_result_rejected(store: HandleStore) -> None:
+    job = store.submit("k", {})
+    store.start(job.handle)
+    result: dict[str, object] = {}
+    result["me"] = result
+    with pytest.raises(ValueError, match="result"):
+        store.finish(job.handle, result)
+    assert store.get(job.handle).state == "running"

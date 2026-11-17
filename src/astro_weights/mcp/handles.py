@@ -85,8 +85,10 @@ def _check_keys(value: object) -> None:
 def _json_copy(value: Mapping[str, Any], what: str) -> dict[str, Any]:
     """Round-trip through JSON; raise ValueError if the value is not JSON-serialisable."""
     try:
-        _check_keys(value)
-        copy = json.loads(json.dumps(dict(value), allow_nan=False))
+        plain = dict(value)
+        text = json.dumps(plain, allow_nan=False)  # rejects cycles before the key walk
+        _check_keys(plain)
+        copy = json.loads(text)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{what} is not JSON-serialisable: {exc}") from exc
     return cast("dict[str, Any]", copy)
