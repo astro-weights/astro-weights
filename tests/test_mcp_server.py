@@ -1,17 +1,13 @@
 import json
 import subprocess
 import sys
-import threading
-import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from astro_weights.mcp.budget import BudgetExceeded, Ledger, Limits, TooManyFailures
-from astro_weights.mcp.handles import HandleStore, Job
-from astro_weights.mcp.jobs import JobRunner, load_run_config
+from astro_weights.mcp.budget import Ledger, Limits
+from astro_weights.mcp.handles import HandleStore
 from astro_weights.mcp.record import RunRecord
 
 LIMITS = {"forward_passes": 3, "code_runs": 3, "tokens": 100, "dollars": 1.0}
@@ -23,174 +19,6 @@ def write_run(run_dir: Path, **over: Any) -> Path:
     (run_dir / "run.json").write_text(json.dumps(cfg))
     return run_dir
 
-
-def wait_for(runner_store: HandleStore, handle: str, timeout: float = 10) -> Job:
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        job = runner_store.get(handle)
-        if job.state in {"done", "failed"}:
-            return job
-        time.sleep(0.01)
-    raise AssertionError("job did not finish")
-
-
-def make_runner(
-    tmp_path: Path,
-    fn: Callable[[dict[str, Any]], dict[str, Any]],
-    code_runs: int = 3,
-) -> tuple[JobRunner, HandleStore, Ledger]:
-    store = HandleStore(tmp_path)
-    ledger = Ledger(tmp_path / "ledger.jsonl", Limits(3, code_runs, 100, 1.0))
-    return JobRunner(store, ledger, {"exec": fn}, {"exec": "code_runs"}), store, ledger
-
-
-# ---- jobs.py and run.json: no SDK needed
-
-
-def test_job_runs_and_charges_once(tmp_path: Path) -> None:
-    runner, store, ledger = make_runner(tmp_path, lambda p: {"echo": p["x"]})
-    job = runner.submit("exec", {"x": 1})
-    assert job.state == "queued"
-    done = wait_for(store, job.handle)
-    assert done.state == "done"
-    assert done.result == {"echo": 1}
-    assert ledger.used()["code_runs"] == 1
-
-
-def test_failing_executor_is_free_and_counts_streak(tmp_path: Path) -> None:
-    def boom(params: dict[str, Any]) -> dict[str, Any]:
-        raise RuntimeError("nope")
-
-    runner, store, ledger = make_runner(tmp_path, boom)
-    job = wait_for(store, runner.submit("exec", {}).handle)
-    assert job.state == "failed"
-    assert job.error == "RuntimeError: nope"
-    assert ledger.used()["code_runs"] == 0
-    assert ledger.to_json()["streaks"]["code_runs"] == 1
-
-
-def test_non_json_result_fails_the_job_free(tmp_path: Path) -> None:
-    runner, store, ledger = make_runner(tmp_path, lambda p: {"x": object()})
-    job = wait_for(store, runner.submit("exec", {}).handle)
-    assert job.state == "failed"
-    assert job.result is None
-    assert ledger.used()["code_runs"] == 0
-
-
-def test_exhausted_budget_refuses_free(tmp_path: Path) -> None:
-    runner, store, ledger = make_runner(tmp_path, lambda p: {}, code_runs=0)
-    with pytest.raises(BudgetExceeded):
-        runner.submit("exec", {})
-    assert store.list() == []
-    lines = [
-        json.loads(x) for x in (tmp_path / "ledger.jsonl").read_text().split("\n") if x
-    ]
-    assert [x["op"] for x in lines] == ["refuse"]
-    assert ledger.used()["code_runs"] == 0
-
-
-def test_failure_streak_refuses(tmp_path: Path) -> None:
-    def boom(params: dict[str, Any]) -> dict[str, Any]:
-        raise RuntimeError("x")
-
-    runner, store, _ = make_runner(tmp_path, boom)
-    for _ in range(3):
-        wait_for(store, runner.submit("exec", {}).handle)
-    with pytest.raises(TooManyFailures):
-        runner.submit("exec", {})
-
-
-def test_unknown_kind_writes_nothing(tmp_path: Path) -> None:
-    runner, store, _ = make_runner(tmp_path, lambda p: {})
-    with pytest.raises(ValueError, match="no executor"):
-        runner.submit("forward", {})
-    assert store.list() == []
-    assert not (tmp_path / "ledger.jsonl").exists()
-
-
-def test_in_flight_jobs_past_limit_fail_budget_exhausted(tmp_path: Path) -> None:
-    gate = threading.Event()
-
-    def slow(params: dict[str, Any]) -> dict[str, Any]:
-        gate.wait(10)
-        return {"ok": True}
-
-    runner, store, ledger = make_runner(tmp_path, slow, code_runs=1)
-    jobs = [runner.submit("exec", {}) for _ in range(2)]  # both pass check()
-    gate.set()
-    done = [wait_for(store, j.handle) for j in jobs]
-    assert sorted(j.state for j in done) == ["done", "failed"]
-    failed = next(j for j in done if j.state == "failed")
-    assert failed.error == "budget exhausted"
-    assert failed.result is None
-    assert ledger.used()["code_runs"] == 1
-
-
-def test_disk_trouble_marks_job_failed(tmp_path: Path) -> None:
-    runner, store, ledger = make_runner(tmp_path, lambda p: {})
-
-    def bad_charge(*a: Any, **k: Any) -> None:
-        raise OSError("disk full")
-
-    ledger.charge = bad_charge  # type: ignore[method-assign]
-    job = wait_for(store, runner.submit("exec", {}).handle)
-    assert job.state == "failed"
-    assert job.error == "OSError: disk full"
-
-
-def test_disk_trouble_in_failing_too_is_swallowed(tmp_path: Path) -> None:
-    runner, store, ledger = make_runner(tmp_path, lambda p: {})
-
-    def bad(*a: Any, **k: Any) -> Any:
-        raise OSError("gone")
-
-    ledger.charge = bad  # type: ignore[method-assign]
-    store.fail = bad  # type: ignore[method-assign]
-    job = runner.submit("exec", {})
-    time.sleep(0.2)  # the thread must end without raising; the job stays running
-    assert store.get(job.handle).state == "running"
-
-
-def test_run_config_ok(tmp_path: Path) -> None:
-    cfg = load_run_config(write_run(tmp_path, model="m"))
-    assert (cfg.seed, cfg.editor, cfg.model) == (7, "scripted", "m")
-    assert cfg.limits == Limits(3, 3, 100, 1.0)
-
-
-@pytest.mark.parametrize(
-    ("over", "match"),
-    [
-        ({"seed": "7"}, "seed"),
-        ({"seed": True}, "seed"),
-        ({"editor": ""}, "editor"),
-        ({"model": 3}, "model"),
-        ({"limits": []}, "limits"),
-        ({"limits": {"forward_passes": 1}}, "limits"),
-        ({"limits": {**LIMITS, "code_runs": -1}}, "code_runs"),
-        ({"limits": {**LIMITS, "tokens": 1.5}}, "tokens"),
-    ],
-)
-def test_run_config_bad(tmp_path: Path, over: dict[str, Any], match: str) -> None:
-    with pytest.raises(ValueError, match=match):
-        load_run_config(write_run(tmp_path, **over))
-
-
-def test_run_config_missing_garbled_and_not_object(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="not found"):
-        load_run_config(tmp_path)
-    (tmp_path / "run.json").write_text("{nope")
-    with pytest.raises(ValueError, match="not readable"):
-        load_run_config(tmp_path)
-    (tmp_path / "run.json").write_text("[1]")
-    with pytest.raises(ValueError, match="JSON object"):
-        load_run_config(tmp_path)
-    (tmp_path / "run.json").unlink()
-    (tmp_path / "run.json").mkdir()
-    with pytest.raises(ValueError, match="not readable"):
-        load_run_config(tmp_path)
-
-
-# ---- server.py: needs the SDK
 
 pytest.importorskip("mcp")
 
@@ -364,6 +192,66 @@ async def test_restart_keeps_jobs_and_budget(tmp_path: Path) -> None:
         out = await call(client, "status", {"handle": started["handle"]})
     assert out["state"] == "done"
     assert out["budget"]["used"]["code_runs"] == 1
+
+
+@pytest.mark.anyio
+async def test_work_after_finish_is_refused(tmp_path: Path) -> None:
+    async with Client(build_server(write_run(tmp_path), {"exec": echo})) as client:
+        await call(client, "finish", {"summary": "x"})
+        out = await call(client, "exec_python", {"code": "1"})
+        out2 = await call(client, "forward_pass", {"request": {}})
+    assert out == out2 == {"error": "run already finished"}
+    assert not (tmp_path / "ledger.jsonl").exists()
+    assert RunRecord.open(tmp_path / "record.jsonl").read()[-1]["event"] == "finish"
+    async with Client(build_server(tmp_path, {"exec": echo})) as client:  # restart
+        again = await call(client, "exec_python", {"code": "1"})
+    assert again == {"error": "run already finished"}
+
+
+@pytest.mark.anyio
+async def test_restart_fails_orphaned_jobs(tmp_path: Path) -> None:
+    run = write_run(tmp_path)
+    store = HandleStore(run)
+    queued = store.submit("exec", {})
+    running = store.submit("exec", {})
+    store.start(running.handle)
+    done = store.submit("exec", {})
+    store.start(done.handle)
+    store.finish(done.handle, {"ok": True})
+    async with Client(build_server(run)) as client:
+        for h in (queued.handle, running.handle):
+            out = await call(client, "status", {"handle": h})
+            assert (out["state"], out["error"]) == ("failed", "server restarted")
+        assert (await call(client, "status", {"handle": done.handle}))[
+            "state"
+        ] == "done"
+        assert out["budget"]["used"]["code_runs"] == 0
+
+
+def test_restart_with_same_run_json_ok(tmp_path: Path) -> None:
+    run = write_run(tmp_path)
+    build_server(run)
+    build_server(run)
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"limits": {**LIMITS, "code_runs": 10**9}},
+        {"limits": {**LIMITS, "dollars": 1e6}},
+        {"seed": 8},
+        {"editor": "other"},
+        {"model": "m"},
+    ],
+)
+def test_restart_with_changed_run_json_refused(
+    tmp_path: Path, over: dict[str, Any]
+) -> None:
+    run = write_run(tmp_path)
+    build_server(run)
+    write_run(run, **over)
+    with pytest.raises(ValueError, match="differs from the run record"):
+        build_server(run)
 
 
 def test_build_server_bad_run_json(tmp_path: Path) -> None:

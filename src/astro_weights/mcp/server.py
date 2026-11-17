@@ -23,7 +23,7 @@ except ModuleNotFoundError as e:
 
 from astro_weights.mcp.budget import BudgetExceeded, Kind, Ledger, TooManyFailures
 from astro_weights.mcp.handles import HandleStore, UnknownHandle
-from astro_weights.mcp.jobs import Executor, JobRunner, load_run_config
+from astro_weights.mcp.jobs import Executor, JobRunner, RunConfig, load_run_config
 from astro_weights.mcp.record import RunRecord
 
 __all__ = ["build_server", "main"]
@@ -32,18 +32,23 @@ _BUDGET_KIND: dict[str, Kind] = {"exec": "code_runs", "forward": "forward_passes
 _SUMMARY_MAX = 2000
 
 
-def _open_record(
-    run_dir: Path, cfg_seed: int, editor: str, model: str | None, limits: Any
-) -> RunRecord:
+def _open_record(run_dir: Path, cfg: RunConfig) -> RunRecord:
     path = run_dir / "record.jsonl"
+    config = {"limits": asdict(cfg.limits)}
     if path.exists() and path.stat().st_size > 0:
-        return RunRecord.open(path)
+        record = RunRecord.open(path)
+        first = record.read()[0]
+        same = (
+            first.get("seed") == cfg.seed
+            and first.get("editor") == cfg.editor
+            and first.get("model") == cfg.model
+            and first.get("config") == config
+        )
+        if not same:
+            raise ValueError("run.json differs from the run record")
+        return record
     return RunRecord.start(
-        path,
-        seed=cfg_seed,
-        config={"limits": asdict(limits)},
-        editor=editor,
-        model=model,
+        path, seed=cfg.seed, config=config, editor=cfg.editor, model=cfg.model
     )
 
 
@@ -55,16 +60,26 @@ def build_server(
     cfg = load_run_config(run_dir)
     store = HandleStore(run_dir)
     ledger = Ledger(run_dir / "ledger.jsonl", cfg.limits)
-    record = _open_record(run_dir, cfg.seed, cfg.editor, cfg.model, cfg.limits)
+    record = _open_record(run_dir, cfg)
+    for job in store.list():  # a restart killed their threads; they can never finish
+        if job.state in ("queued", "running"):
+            store.fail(job.handle, "server restarted")
     available = dict(executors or {})
     runner = JobRunner(store, ledger, available, _BUDGET_KIND)
     finish_lock = threading.Lock()
+    finished = any(e["event"] == "finish" for e in record.read())
     server: MCPServer[Any] = MCPServer("astro-weights")
 
     def submit(tool: str, kind: str, params: dict[str, Any]) -> dict[str, Any]:
-        if kind not in available:
-            record.event("tool_unavailable", tool=tool)
-            return {"error": f"{tool} is not available yet"}
+        with finish_lock:
+            if finished:
+                return {"error": "run already finished"}
+            if kind not in available:
+                record.event("tool_unavailable", tool=tool)
+                return {"error": f"{tool} is not available yet"}
+            return _submit_locked(kind, params)
+
+    def _submit_locked(kind: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
             job = runner.submit(kind, params)
         except (BudgetExceeded, TooManyFailures) as exc:
@@ -97,12 +112,14 @@ def build_server(
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
     def finish(summary: str) -> dict[str, Any]:
         """End the run and write the run record. Works once."""
+        nonlocal finished
         with finish_lock:
-            if any(e["event"] == "finish" for e in record.read()):
+            if finished:
                 return {"error": "run already finished"}
             record.event("summary", text=summary[:_SUMMARY_MAX])
             budget = ledger.to_json()
             record.finish(budget=budget, outcome="finished")
+            finished = True
         return {"state": "finished", "budget": budget}
 
     return server

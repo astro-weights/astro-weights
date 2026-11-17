@@ -45,7 +45,7 @@ def load_run_config(run_dir: Path) -> RunConfig:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise ValueError(f"{path} not found") from None
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise ValueError(f"{path} is not readable JSON: {exc}") from exc
     if not isinstance(raw, dict):
         raise ValueError(f"{path} must hold a JSON object")  # noqa: TRY004
@@ -111,7 +111,7 @@ class JobRunner:
             self._store.start(handle)
             try:
                 result = _json_copy(fn(dict(job.params)), "result")
-            except Exception as exc:  # noqa: BLE001
+            except BaseException as exc:  # noqa: BLE001 - exec'd code may sys.exit()
                 self._store.fail(handle, f"{type(exc).__name__}: {exc}")
                 self._ledger.fail(budget, str(exc), ref=handle)
                 return
