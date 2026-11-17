@@ -49,7 +49,7 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
-      - run: uv run --extra hf --extra eval --extra gguf pytest -m "not gpu" --cov=astro_weights --cov-branch --cov-fail-under=95
+      - run: uv run --extra hf --extra eval --extra gguf --extra mcp pytest -m "not gpu" --cov=astro_weights --cov-branch --cov-fail-under=95
 
   wheel-smoke:
     runs-on: ubuntu-latest
@@ -75,7 +75,7 @@ jobs:
           "$RUNNER_TEMP/smoke/bin/python" -c "import astro_weights, astro_weights.edits, astro_weights.export, astro_weights.eval, astro_weights.directions"
           "$RUNNER_TEMP/smoke/bin/python" - <<'PY'
           import importlib.util
-          for name in ("torch", "transformers", "peft"):
+          for name in ("torch", "transformers", "peft", "mcp"):
               assert importlib.util.find_spec(name) is None, f"{name} importable in core install"
           PY
       - name: CLI version matches the wheel
@@ -108,7 +108,7 @@ jobs:
         run: uv run --resolution lowest-direct pytest -m "not gpu"
       - name: All extras, lowest direct dependencies
         # --no-sources: torch from PyPI; the CPU index has no plain 2.4.0 Linux wheel (only 2.4.0+cpu)
-        run: uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf pytest -m "not gpu"
+        run: uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp pytest -m "not gpu"
 
   test-os:
     runs-on: ${{ matrix.os }}
