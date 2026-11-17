@@ -6,6 +6,7 @@ Standard library only.
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import re
@@ -59,12 +60,32 @@ class Job:
         }
 
 
-_Jobs = list[Job]
+_LOCKS: dict[Path, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(root: Path) -> threading.Lock:
+    """One lock per resolved root, shared by every store on it in this process."""
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(root.resolve(), threading.Lock())
+
+
+def _check_keys(value: object) -> None:
+    """Raise TypeError on any non-str dict key, at any depth."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"non-string key {key!r}")
+            _check_keys(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _check_keys(item)
 
 
 def _json_copy(value: Mapping[str, Any], what: str) -> dict[str, Any]:
     """Round-trip through JSON; raise ValueError if the value is not JSON-serialisable."""
     try:
+        _check_keys(value)
         copy = json.loads(json.dumps(dict(value), allow_nan=False))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{what} is not JSON-serialisable: {exc}") from exc
@@ -76,13 +97,33 @@ def _check_handle(handle: str) -> None:
         raise UnknownHandle(handle)
 
 
+def _parse(handle: str, raw: Any) -> Job:
+    """Build a Job from decoded JSON, raising ValueError on any drift."""
+    kind, state = raw["kind"], raw["state"]
+    if raw["handle"] != handle or not isinstance(kind, str):
+        raise ValueError("inconsistent fields")
+    if not handle.startswith(kind + "-") or state not in _STATES:
+        raise ValueError("inconsistent fields")
+    params, result, error = raw["params"], raw["result"], raw["error"]
+    if not isinstance(params, dict) or not (result is None or isinstance(result, dict)):
+        raise ValueError("params and result must be objects")
+    if not (error is None or isinstance(error, str)):
+        raise ValueError("error must be a string")
+    times = (raw["created"], raw["updated"])
+    if not all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in times):
+        raise ValueError("timestamps must be numbers")
+    return Job(
+        handle, kind, state, params, result, error, float(times[0]), float(times[1])
+    )
+
+
 class HandleStore:
     """Job files under ``root/jobs``; safe to share between threads of one process."""
 
     def __init__(self, root: Path) -> None:
         self._dir = Path(root) / "jobs"
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = _lock_for(self._dir)
 
     def submit(self, kind: str, params: Mapping[str, Any]) -> Job:
         """Create a queued job and return it."""
@@ -115,17 +156,19 @@ class HandleStore:
 
     def finish(self, handle: str, result: Mapping[str, Any]) -> Job:
         """Move running -> done and store the result."""
+        _check_handle(handle)
         return self._move(
             handle, {"running"}, "done", result=_json_copy(result, "result")
         )
 
     def fail(self, handle: str, error: str) -> Job:
         """Move queued|running -> failed and store the (capped) error text."""
+        _check_handle(handle)
         return self._move(
             handle, {"queued", "running"}, "failed", error=error[:_ERROR_CAP]
         )
 
-    def list(self, kind: str | None = None) -> _Jobs:
+    def list(self, kind: str | None = None) -> builtins.list[Job]:
         """Return all jobs (optionally one kind), oldest first."""
         with self._lock:
             jobs = [
@@ -173,19 +216,7 @@ class HandleStore:
         except FileNotFoundError:
             raise UnknownHandle(handle) from None
         try:
-            raw = json.loads(text)
-            if raw["handle"] != handle or raw["state"] not in _STATES:
-                raise ValueError("inconsistent fields")
-            return Job(
-                handle=raw["handle"],
-                kind=str(raw["kind"]),
-                state=raw["state"],
-                params=dict(raw["params"]),
-                result=None if raw["result"] is None else dict(raw["result"]),
-                error=None if raw["error"] is None else str(raw["error"]),
-                created=float(raw["created"]),
-                updated=float(raw["updated"]),
-            )
+            return _parse(handle, json.loads(text))
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError(f"corrupt job file for {handle}: {exc}") from exc
 

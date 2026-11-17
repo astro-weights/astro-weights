@@ -167,6 +167,7 @@ def test_malformed_handles_unknown(store: HandleStore, handle: str) -> None:
         lambda: store.get(handle),
         lambda: store.start(handle),
         lambda: store.finish(handle, {}),
+        lambda: store.finish(handle, {"a": object()}),
         lambda: store.fail(handle, "x"),
     ]
     for call in calls:
@@ -183,9 +184,17 @@ def test_malformed_never_touches_disk(
     monkeypatch.setattr(Path, "read_text", boom)
     monkeypatch.setattr(Path, "open", boom)
     monkeypatch.setattr(Path, "replace", boom)
+    monkeypatch.setattr(Path, "unlink", boom)
+    monkeypatch.setattr(Path, "glob", boom)
     for handle in MALFORMED:
-        with pytest.raises(UnknownHandle):
-            store.get(handle)
+        for call in (
+            store.get,
+            store.start,
+            lambda h: store.finish(h, {}),
+            lambda h: store.fail(h, "x"),
+        ):
+            with pytest.raises(UnknownHandle):
+                call(handle)
     with pytest.raises(UnknownHandle):
         store.get(123)  # type: ignore[arg-type]
 
@@ -295,6 +304,13 @@ def test_corrupt_file_raises_value_error(store: HandleStore) -> None:
         lambda d: d.update(params=[1]),
         lambda d: d.update(created="soon"),
         lambda d: d.update(result=5),
+        lambda d: d.update(result=[["a", 1]]),
+        lambda d: d.update(params=[["a", 1]]),
+        lambda d: d.update(kind=5),
+        lambda d: d.update(kind="other"),
+        lambda d: d.update(error=5),
+        lambda d: d.update(created=True),
+        lambda d: d.update(updated=None),
     ],
 )
 def test_invalid_fields_raise(store: HandleStore, mutate: object) -> None:
@@ -382,3 +398,46 @@ def test_list_ignores_foreign_files(store: HandleStore) -> None:
     (_jobs_dir(store) / "notes.json").write_text("{}")
     (_jobs_dir(store) / "README").write_text("x")
     assert store.list() == [job]
+
+
+def test_concurrent_finish_separate_stores_one_winner(tmp_path: Path) -> None:
+    job = HandleStore(tmp_path).submit("k", {})
+    HandleStore(tmp_path).start(job.handle)
+    stores = [HandleStore(tmp_path) for _ in range(8)]
+    barrier = threading.Barrier(8)
+    wins: list[int] = []
+    losses: list[BaseException] = []
+
+    def worker(i: int) -> None:
+        barrier.wait()
+        try:
+            stores[i].finish(job.handle, {"winner": i})
+            wins.append(i)
+        except BaseException as exc:  # noqa: BLE001
+            losses.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(wins) == 1
+    assert len(losses) == 7
+    assert all(isinstance(e, BadTransition) for e in losses)
+    assert HandleStore(tmp_path).get(job.handle).result == {"winner": wins[0]}
+
+
+def test_same_root_shares_lock(tmp_path: Path) -> None:
+    assert HandleStore(tmp_path)._lock is HandleStore(tmp_path / "x" / "..")._lock
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{1: "a"}, {1: "a", "1": "b"}, {"x": {2: 3}}, {"x": [{None: 1}]}, {"x": ({3: 1},)}],
+)
+def test_non_str_keys_rejected(
+    store: HandleStore, params: dict[object, object]
+) -> None:
+    with pytest.raises(ValueError, match="params"):
+        store.submit("k", params)  # type: ignore[arg-type]
+    assert list(_jobs_dir(store).iterdir()) == []
