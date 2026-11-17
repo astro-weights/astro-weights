@@ -153,7 +153,7 @@ def python_paths(packages: Sequence[str] = ("numpy",)) -> list[Path]:
     """Directories and files ``python -I -S`` plus ``packages`` must read.
 
     The real interpreter (venv symlinks resolved), its standard library,
-    lib-dynload and shared libpython, each package directory and the
+    lib-dynload and the shared libraries in its ``lib`` dir, each package directory and the
     ``<package>.libs`` directory that Linux wheels bundle native libraries in.
     Not site-packages as a whole. The child adds each package's parent directory
     to ``sys.path`` itself.
@@ -161,7 +161,8 @@ def python_paths(packages: Sequence[str] = ("numpy",)) -> list[Path]:
     base = Path(sys.base_prefix)
     out = [Path(sys.executable).resolve(), Path(sysconfig.get_paths()["stdlib"])]
     out += [Path(p) for p in sys.path if Path(p).name == "lib-dynload"]
-    out += sorted((base / "lib").glob("libpython3*"))
+    # shared libs lib-dynload links against: libpython, and libffi etc. on conda builds
+    out += sorted(f for g in ("lib*.so*", "lib*.dylib") for f in (base / "lib").glob(g))
     out += [f for f in (base / "Python",) if f.is_file()]  # macOS framework build
     for name in packages:
         spec = importlib.util.find_spec(name)
