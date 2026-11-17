@@ -803,6 +803,16 @@ def test_splice_base_shape_mismatch(
     _no_files(sp)
 
 
+def test_splice_q8_0_row_length(sp: Splice, capsys: pytest.CaptureFixture[str]) -> None:
+    w0 = np.ones((16, 50), np.float32)
+    save_file({SPLICE_KEY: w0}, str(sp.model / "model.safetensors"))
+    delta = LowRankDelta(SPLICE_MODULE, SB, SA[:, :50].copy())
+    save_peft(Edit((delta,), "org/tiny"), sp.adapter, overwrite=True)
+    assert main(sp.argv()) == 2
+    assert "divisible by 32" in capsys.readouterr().err
+    _no_files(sp)
+
+
 def test_splice_unsupported_module(
     sp: Splice, capsys: pytest.CaptureFixture[str]
 ) -> None:

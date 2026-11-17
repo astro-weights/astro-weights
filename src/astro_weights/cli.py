@@ -264,6 +264,11 @@ def _splice_merged(
             raise ValueError(
                 f"{d.module}: base weight shape {w0.shape} vs adapter delta {d.shape}"
             )
+        if out_type == "q8_0" and d.shape[1] % 32:
+            raise ValueError(
+                f"{d.module}: q8_0 needs a row length divisible by 32, got "
+                f"{d.shape[1]}; use --out-type f16"
+            )
         replace[names[d.module]] = w0 + d.dense()
     tmp = merged.with_name(f"{merged.name}.{secrets.token_hex(4)}.tmp")
     try:
