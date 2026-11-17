@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.1.3] - 2026-11-17
+
+### Added
+
+- Adapters can now be merged into a quantized base GGUF with `astro-weights export ADAPTER --splice BASE.gguf --base-model DIR --merged OUT.gguf`, giving one file that Ollama and LM Studio load directly.
+
 ## [0.1.2] - 2026-11-16
 
 ### Added
@@ -142,6 +148,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.1.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.3
 [0.1.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.2
 [0.1.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.1
 [0.1.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.0
