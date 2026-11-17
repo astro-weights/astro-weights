@@ -24,6 +24,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, BinaryIO
 
+__all__: list[str] = []
+
 OUTPUT = "stdout.txt"
 PARENT_POLL_S = 1.0
 

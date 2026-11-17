@@ -18,6 +18,7 @@ import socket
 import sys
 import threading
 import time
+import tracemalloc
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -211,6 +212,30 @@ def test_restart_marker_survives_server_restart(
     assert not k3.exec("1")["restarted"]
 
 
+def test_cell_cannot_hide_or_fake_a_restart(
+    make: Make, unsafe: bool, tmp_path: Path
+) -> None:
+    """The marker lives outside the work dir; work-dir files named like it do nothing."""
+    k, _, _ = make(unsafe)
+    ok(k, "v = 1")
+    marker = tmp_path / "run" / kmod.MARKER
+    assert marker.exists()
+    for name in ("kernel.pid", kmod.MARKER):
+        ok(k, f"open({name!r}, 'w').close()\nimport os; os.remove({name!r})")
+    if not unsafe:  # in the sandbox the real marker cannot be touched
+        assert "Error" in fail(k, f"import os; os.remove({str(marker.resolve())!r})")
+    k.close()
+    k2, _, _ = make(unsafe)
+    assert k2.exec("1")["restarted"]
+    other = tmp_path / "other"
+    k3, _, _ = make(unsafe, run=other)
+    ok(k3, f"open({kmod.MARKER!r}, 'w').close()")  # planted in work
+    k3.close()
+    (other / kmod.MARKER).unlink()
+    k4, _, _ = make(unsafe, run=other)
+    assert not k4.exec("1")["restarted"]
+
+
 def test_survives_the_thread_that_started_it(make: Make, unsafe: bool) -> None:
     """bwrap --die-with-parent fires when the starting thread ends."""
     k, _, _ = make(unsafe)
@@ -220,6 +245,28 @@ def test_survives_the_thread_that_started_it(make: Make, unsafe: bool) -> None:
     time.sleep(0.5)
     r = k.exec("kept")
     assert r == {"ok": True, "output": "5\n", "restarted": False}
+
+
+def test_protocol_flood_keeps_parent_memory_bounded(make: Make, unsafe: bool) -> None:
+    """A cell writing requests it never reads replies to: back-pressure, then kill."""
+    k, _, _ = make(unsafe, timeout_s=5)
+    ok(k, "1")
+    flood = (
+        f"{SRV}import json\n"
+        "line = json.dumps({'rpc': 'names', 'pad': 'x' * ((1 << 20) - 100)}).encode()\n"
+        "for _ in range(300):\n    srv._out.write(line + b'\\n')\n"
+        "srv._out.flush()\nimport time; time.sleep(60)"
+    )
+    tracemalloc.start()
+    try:
+        out = fail(k, flood)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert out.endswith("[kernel killed after 5 s; its variables are lost]")
+    assert peak < 64 << 20  # 300 MiB were sent
+    assert not k._reader.is_alive()
+    assert ok(k, "2") == "2\n"
 
 
 def test_concurrent_cells_run_one_at_a_time(make: Make, unsafe: bool) -> None:
@@ -574,6 +621,10 @@ def _npy_bytes() -> bytes:
             lambda f: f.write(_npy_bytes() + b"extra"),
             "size does not match",
         ),
+        (lambda f: f.write(b"\x93NUMPY\x01\x00\x10"), "cut short"),
+        (lambda f: f.write(b"\x93NUMPY\x01\x00\x40\x00" + b" " * 60), "cut short"),
+        (lambda f: f.write(b"\x93NUMPY\x01\x00\xff\xff" + b" " * 60), "over the"),
+        (lambda f: f.write(b"\x93NUMPY\x01\x00\x04\x00{}  "), "correct keys"),
     ],
 )
 def test_read_npy_rejects(tmp_path: Path, make_file: Any, msg: str) -> None:
@@ -582,6 +633,23 @@ def test_read_npy_rejects(tmp_path: Path, make_file: Any, msg: str) -> None:
         make_file(f)
     with pytest.raises(ValueError, match=msg):
         read_npy(p, (2, 3))
+
+
+@posix
+def test_huge_declared_header_read_bounded(tmp_path: Path) -> None:
+    """numpy would read the whole declared header (here ~4 GiB) before checking it."""
+    p = tmp_path / "a.npy"
+    with p.open("wb") as f:
+        f.write(b"\x93NUMPY\x02\x00" + (0xFFFFFFF0).to_bytes(4, "little"))
+        f.truncate(3 << 30)  # sparse: no disk used
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="over the 65536 byte cap"):
+            read_npy(p, (2, 3))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1 << 20
 
 
 def test_read_npy_cut_short(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

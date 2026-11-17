@@ -3,7 +3,8 @@
 ``Kernel.exec(code)`` runs one cell in a child process (``kernel_child.py``) and
 returns ``{"ok", "output", "restarted"}``. Cells share variables until the child is
 killed (wall clock limit, protocol error) or dies; the next cell then starts a fresh
-child and says ``restarted: true``. The first cell after a server restart says so too.
+child and says ``restarted: true``. The first cell after a server restart says so too
+(``run_dir/kernel.started`` exists).
 
 The child can read the interpreter and numpy, and write only ``run_dir/kernel``.
 It never sees the edits or the model: ``save_edit``, ``drop_edit``, ``edited``,
@@ -22,6 +23,7 @@ standard library only.
 
 import atexit
 import contextlib
+import io
 import json
 import os
 import queue
@@ -32,6 +34,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
@@ -52,7 +55,10 @@ START_TIMEOUT_S = 60.0
 ERROR_MAX = 2000
 OUTPUT = "stdout.txt"
 LOG = "kernel.log"
-MARKER = "kernel.pid"
+MARKER = "kernel.started"  # in run_dir, where the child cannot write
+MAX_HEADER = 1 << 16
+QUEUE_LINES = 4  # lines read ahead of the kernel thread; then the child's write blocks
+DRAIN_S = 5.0
 _TOKEN = re.compile(r"[0-9a-f]{32}")
 _SCRATCH = re.compile(r"(?:in|out)_[0-9a-f]{32}\.(?:npy|tmp)")
 _FLOATS = tuple(np.dtype(t) for t in ("<f2", "<f4", "<f8"))
@@ -98,13 +104,7 @@ def read_npy(path: Path, shape: tuple[int, int]) -> np.ndarray:
     is read, so a bad file costs no allocation; then exactly the data is read.
     """
     with _open_plain(path) as f:
-        version = np.lib.format.read_magic(f)
-        if version == (1, 0):
-            got, fortran, dtype = np.lib.format.read_array_header_1_0(f)
-        elif version == (2, 0):
-            got, fortran, dtype = np.lib.format.read_array_header_2_0(f)
-        else:
-            raise ValueError(f"unsupported .npy version {version}")
+        got, fortran, dtype = _read_header(f)
         if dtype not in _FLOATS:
             raise ValueError(f"array dtype {dtype} is not little-endian float16/32/64")
         if tuple(got) != shape:
@@ -118,6 +118,33 @@ def read_npy(path: Path, shape: tuple[int, int]) -> np.ndarray:
     if len(data) != nbytes:
         raise ValueError("array file was cut short")
     return np.frombuffer(data, dtype=dtype).reshape(shape)
+
+
+def _read_header(f: IO[bytes]) -> tuple[tuple[int, ...], bool, np.dtype[Any]]:
+    """(shape, fortran_order, dtype) of a .npy file; at most MAX_HEADER bytes read.
+
+    numpy's own readers read the whole declared header length (up to 4 GiB)
+    before checking it, so the length field is checked here first.
+    """
+    magic = f.read(8)
+    if len(magic) != 8 or magic[:6] != b"\x93NUMPY":
+        raise ValueError("not a .npy file (bad magic string)")
+    version = (magic[6], magic[7])
+    if version not in ((1, 0), (2, 0)):
+        raise ValueError(f"unsupported .npy version {version}")
+    size_field = f.read(2 if version == (1, 0) else 4)
+    if len(size_field) not in (2, 4):
+        raise ValueError(".npy header is cut short")
+    n = int.from_bytes(size_field, "little")
+    if n > MAX_HEADER or n > os.fstat(f.fileno()).st_size:
+        raise ValueError(f".npy header length {n} is over the {MAX_HEADER} byte cap")
+    raw = f.read(n)
+    if len(raw) != n:
+        raise ValueError(".npy header is cut short")
+    buf = io.BytesIO(size_field + raw)
+    if version == (1, 0):
+        return np.lib.format.read_array_header_1_0(buf, max_header_size=MAX_HEADER)
+    return np.lib.format.read_array_header_2_0(buf, max_header_size=MAX_HEADER)
 
 
 def write_npy(path: Path, arr: np.ndarray) -> None:
@@ -240,9 +267,11 @@ class Kernel:
             allow_unsafe=allow_unsafe,
         )
         # a kernel ran here before this process: its variables are gone
-        self._lost = (self.work / MARKER).exists()
+        self._marker = Path(run_dir).resolve() / MARKER
+        self._lost = self._marker.exists()
         self._proc: subprocess.Popen[bytes] | None = None
-        self._lines: queue.Queue[_Item] = queue.Queue()
+        self._lines: queue.Queue[_Item] = queue.Queue(QUEUE_LINES)
+        self._reader = threading.Thread()  # replaced by each start
         self._jobs: queue.Queue[tuple[str, Future[dict[str, Any]]] | None]
         self._jobs = queue.Queue()
         self._lock = threading.Lock()
@@ -350,12 +379,12 @@ class Kernel:
         finally:
             os.close(log_fd)
         self._proc = proc
-        self._lines = queue.Queue()
+        self._lines = queue.Queue(QUEUE_LINES)
         assert proc.stdout is not None
-        reader = threading.Thread(
+        self._reader = threading.Thread(
             target=_read_lines, args=(proc.stdout, self._lines), daemon=True
         )
-        reader.start()
+        self._reader.start()
         fired = threading.Event()
         end = self._converse(proc, None, "ready", START_TIMEOUT_S, fired)
         if not isinstance(end, dict):
@@ -368,10 +397,7 @@ class Kernel:
                 what = f"failed to start: protocol error: {end}"
             tail = read_capped(self.work / LOG, 100_000)[-1500:]
             raise KernelError(f"kernel {what}: {tail}".strip())
-        (self.work / MARKER).unlink(missing_ok=True)
-        marker = os.open(self.work / MARKER, _CREATE, 0o600)
-        with os.fdopen(marker, "w") as f:
-            f.write(f"{proc.pid}\n")
+        self._marker.write_text(f"{proc.pid}\n")
         return proc
 
     def _stop(self) -> int | None:
@@ -384,6 +410,11 @@ class Kernel:
         if proc.stdin is not None:
             with contextlib.suppress(OSError):
                 proc.stdin.close()
+        # empty the queue until the reader thread reaches the end of the stream
+        deadline = time.monotonic() + DRAIN_S
+        while self._reader.is_alive() and time.monotonic() < deadline:
+            with contextlib.suppress(queue.Empty):
+                self._lines.get(timeout=0.05)
         return rc
 
     def _converse(
@@ -403,7 +434,8 @@ class Kernel:
 
         def expire() -> None:
             fired.set()
-            lines.put(None)
+            with contextlib.suppress(queue.Full):  # full: the next get returns anyway
+                lines.put_nowait(None)
             _kill(proc)  # also unblocks a write to a child that stopped reading
 
         timer = threading.Timer(timeout_s, expire)
@@ -415,6 +447,8 @@ class Kernel:
                     _send(proc, msg)
             while True:
                 item = lines.get()
+                if fired.is_set():
+                    return None
                 if not isinstance(item, bytes):
                     return item
                 try:
