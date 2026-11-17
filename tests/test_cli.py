@@ -892,6 +892,43 @@ def test_splice_out_is_base(sp: Splice, capsys: pytest.CaptureFixture[str]) -> N
     assert main(argv) == 2
     assert "--splice base file" in capsys.readouterr().err
     assert sp.base.read_bytes() == before
+    argv.remove("--force")  # no misleading "pass --force" hint
+    assert main(argv) == 2
+    err = capsys.readouterr().err
+    assert "--splice base file" in err
+    assert "pass --force" not in err
+    assert sp.base.read_bytes() == before
+
+
+def test_splice_gguf_same_as_merged(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = sp.argv("--gguf", str(sp.out), "--arch", "qwen35", "--force")
+    assert main(argv) == 2
+    assert "both" in capsys.readouterr().err
+    _no_files(sp)
+
+
+def test_splice_gguf_same_as_base(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = sp.base.read_bytes()
+    argv = sp.argv("--gguf", str(sp.base), "--arch", "qwen35", "--force")
+    assert main(argv) == 2
+    assert "--splice base file" in capsys.readouterr().err
+    assert sp.base.read_bytes() == before
+    _no_files(sp)
+
+
+def test_splice_merged_dir_missing(
+    sp: Splice, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = sp.argv()
+    argv[argv.index("--merged") + 1] = str(sp.out.parent / "nope" / "m.gguf")
+    assert main(argv) == 2
+    err = capsys.readouterr().err
+    assert "does not exist" in err
+    assert str(sp.out.parent / "nope") in err
 
 
 def test_splice_out_inside_adapter_dir(

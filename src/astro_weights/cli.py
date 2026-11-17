@@ -278,8 +278,16 @@ def _splice_merged(
     return str(merged), sorted(replace)
 
 
+def _same_path(a: Path, b: Path) -> bool:
+    """True when `a` and `b` are one file (samefile if both exist, else resolved)."""
+    if a.exists() and b.exists():
+        return a.samefile(b)
+    return a.resolve() == b.resolve()
+
+
 def _splice_args_error(
     directory: Path,
+    gguf: Path | None,
     splice: Path | None,
     base_model: Path | None,
     merged: Path | None,
@@ -295,10 +303,16 @@ def _splice_args_error(
         return "--splice needs --base-model DIR and --merged OUT.gguf"
     if not splice.is_file():
         return f"--splice {splice} is not a file"
+    if _same_path(merged, splice):
+        return f"--merged {merged} is the --splice base file"
+    if gguf is not None and _same_path(gguf, merged):
+        return f"--gguf and --merged are both {merged}"
+    if gguf is not None and _same_path(gguf, splice):
+        return f"--gguf {gguf} is the --splice base file"
+    if not merged.resolve().parent.is_dir():
+        return f"--merged {merged}: directory {merged.parent} does not exist"
     if merged.exists() and not force:
         return f"{merged} exists; pass --force to overwrite"
-    if merged.exists() and merged.samefile(splice):
-        return f"--merged {merged} is the --splice base file"
     if merged.resolve().is_relative_to(directory.resolve()):
         return f"--merged {merged} is inside the adapter directory {directory}"
     return None
@@ -318,7 +332,9 @@ def _export(
 ) -> int:
     if gguf is None and card is None and splice is None:
         return _error("nothing to export; pass --gguf, --card and/or --splice")
-    bad = _splice_args_error(directory, splice, base_model, merged, out_type, force)
+    bad = _splice_args_error(
+        directory, gguf, splice, base_model, merged, out_type, force
+    )
     if bad is not None:
         return _error(bad)
     if gguf is not None and not (arch and arch.strip()):
