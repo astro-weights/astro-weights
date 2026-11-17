@@ -9,12 +9,13 @@ import pytest
 from mcp_fakes import fake_model_dir, fake_weights
 
 from astro_weights.export.base import read_tensor, tensor_sha256
-from astro_weights.export.peft import load_peft
+from astro_weights.export.peft import load_peft, save_peft
 from astro_weights.mcp.edit_store import (
     MAX_REL_CHANGE,
     EditStore,
+    _round_bf16,
+    _sha256_file,
     export_edits,
-    round_bf16,
 )
 
 Q0 = "model.layers.0.self_attn.q_proj.weight"
@@ -54,6 +55,12 @@ def edit_of(
     d *= rel * np.linalg.norm(w0) / np.linalg.norm(d)
     out: np.ndarray = (w0 + d).astype(np.float32)
     return out
+
+
+def edit_file(store: EditStore, name: str) -> Path:
+    """Where the manifest says the stored edit of `name` lives."""
+    sha = json.loads(store.manifest_path.read_text())[name]["sha256"]
+    return store.dir / f"{sha}.safetensors"
 
 
 def files(store: EditStore) -> list[str]:
@@ -114,7 +121,7 @@ def test_save_load_drop_edited(store: EditStore) -> None:
     assert got.dtype == np.float32
     assert not np.array_equal(got, store.original(O0))
     assert np.allclose(got, w, atol=0.02 * np.abs(w).max())
-    assert np.array_equal(round_bf16(got), got)  # stored values are bf16-exact
+    assert np.array_equal(_round_bf16(got), got)  # stored values are bf16-exact
     manifest = json.loads(store.manifest_path.read_text())
     assert manifest[O0]["shape"] == [32, 32]
     assert set(manifest[O0]) == {"sha256", "rel_frobenius", "shape"}
@@ -269,11 +276,11 @@ def test_too_large_change(store: EditStore) -> None:
 
 def test_failed_save_keeps_old_edit(store: EditStore) -> None:
     store.save(Q0, edit_of(store, Q0))
-    before = (store.dir / f"{Q0}.safetensors").read_bytes()
+    before = edit_file(store, Q0).read_bytes()
     with pytest.raises(ValueError, match="scalar multiple"):
         store.save(Q0, store.original(Q0) * 2)
-    assert (store.dir / f"{Q0}.safetensors").read_bytes() == before
-    assert files(store) == sorted([f"{Q0}.safetensors", "manifest.json"])
+    assert edit_file(store, Q0).read_bytes() == before
+    assert files(store) == sorted([edit_file(store, Q0).name, "manifest.json"])
 
 
 def test_f16_overflow(tmp_path: Path) -> None:
@@ -293,7 +300,7 @@ def test_validate_empty(store: EditStore) -> None:
 
 def test_tamper_edit_file(store: EditStore) -> None:
     store.save(Q0, edit_of(store, Q0))
-    path = store.dir / f"{Q0}.safetensors"
+    path = edit_file(store, Q0)
     raw = bytearray(path.read_bytes())
     raw[-1] ^= 0x55
     path.write_bytes(bytes(raw))
@@ -306,7 +313,7 @@ def test_tamper_edit_file(store: EditStore) -> None:
 
 def test_missing_edit_file(store: EditStore) -> None:
     store.save(Q0, edit_of(store, Q0))
-    (store.dir / f"{Q0}.safetensors").unlink()
+    edit_file(store, Q0).unlink()
     with pytest.raises(ValueError, match="unreadable"):
         store.validate()
 
@@ -315,12 +322,13 @@ def _rewrite(store: EditStore, name: str, tensors: dict[str, np.ndarray]) -> Non
     """Replace an edit file and fix the manifest sha, as a forger with disk access would."""
     from safetensors.numpy import save_file
 
-    from astro_weights.mcp.edit_store import _sha256_file
-
-    path = store.dir / f"{name}.safetensors"
-    save_file(tensors, str(path))
     m = json.loads(store.manifest_path.read_text())
-    m[name]["sha256"] = _sha256_file(path)
+    old = store.dir / f"{m[name]['sha256']}.safetensors"
+    tmp = store.dir / "forge.tmp"
+    save_file(tensors, str(tmp))
+    m[name]["sha256"] = _sha256_file(tmp)
+    tmp.replace(store.dir / f"{m[name]['sha256']}.safetensors")
+    old.unlink(missing_ok=True)
     store.manifest_path.write_text(json.dumps(m))
 
 
@@ -357,11 +365,11 @@ def test_forged_file_wrong_contents(store: EditStore) -> None:
     _rewrite(store, Q0, {Q0: good})  # unrounded float32 values
     with pytest.raises(ValueError, match="base dtype"):
         store.validate()
-    (store.dir / f"{Q0}.safetensors").write_bytes(b"junk")
     m = json.loads(store.manifest_path.read_text())
-    from astro_weights.mcp.edit_store import _sha256_file
-
-    m[Q0]["sha256"] = _sha256_file(store.dir / f"{Q0}.safetensors")
+    junk = store.dir / "junk"
+    junk.write_bytes(b"junk")
+    m[Q0]["sha256"] = _sha256_file(junk)
+    junk.replace(store.dir / f"{m[Q0]['sha256']}.safetensors")
     store.manifest_path.write_text(json.dumps(m))
     with pytest.raises(ValueError, match="corrupt"):
         store.validate()
@@ -379,8 +387,14 @@ def test_tamper_manifest(store: EditStore) -> None:
         store.validate()
     # wrong sha
     store.manifest_path.write_text(json.dumps({Q0: {**m[Q0], "sha256": "0" * 64}}))
-    with pytest.raises(ValueError, match="sha256"):
+    with pytest.raises(ValueError, match="unreadable"):
         store.validate()
+    assert len(files(store)) == 2  # the real edit file was not deleted as an orphan
+    # a sha that is not 64 hex digits never becomes a path
+    for bad_sha in ("../x", "A" * 64, "0" * 63):
+        store.manifest_path.write_text(json.dumps({Q0: {**m[Q0], "sha256": bad_sha}}))
+        with pytest.raises(ValueError, match="malformed"):
+            store.validate()
     for bad in ("not json", "[]", '{"a": 1}', json.dumps({Q0: {"rel_frobenius": 1}})):
         store.manifest_path.write_text(bad)
         with pytest.raises(ValueError, match="manifest"):
@@ -412,12 +426,12 @@ def test_round_bf16_known_values() -> None:
         0xFF7FFFFF: 0xFF800000,
     }
     x = np.array(list(cases), dtype=np.uint32).view(np.float32)
-    got = round_bf16(x).view(np.uint32)
+    got = _round_bf16(x).view(np.uint32)
     assert [hex(int(g)) for g in got] == [hex(v) for v in cases.values()]
 
 
 def test_round_bf16_nan_inf_passthrough() -> None:
-    out = round_bf16(np.array([np.inf, -np.inf, np.nan, -np.nan], np.float32))
+    out = _round_bf16(np.array([np.inf, -np.inf, np.nan, -np.nan], np.float32))
     assert out[0] == np.inf
     assert out[1] == -np.inf
     assert np.isnan(out[2])
@@ -426,9 +440,9 @@ def test_round_bf16_nan_inf_passthrough() -> None:
 
 def test_round_bf16_matches_truncation_on_exact_values() -> None:
     w = fake_weights()[Q0]
-    assert np.array_equal(round_bf16(w), w)
+    assert np.array_equal(_round_bf16(w), w)
     x = np.random.default_rng(0).standard_normal(10_000).astype(np.float32)
-    r = round_bf16(x)
+    r = _round_bf16(x)
     assert (r.view(np.uint32) & 0xFFFF).max() == 0
     assert np.all(np.abs(r - x) <= np.abs(x) * 2.0**-8)  # at most half an ulp
 
@@ -539,7 +553,7 @@ def test_export_no_edits(store: EditStore, tmp_path: Path) -> None:
 
 def test_export_validates_first(store: EditStore, tmp_path: Path) -> None:
     store.save(O0, edit_of(store, O0))
-    path = store.dir / f"{O0}.safetensors"
+    path = edit_file(store, O0)
     path.write_bytes(path.read_bytes()[:-1] + b"\x01")
     with pytest.raises(ValueError, match="sha256"):
         export_edits(
@@ -677,3 +691,167 @@ def test_broken_model_dir(tmp_path: Path) -> None:
     (empty / "model.safetensors.index.json").write_text("{nope")
     with pytest.raises(ValueError, match="invalid index"):
         EditStore(tmp_path / "r2", empty)
+
+
+# review fixes
+
+
+def test_save_is_atomic_when_manifest_write_fails(
+    store: EditStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.save(O0, edit_of(store, O0, seed=1))
+    before = store.load(O0)
+    snapshot = {p.name: p.read_bytes() for p in store.dir.iterdir()}
+
+    def boom(manifest: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_write_manifest", boom)
+    with pytest.raises(OSError, match="disk full"):
+        store.save(O0, edit_of(store, O0, seed=2))  # re-save of an existing edit
+    with pytest.raises(OSError, match="disk full"):
+        store.save(Q0, edit_of(store, Q0))  # a new name
+    with pytest.raises(OSError, match="disk full"):
+        store.save(O0, edit_of(store, O0, seed=1))  # same content: its file is kept
+    assert {p.name: p.read_bytes() for p in store.dir.iterdir()} == snapshot
+    assert np.array_equal(store.load(O0), before)
+    assert store.edited() == [O0]
+    assert O0 in store.validate()
+
+
+def test_save_with_bad_manifest_touches_nothing(store: EditStore) -> None:
+    store.manifest_path.write_text("not json")
+    with pytest.raises(ValueError, match="manifest"):
+        store.save(Q0, edit_of(store, Q0))
+    assert files(store) == ["manifest.json"]
+
+
+def test_resave_replaces_file_and_unlinks_old(store: EditStore) -> None:
+    store.save(O0, edit_of(store, O0, seed=1))
+    first = edit_file(store, O0)
+    store.save(O0, edit_of(store, O0, seed=2))
+    assert edit_file(store, O0) != first
+    assert not first.exists()
+    assert files(store) == sorted([edit_file(store, O0).name, "manifest.json"])
+    store.save(O0, edit_of(store, O0, seed=2))  # same content: same file
+    assert len(files(store)) == 2
+
+
+def test_validate_removes_orphans_only(store: EditStore) -> None:
+    store.save(O0, edit_of(store, O0))
+    orphan = store.dir / f"{'a' * 64}.safetensors"
+    orphan.write_bytes(b"x")
+    (store.dir / "half.tmp").write_bytes(b"x")
+    (store.dir / "notes.txt").write_text("keep")
+    store.validate()
+    assert not orphan.exists()
+    assert not (store.dir / "half.tmp").exists()
+    assert (store.dir / "notes.txt").exists()
+    assert edit_file(store, O0).exists()
+
+
+def test_edit_file_names_are_content_hashes(store: EditStore) -> None:
+    store.save(O0, edit_of(store, O0))
+    path = edit_file(store, O0)
+    assert path.stem == _sha256_file(path)
+
+
+def test_public_surface() -> None:
+    from astro_weights.mcp import edit_store
+
+    public = {n for n in vars(edit_store) if not n.startswith("_")}
+    assert {"MAX_REL_CHANGE", "EditStore", "export_edits"} <= public
+    for gone in ("round_bf16", "scalar_fit", "rel_frobenius", "MAX_SCALAR_RESIDUAL"):
+        assert gone not in public
+
+
+def test_export_holds_no_originals_without_gguf(
+    store: EditStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import gc
+    import weakref
+
+    edit_some(store, (O0, D0, Q0))
+    alive: list[weakref.ref[np.ndarray]] = []
+    real = store.original
+
+    def tracked(name: str) -> np.ndarray:
+        arr = real(name)
+        alive.append(weakref.ref(arr))
+        return arr
+
+    seen: list[int] = []
+    real_save = save_peft
+
+    def spy(*a: Any, **k: Any) -> None:
+        gc.collect()
+        seen.append(sum(r() is not None for r in alive))
+        real_save(*a, **k)
+
+    monkeypatch.setattr(store, "original", tracked)
+    monkeypatch.setattr("astro_weights.mcp.edit_store.save_peft", spy)
+    export_edits(store, tmp_path / "o", rank=4, max_rel_residual=1.0, base_model="m")
+    assert alive
+    assert seen == [0]
+
+
+def test_export_is_one_snapshot(store: EditStore, tmp_path: Path) -> None:
+    """A drop from another thread waits until the export has read every edit."""
+    edit_some(store, (O0, D0))
+    started = threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def dropper() -> None:
+        started.set()
+        store.drop(O0)
+        outcome["done"] = True
+
+    thread = threading.Thread(target=dropper)
+    real_load = store.load
+    loads: list[str] = []
+
+    def load(name: str) -> np.ndarray:
+        if not loads:
+            thread.start()
+            started.wait()
+            thread.join(0.3)
+            outcome["blocked"] = thread.is_alive()
+        loads.append(name)
+        return real_load(name)
+
+    store.load = load  # type: ignore[method-assign]
+    res = export_edits(
+        store, tmp_path / "o", rank=4, max_rel_residual=1.0, base_model="m"
+    )
+    thread.join(5)
+    assert outcome == {"blocked": True, "done": True}
+    assert set(res["residuals"]) == {O0, D0}
+    assert store.edited() == [D0]
+
+
+def test_reexport_without_gguf_removes_stale_gguf(
+    store: EditStore, tmp_path: Path
+) -> None:
+    base = tiny_gguf(tmp_path / "base.gguf", store)
+    edit_some(store, (O0,))
+    out = tmp_path / "o"
+    kw: dict[str, Any] = {"rank": 8, "max_rel_residual": 1.0, "base_model": "m"}
+    assert export_edits(store, out, base_gguf=base, **kw)["gguf"] == out / "model.gguf"
+    assert (out / "model.gguf").exists()
+    store.save(D0, edit_of(store, D0))
+    res = export_edits(store, out, **kw)
+    assert res["gguf"] is None
+    assert not (out / "model.gguf").exists()
+
+
+def test_reexport_splice_failure_removes_stale_gguf(
+    store: EditStore, tmp_path: Path
+) -> None:
+    base = tiny_gguf(tmp_path / "base.gguf", store)
+    edit_some(store, (O0,))
+    out = tmp_path / "o"
+    kw: dict[str, Any] = {"rank": 8, "max_rel_residual": 1.0, "base_model": "m"}
+    export_edits(store, out, base_gguf=base, **kw)
+    with pytest.raises(ValueError, match="out_type"):
+        export_edits(store, out, base_gguf=base, gguf_out_type="q4_k", **kw)
+    assert not (out / "model.gguf").exists()

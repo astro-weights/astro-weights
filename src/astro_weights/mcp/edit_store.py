@@ -2,9 +2,11 @@
 
 Agent code never writes edits itself. It sends a full edited weight, and
 `EditStore.save` checks it against the base weight and writes it. Everything on
-disk lives under `run_dir/edits`: one float32 safetensors file per edited tensor
-and `manifest.json` with `{name: {sha256, rel_frobenius, shape}}`. Stored values
-are already rounded to the base tensor's dtype. `validate` re-checks every
+disk lives under `run_dir/edits`: one float32 safetensors file per edit, named by its
+sha256 (`<sha256>.safetensors`), and `manifest.json` with
+`{name: {sha256, rel_frobenius, shape}}`. The manifest is the only commit point:
+a file it does not name is an orphan, ignored and removed by `validate`. Stored
+values are already rounded to the base tensor's dtype. `validate` re-checks every
 stored edit, so a changed file or manifest is an error, never a silent drop.
 `export_edits` turns the stored edits into a PEFT adapter and, optionally, a
 spliced GGUF.
@@ -34,17 +36,18 @@ from astro_weights.export.base import (
 from astro_weights.export.peft import save_peft
 
 MAX_REL_CHANGE = 0.5
-MAX_SCALAR_RESIDUAL = 1e-6
+_MAX_SCALAR_RESIDUAL = 1e-6
 # bf16 rounding alone leaves a residual of ~1.6e-3 on a true scalar multiple
-MAX_STORED_SCALAR_RESIDUAL = 3e-3
+_MAX_STORED_SCALAR_RESIDUAL = 3e-3
 
 _NAME = re.compile(r"[A-Za-z0-9_.]{1,256}")
 _EDITABLE = re.compile(r"model\.(?:language_model\.)?layers\.\d+\..+\.weight")
 _EXCLUDED = ("norm", "embed", "lm_head", "mtp", "nextn")
+_SHA = re.compile(r"[0-9a-f]{64}")
 _FLOAT_KINDS = (np.float16, np.float32, np.float64)
 
 
-def round_bf16(x: np.ndarray) -> np.ndarray:
+def _round_bf16(x: np.ndarray) -> np.ndarray:
     """Round float32 values to the nearest bfloat16 (ties to even), as float32."""
     x = np.ascontiguousarray(x, dtype=np.float32)
     u = x.view(np.uint32)
@@ -57,14 +60,14 @@ def round_bf16(x: np.ndarray) -> np.ndarray:
 def _round_to(dtype: str, x: np.ndarray) -> np.ndarray:
     """Round float32 values to the stored dtype of a base tensor (F32 is a no-op)."""
     if dtype == "BF16":
-        return round_bf16(x)
+        return _round_bf16(x)
     if dtype == "F16":
         with np.errstate(over="ignore"):
             return x.astype(np.float16).astype(np.float32)
     return x
 
 
-def scalar_fit(w: np.ndarray, w0: np.ndarray) -> tuple[float, float]:
+def _scalar_fit(w: np.ndarray, w0: np.ndarray) -> tuple[float, float]:
     """(s, relative residual) of the least-squares fit w ~ s * w0, in float64."""
     a = np.asarray(w, dtype=np.float64).ravel()
     b = np.asarray(w0, dtype=np.float64).ravel()
@@ -73,7 +76,7 @@ def scalar_fit(w: np.ndarray, w0: np.ndarray) -> tuple[float, float]:
     return s, res
 
 
-def rel_frobenius(w: np.ndarray, w0: np.ndarray) -> float:
+def _rel_frobenius(w: np.ndarray, w0: np.ndarray) -> float:
     """|w - w0|_F / |w0|_F in float64."""
     a = np.asarray(w, dtype=np.float64)
     b = np.asarray(w0, dtype=np.float64)
@@ -150,8 +153,8 @@ class EditStore:
         """The base weight as float32."""
         return read_base_weight(self.model_dir, self._known(name))
 
-    def _path(self, name: str) -> Path:
-        return self.dir / f"{self._known(name)}.safetensors"
+    def _path(self, sha: str) -> Path:
+        return self.dir / f"{sha}.safetensors"
 
     def _manifest(self) -> dict[str, dict[str, Any]]:
         if not self.manifest_path.exists():
@@ -164,6 +167,7 @@ class EditStore:
             isinstance(k, str)
             and isinstance(v, dict)
             and isinstance(v.get("sha256"), str)
+            and _SHA.fullmatch(v["sha256"]) is not None
             for k, v in data.items()
         )
         if not ok:
@@ -180,7 +184,7 @@ class EditStore:
 
     def _read_edit(self, name: str, rec: dict[str, Any]) -> np.ndarray:
         """Stored edit as float32; sha, key, dtype and shape are checked."""
-        path = self._path(name)
+        path = self._path(rec["sha256"])
         try:
             sha = _sha256_file(path)
         except OSError as e:
@@ -220,14 +224,14 @@ class EditStore:
             raise ValueError(
                 f"{name}: non-finite values after rounding to the base dtype"
             )
-        rel = rel_frobenius(w, w0)
+        rel = _rel_frobenius(w, w0)
         if rel == 0:
             raise ValueError(
                 f"{name}: edit is below resolution, the stored tensor equals the original"
             )
-        s, res = scalar_fit(w, w0)
+        s, res = _scalar_fit(w, w0)
         # |s - 1| > res keeps genuine small edits, whose fit stays at s ~ 1
-        if res < MAX_STORED_SCALAR_RESIDUAL and abs(s - 1) > res:
+        if res < _MAX_STORED_SCALAR_RESIDUAL and abs(s - 1) > res:
             raise ValueError(
                 f"{name}: edit is a scalar multiple of the original "
                 f"(s={s:.4f}, relative residual {res:.2e})"
@@ -251,8 +255,8 @@ class EditStore:
             raise ValueError(f"{name}: non-finite values")
         w0 = self.original(name)
         # before rounding: rounding noise would hide a scalar multiple from a 1e-6 limit
-        _, res = scalar_fit(w, w0)
-        if res < MAX_SCALAR_RESIDUAL:
+        _, res = _scalar_fit(w, w0)
+        if res < _MAX_SCALAR_RESIDUAL:
             raise ValueError(
                 f"{name}: edit is a scalar multiple of the original "
                 f"(relative residual {res:.2e})"
@@ -262,20 +266,24 @@ class EditStore:
         stored = _round_to(dtype, narrow)
         rel = self._check_stored(name, stored, w0)
         with self._lock:
-            path = self._path(name)
-            tmp = _tmp(path)
+            manifest = self._manifest()  # read first: a bad manifest touches nothing
+            tmp = _tmp(self.dir / "edit")
             try:
                 save_file({name: np.ascontiguousarray(stored)}, str(tmp))
-                tmp.replace(path)
+                sha = _sha256_file(tmp)
+                old = manifest.get(name, {}).get("sha256")
+                tmp.replace(self._path(sha))
             finally:
                 tmp.unlink(missing_ok=True)
-            manifest = self._manifest()
-            manifest[name] = {
-                "sha256": _sha256_file(path),
-                "rel_frobenius": rel,
-                "shape": list(shape),
-            }
-            self._write_manifest(manifest)
+            manifest[name] = {"sha256": sha, "rel_frobenius": rel, "shape": list(shape)}
+            try:
+                self._write_manifest(manifest)
+            except BaseException:
+                if old != sha:  # the old manifest never named the new file
+                    self._path(sha).unlink(missing_ok=True)
+                raise
+            if old is not None and old != sha:
+                self._path(old).unlink(missing_ok=True)
         return {"name": name, "rel_frobenius": rel}
 
     def drop(self, name: str) -> None:
@@ -285,9 +293,19 @@ class EditStore:
             manifest = self._manifest()
             if name not in manifest:
                 raise ValueError(f"{name!r} has no edit")
-            del manifest[name]
+            sha = manifest.pop(name)["sha256"]
             self._write_manifest(manifest)
-            self._path(name).unlink(missing_ok=True)
+            self._path(sha).unlink(missing_ok=True)
+
+    def _remove_orphans(self, keep: set[str]) -> None:
+        """Delete edit files and temp files the manifest does not name."""
+        for p in self.dir.iterdir():
+            stem = p.name.removesuffix(".safetensors")
+            orphan = p.name.endswith(".tmp") or (
+                p.name != stem and _SHA.fullmatch(stem) is not None and stem not in keep
+            )
+            if orphan:
+                p.unlink(missing_ok=True)
 
     def validate(self) -> dict[str, dict[str, Any]]:
         """Re-check every stored edit (file sha, then the save rules); ValueError on any fault."""
@@ -304,6 +322,8 @@ class EditStore:
                     raise ValueError(f"{name}: stored values are not in the base dtype")
                 rel = self._check_stored(name, w, self.original(name))
                 out[name] = {**rec, "rel_frobenius": rel}
+            # only after every entry checked out: a bad manifest never deletes data
+            self._remove_orphans({r["sha256"] for r in manifest.values()})
             return out
 
 
@@ -326,23 +346,22 @@ def export_edits(
     anything is written. If the splice fails after the adapter is written, the
     adapter stays.
     """
-    store.validate()
-    names = store.edited()
-    if not names:
-        raise ValueError("no edits to export")
     deltas: list[LowRankDelta] = []
     residuals: dict[str, float] = {}
     shas: dict[str, str] = {}
-    originals: dict[str, np.ndarray] = {}
-    for name in names:
-        w0 = store.original(name)
-        originals[name] = w0
-        module = name.removesuffix(".weight")
-        r = min(rank, *store.shape(name))
-        delta, rel = from_dense(module, store.load(name) - w0, r, max_rel_residual)
-        deltas.append(delta)
-        residuals[name] = rel
-        shas[name] = tensor_sha256(_shard(store.model_dir, name), name)
+    # one lock hold: the adapter matches a single manifest state, no save or drop in between
+    with store._lock:
+        names = sorted(store.validate())
+        if not names:
+            raise ValueError("no edits to export")
+        for name in names:
+            module = name.removesuffix(".weight")
+            r = min(rank, *store.shape(name))
+            dw = store.load(name) - store.original(name)
+            delta, rel = from_dense(module, dw, r, max_rel_residual)
+            deltas.append(delta)
+            residuals[name] = rel
+            shas[name] = tensor_sha256(_shard(store.model_dir, name), name)
     edit = Edit.from_deltas(
         deltas,
         base_model,
@@ -356,16 +375,16 @@ def export_edits(
         gguf_names = {d.module: gguf_tensor_name(d.module) for d in edit.deltas}
     out = Path(out_dir)
     adapter = out / "adapter"
+    gguf_path = out / "model.gguf"
+    gguf_path.unlink(missing_ok=True)  # never ship a GGUF from an earlier export
     save_peft(edit, adapter, overwrite=True)
-    gguf_path: Path | None = None
     if base_gguf is not None:
         from astro_weights.export.gguf import splice_gguf, verify_splice
 
         merged = {
-            gguf_names[d.module]: originals[d.module + ".weight"] + d.dense()
+            gguf_names[d.module]: store.original(d.module + ".weight") + d.dense()
             for d in edit.deltas
         }
-        gguf_path = out / "model.gguf"
         splice_gguf(base_gguf, gguf_path, merged, gguf_out_type)
         problems = verify_splice(base_gguf, gguf_path, list(merged))
         if problems:
@@ -373,7 +392,7 @@ def export_edits(
             raise ValueError(f"GGUF splice failed verification: {problems}")
     return {
         "adapter": adapter,
-        "gguf": gguf_path,
+        "gguf": gguf_path if base_gguf is not None else None,
         "residuals": residuals,
         "rank": edit.rank,
     }
