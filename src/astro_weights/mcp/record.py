@@ -11,6 +11,7 @@ import json
 import math
 import os
 import platform
+import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
@@ -34,23 +35,26 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"non-finite number {name} is not JSON")
 
 
-def _check_json(value: Any, where: str) -> None:
-    """Raise ValueError unless ``value`` is plain JSON (str keys, finite numbers)."""
+def _check_json(value: Any, where: str, active: frozenset[int] = frozenset()) -> None:
+    """Raise ValueError unless ``value`` is plain JSON (str keys, finite numbers, no cycles)."""
+    if id(value) in active:
+        raise ValueError(f"{where}: container contains itself")
     if value is None or isinstance(value, str | bool | int):
         return
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"{where}: non-finite float {value!r}")
         return
+    inner = active | {id(value)}
     if isinstance(value, list | tuple):
         for i, item in enumerate(value):
-            _check_json(item, f"{where}[{i}]")
+            _check_json(item, f"{where}[{i}]", inner)
         return
     if isinstance(value, Mapping):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise ValueError(f"{where}: key {key!r} is not a string")  # noqa: TRY004
-            _check_json(item, f"{where}.{key}")
+            _check_json(item, f"{where}.{key}", inner)
         return
     raise ValueError(f"{where}: {type(value).__name__} is not JSON")
 
@@ -102,9 +106,10 @@ def _split(path: Path) -> tuple[list[dict[str, Any]], bytes, int]:
 def _load(path: Path, check: Callable[[dict[str, Any]], None]) -> list[dict[str, Any]]:
     """Read a JSONL file for appending, repairing a final line torn by a crash.
 
-    A torn final line that still parses and passes ``check`` lost only its newline:
-    it is kept and the newline added, so a recorded line is never dropped. Any other
-    torn final line is cut off. Every complete line must pass ``check``.
+    A final line without newline that is not a JSON object was torn mid-write: it is
+    cut off. One that is a JSON object lost only its newline: it must pass ``check``
+    (else ValueError, file untouched) and is kept, so a recorded line is never dropped.
+    Every complete line must pass ``check``.
     """
     entries, tail, cut = _split(path)
     for i, entry in enumerate(entries):
@@ -114,15 +119,19 @@ def _load(path: Path, check: Callable[[dict[str, Any]], None]) -> list[dict[str,
             raise ValueError(f"{path}:{i + 1}: {e}") from None
     if not tail:
         return entries
+    where = f"{path}:{len(entries) + 1}"
     try:
-        last = _parse(tail, f"{path}:{len(entries) + 1}")
-        check(last)
+        last = _parse(tail, where)
     except ValueError:
         with path.open("r+b") as f:
             f.truncate(cut)
             f.flush()
             os.fsync(f.fileno())
         return entries
+    try:
+        check(last)
+    except ValueError as e:
+        raise ValueError(f"{where}: {e}") from None
     with path.open("ab") as f:
         f.write(b"\n")
         f.flush()
@@ -161,10 +170,19 @@ def _check_any(entry: dict[str, Any]) -> None:
 
 
 class RunRecord:
-    """Append-only run record at ``run_dir/"record.jsonl"``. One writer per file."""
+    """Append-only run record at ``run_dir/"record.jsonl"``.
+
+    Thread-safe within one process (one lock around every append). One writer
+    process per file: there is no cross-process lock.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+        self._lock = threading.Lock()
+
+    def _write(self, obj: Mapping[str, Any]) -> None:
+        with self._lock:
+            _append(self.path, obj)
 
     @classmethod
     def start(
@@ -225,7 +243,7 @@ class RunRecord:
         clash = _RESERVED_FIELDS & fields.keys()
         if clash:
             raise ValueError(f"field names {sorted(clash)} are reserved")
-        _append(self.path, {"event": name, **fields, "time": _now()})
+        self._write({"event": name, **fields, "time": _now()})
 
     def refusal(
         self, *, category: str, editor: str, model: str | None, detail: str = ""
@@ -236,8 +254,7 @@ class RunRecord:
         _optional_str(model, "model")
         if not isinstance(detail, str):
             raise ValueError("detail must be a string")  # noqa: TRY004
-        _append(
-            self.path,
+        self._write(
             {
                 "event": "refusal",
                 "category": category,
@@ -253,8 +270,7 @@ class RunRecord:
         if not isinstance(budget, Mapping):
             raise ValueError("budget must be a mapping")  # noqa: TRY004
         _text(outcome, "outcome")
-        _append(
-            self.path,
+        self._write(
             {
                 "event": "finish",
                 "budget": dict(budget),

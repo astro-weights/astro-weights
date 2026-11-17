@@ -1,6 +1,7 @@
 import json
 import math
 import platform
+import threading
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -217,3 +218,84 @@ def test_lines_are_compact_json(tmp_path: Path) -> None:
     raw = rec.path.read_bytes().splitlines()
     assert all(json.loads(x) for x in raw)
     assert rec.read()[-1]["text"] == "é \ud800"
+
+
+def test_open_unterminated_object_failing_check_raises(tmp_path: Path) -> None:
+    rec = start(tmp_path)
+    with rec.path.open("ab") as f:
+        f.write(b'{"no":"event"}')
+    before = rec.path.read_bytes()
+    with pytest.raises(ValueError, match=r"record\.jsonl:2"):
+        RunRecord.open(rec.path)
+    assert rec.path.read_bytes() == before
+
+
+def test_cyclic_config_rejected_no_file(tmp_path: Path) -> None:
+    config: dict[str, Any] = {"a": 1}
+    config["self"] = config
+    with pytest.raises(ValueError, match="contains itself"):
+        start(tmp_path, config=config)
+    assert not (tmp_path / "record.jsonl").exists()
+
+
+def test_cyclic_event_rejected_shared_ok(tmp_path: Path) -> None:
+    rec = start(tmp_path)
+    loop: list[Any] = [1]
+    loop.append([loop])
+    before = rec.path.read_bytes()
+    with pytest.raises(ValueError, match="contains itself"):
+        rec.event("x", value=loop)
+    assert rec.path.read_bytes() == before
+    shared = [1, 2]
+    rec.event("x", a=shared, b={"c": shared, "d": shared})  # repeated, not cyclic
+    assert rec.read()[-1]["b"] == {"c": [1, 2], "d": [1, 2]}
+
+
+def test_threads_append_every_line_intact(tmp_path: Path) -> None:
+    rec = start(tmp_path)
+    threads, per, pad = 16, 25, "x" * 20_000
+    barrier = threading.Barrier(threads)
+
+    def worker(t: int) -> None:
+        barrier.wait()
+        for i in range(per):
+            if i % 5 == 0:
+                rec.refusal(category="c", editor="e", model=None, detail=f"{t}:{i}")
+            else:
+                rec.event("e", t=t, i=i, pad=pad)
+
+    ts = [threading.Thread(target=worker, args=(t,)) for t in range(threads)]
+    for th in ts:
+        th.start()
+    for th in ts:
+        th.join()
+    lines = RunRecord.open(rec.path).read()
+    assert len(lines) == 1 + threads * per
+    events = {(x["t"], x["i"]) for x in lines if x["event"] == "e"}
+    refusals = {x["detail"] for x in lines if x["event"] == "refusal"}
+    assert len(events) == threads * per * 4 // 5
+    assert len(refusals) == threads * per // 5
+    assert all(x["pad"] == pad for x in lines if x["event"] == "e")
+
+
+def test_failed_append_keeps_other_threads_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = start(tmp_path)
+    rec.event("a")
+    calls = 0
+    real = __import__("os").fsync
+
+    def flaky(fd: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("disk hiccup")
+        real(fd)
+
+    monkeypatch.setattr("astro_weights.mcp.record.os.fsync", flaky)
+    with pytest.raises(OSError, match="hiccup"):
+        rec.event("lost")
+    rec.event("b")
+    monkeypatch.undo()
+    assert [x["event"] for x in rec.read()] == ["start", "a", "b"]

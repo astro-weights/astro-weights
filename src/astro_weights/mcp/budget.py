@@ -132,6 +132,14 @@ def _out(kind: str, value: Fraction) -> float:
     return float(min(value, _FLOAT_MAX))  # saturate rather than overflow to inf
 
 
+def _floor_out(kind: str, value: Fraction) -> float:
+    """Like ``_out`` but never above ``value`` (>= 0), so a reported remainder is usable."""
+    out = _out(kind, value)
+    if Fraction(out) > value:
+        out = math.nextafter(out, 0.0)
+    return out
+
+
 def _text(value: Any, name: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{name} must be a string")  # noqa: TRY004
@@ -254,11 +262,12 @@ class Ledger:
 
     def _remaining(self) -> dict[str, float]:
         return {
-            k: _out(k, max(self._limit(k) - self._used[k], Fraction(0))) for k in KINDS
+            k: _floor_out(k, max(self._limit(k) - self._used[k], Fraction(0)))
+            for k in KINDS
         }
 
     def remaining(self) -> dict[str, float]:
-        """Limit minus used, per kind; never below 0."""
+        """Limit minus used, per kind; never below 0, dollars rounded toward zero."""
         with self._lock:
             return self._remaining()
 

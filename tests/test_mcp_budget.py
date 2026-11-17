@@ -251,11 +251,23 @@ def test_torn_line_missing_only_newline_is_kept(tmp_path: Path) -> None:
     assert [x["ref"] for x in lines(led.path)] == ["a", "b", "c"]
 
 
-def test_torn_line_valid_json_bad_entry_is_cut(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "tail",
+    [b'{"op":"x"}', b'{"op":"charge","kind":"dollars","amount":"0.5","ref":"b"}'],
+)
+def test_unterminated_object_failing_check_raises(tmp_path: Path, tail: bytes) -> None:
+    # a torn write cannot end in "}": a JSON object that fails the check is corrupt
     path = tmp_path / "ledger.jsonl"
-    path.write_bytes(
-        b'{"op":"charge","kind":"tokens","amount":1,"ref":"a"}\n{"op":"x"}'
-    )
+    path.write_bytes(b'{"op":"charge","kind":"tokens","amount":1,"ref":"a"}\n' + tail)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match=r"ledger\.jsonl:2"):
+        Ledger(path, limits())
+    assert path.read_bytes() == before
+
+
+def test_torn_tail_not_an_object_is_cut(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.jsonl"
+    path.write_bytes(b'{"op":"charge","kind":"tokens","amount":1,"ref":"a"}\n[1, 2]')
     assert Ledger(path, limits()).used()["tokens"] == 1
     assert path.read_bytes().endswith(b"}\n")
 
@@ -456,3 +468,23 @@ def test_huge_int_amount_is_exact(tmp_path: Path) -> None:
     out = led.to_json()
     assert out["used"]["dollars"] == sys.float_info.max
     json.dumps(out, allow_nan=False)
+
+
+@pytest.mark.parametrize("spent", [0.1, 0.7, 1 / 3, 0.123456789])
+def test_remaining_dollars_is_usable(tmp_path: Path, spent: float) -> None:
+    led = ledger(tmp_path, dollars=1.0)
+    led.charge("dollars", spent, ref="a")
+    left = led.remaining()["dollars"]
+    assert 0 < left <= 1.0 - spent + 1e-15
+    led.check("dollars", left)  # the agent can spend exactly what status reports
+    assert led.to_json()["remaining"]["dollars"] == left
+
+
+def test_remaining_rounds_toward_zero(tmp_path: Path) -> None:
+    from fractions import Fraction
+
+    led = ledger(tmp_path, dollars=1.0)
+    led.charge("dollars", 0.1, ref="a")
+    exact = Fraction(1) - Fraction(0.1)
+    assert Fraction(led.remaining()["dollars"]) <= exact
+    assert Fraction(float(exact)) > exact  # nearest rounding would overstate it
