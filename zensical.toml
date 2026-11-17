@@ -18,6 +18,7 @@ nav = [
     "how-to/apply-across-model-classes.md",
     "how-to/save-merged-weights.md",
     "how-to/export-gguf.md",
+    "how-to/use-with-ollama.md",
     "how-to/build-from-recipe.md",
     "how-to/dense-to-low-rank.md",
     "how-to/find-direction.md",

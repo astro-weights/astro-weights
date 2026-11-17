@@ -9,7 +9,7 @@ astro-weights [--version] {build,eval,export,inspect} ...
 | `inspect DIR` | summarize and verify a saved PEFT adapter; see [How-to: inspect an adapter](../how-to/inspect-adapter.md) |
 | `eval BASE.jsonl EDIT.jsonl [--boot N] [--seed N] [--floor A.jsonl B.jsonl] [--ignore-header]` | compare two arms from per-item records and print the [`format_report`](../how-to/compare-arms.md); `--boot` sets the bootstrap resamples (default 10000), `--seed` the bootstrap seed (default 0), `--floor` takes two base-arm runs for a noise floor, `--ignore-header` skips the run-header check; see [How-to: run an eval end to end](../how-to/run-eval.md) |
 | `build RECIPE.json --base MODEL_DIR --out DIR [--card LICENSE] [--force]` | build a PEFT adapter from a recipe file and the base model weights; print one line per module (`out x in`, rank), then `wrote DIR`; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) |
-| `export DIR [--gguf OUT.gguf --arch ARCH] [--card LICENSE] [--force]` | verify the adapter in `DIR`, then write a GGUF LoRA adapter, a model card or both; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) |
+| `export DIR [--gguf OUT.gguf --arch ARCH] [--card LICENSE] [--splice BASE.gguf --base-model DIR --merged OUT.gguf [--out-type TYPE]] [--force]` | verify the adapter in `DIR`, then write a GGUF LoRA adapter, a merged GGUF, a model card or any mix of them; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) and [How-to: use with Ollama](../how-to/use-with-ollama.md) |
 
 Every command takes `--json`, which prints one JSON object on stdout instead of text. Run without a command, `astro-weights` prints the help and exits 2. `python -m astro_weights` runs the same command line, for example `python -m astro_weights inspect DIR`.
 
@@ -28,9 +28,13 @@ Every command takes `--json`, which prints one JSON object on stdout instead of 
 
 ## export
 
-- Needs `--gguf`, `--card` or both; with neither it is an error.
+- Needs at least one of `--gguf`, `--card` and `--splice`; with none it is an error.
 - `--gguf OUT.gguf` needs a non-empty `--arch` (written to `general.architecture`, for example `qwen35`) and the `gguf` extra (`pip install "astro-weights[gguf]"`). The module mapping limits are in [How-to: export GGUF and a model card](../how-to/export-gguf.md).
 - `--card LICENSE`: write a `README.md` model card into `DIR`.
+- `--splice BASE.gguf` writes a merged GGUF: `BASE.gguf` with the adapter folded in. It needs `--base-model DIR` (the base model as safetensors), `--merged OUT.gguf` (the file to write) and the `gguf` extra. `--base-model`, `--merged` and `--out-type` without `--splice` are an error. See [How-to: use with Ollama](../how-to/use-with-ollama.md).
+- `--out-type` sets how the changed tensors are stored: `q8_0` (default), `f16` or `bf16`. With `q8_0`, a tensor whose row length is not divisible by 32 is an error (exit 2); use `--out-type f16`.
+- The `--merged` file cannot be the `--splice` base file or the `--gguf` file, cannot sit inside `DIR`, and its directory must exist. `--gguf` cannot name the `--splice` base file.
+- When the adapter records base weight hashes, a weight in `--base-model` that does not match is an error.
 - An existing `OUT.gguf` or `DIR/README.md` is refused unless `--force` is given. An `OUT.gguf` that names one of the adapter's own files is refused even with `--force`.
 - An adapter with hash problems is an error, and nothing is written.
 
@@ -40,7 +44,7 @@ Every command takes `--json`, which prints one JSON object on stdout instead of 
 |---|---|
 | `inspect` | `base_model`, `rank`, `modules` (each `module`, `shape`, `rank`, `norm_B`, `norm_A`, `norm_BA`), `manifest` (bool), `problems` |
 | `eval` | see [eval](#eval) |
-| `build`, `export` | `written`: the list of paths written |
+| `build`, `export` | `written`: the list of paths written. `export --splice` adds `replaced` (the GGUF tensor names changed) and `out_type` |
 
 ## Exit codes
 
