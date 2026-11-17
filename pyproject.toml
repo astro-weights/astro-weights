@@ -28,6 +28,9 @@ eval = [
 gguf = [
     "gguf>=0.19.0",
 ]
+mcp = [
+    "mcp>=2.3,<3",
+]
 
 [project.scripts]
 astro-weights = "astro_weights.cli:main"
@@ -93,7 +96,7 @@ root_package = "astro_weights"
 name = "astro-weights layers"
 type = "layers"
 layers = [
-    "astro_weights.cli",
+    "astro_weights.cli | astro_weights.mcp",
     "astro_weights.runners",
     "astro_weights.export",
     "astro_weights.edits",
