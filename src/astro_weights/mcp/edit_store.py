@@ -99,7 +99,7 @@ def _candidate_keys(model_dir: Path) -> list[str]:
     index = model_dir / INDEX
     if index.exists():
         try:
-            weight_map = json.loads(index.read_text())["weight_map"]
+            weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
             return [k for k in weight_map if isinstance(k, str)]
         except (OSError, ValueError, RecursionError, KeyError, TypeError) as e:
             raise ValueError(f"{index}: invalid index file: {e!r}") from e
@@ -160,7 +160,7 @@ class EditStore:
         if not self.manifest_path.exists():
             return {}
         try:
-            data = json.loads(self.manifest_path.read_text())
+            data = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, RecursionError) as e:
             raise ValueError(f"{self.manifest_path}: unreadable manifest: {e}") from e
         ok = isinstance(data, dict) and all(
@@ -177,7 +177,9 @@ class EditStore:
     def _write_manifest(self, manifest: dict[str, dict[str, Any]]) -> None:
         tmp = _tmp(self.manifest_path)
         try:
-            tmp.write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+            tmp.write_text(
+                json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+            )
             tmp.replace(self.manifest_path)
         finally:
             tmp.unlink(missing_ok=True)

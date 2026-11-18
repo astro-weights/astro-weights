@@ -88,6 +88,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers"]
+# with PYTHONWARNDEFAULTENCODING=1 (CI sets it): any open/read_text/subprocess text call in the library
+# without encoding= fails a test, since the locale default differs on Windows
+filterwarnings = ["error::EncodingWarning:astro_weights"]
 markers = [
     "gpu: needs a CUDA GPU; skipped in CI, run by hand before release",
     "realdata: needs the real 9B files under $ASTRO_REALDATA; skipped without it",

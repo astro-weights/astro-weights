@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONWARNDEFAULTENCODING: "1"  # with pyproject filterwarnings: library text I/O without encoding= fails
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}  # every main commit keeps its own result

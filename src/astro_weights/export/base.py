@@ -104,7 +104,7 @@ def _shard(model_dir: Path, key: str) -> Path:
     if not index.exists():
         return model_dir / SINGLE
     try:
-        weight_map = json.loads(index.read_text())["weight_map"]
+        weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
     except (OSError, ValueError, RecursionError, KeyError, TypeError) as e:
         raise ValueError(f"{index}: invalid index file: {e!r}") from e
     if not isinstance(weight_map, dict) or key not in weight_map:

@@ -177,7 +177,7 @@ def _check_step(i: int, step: object) -> None:
 def load_recipe(path: Path | str) -> dict[str, Any]:
     """Read and validate a recipe file; arrays are not loaded."""
     try:
-        recipe = json.loads(Path(path).read_text())
+        recipe = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError) as exc:
         raise ValueError(f"cannot read recipe {str(path)!r}: {exc}") from exc
     if not isinstance(recipe, dict):
@@ -197,7 +197,9 @@ def load_recipe(path: Path | str) -> dict[str, Any]:
 
 def save_recipe(path: Path | str, recipe: dict[str, Any]) -> None:
     """Write a recipe as JSON with sorted keys and a trailing newline."""
-    Path(path).write_text(json.dumps(recipe, indent=2, sort_keys=True) + "\n")
+    Path(path).write_text(
+        json.dumps(recipe, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def build_edit(
