@@ -18,7 +18,7 @@ The config names the run directory, the budget, the editor and its options::
     base_url = "http://127.0.0.1:8000"
     model = "my-model"
 
-    [kernel]                  # optional: timeout_s, mem_gib, unsafe
+    [kernel]                  # optional: timeout_s, mem_gib, unsafe, allow_nested_userns
     [forward]                 # optional: device, dtype, max_new_tokens
     [export]                  # optional: rank, max_rel_residual, base_gguf, gguf_out_type
 
@@ -84,6 +84,7 @@ _KERNEL: _Fields = {
     "timeout_s": ("number", None),
     "mem_gib": ("int", None),
     "unsafe": ("bool", False),
+    "allow_nested_userns": ("bool", False),
 }
 _FORWARD: _Fields = {
     "device": ("str", None),
@@ -290,7 +291,7 @@ def _parse(where: str, raw: dict[str, Any], base: Path, text: str) -> RunSpec:
     if "base_gguf" in export:
         export["base_gguf"] = str(_path(base, export["base_gguf"]))
     try:  # the server's own checks, so run.json is valid when written
-        timeout_s, mem_gib = jobs._kernel_config(Path(where), kernel)
+        timeout_s, mem_gib, nested = jobs._kernel_config(Path(where), kernel)
         device, dtype, max_new = jobs._forward_config(Path(where), fwd)
         rank, residual, _gguf, out_type = jobs._export_config(Path(where), export)
     except ValueError as exc:
@@ -304,7 +305,8 @@ def _parse(where: str, raw: dict[str, Any], base: Path, text: str) -> RunSpec:
         limits=Limits(**limits),
         editor=kind,
         options=options,
-        kernel={"timeout_s": timeout_s, "mem_gib": mem_gib},
+        kernel={"timeout_s": timeout_s, "mem_gib": mem_gib}
+        | ({"allow_nested_userns": True} if nested else {}),
         forward={"device": device, "dtype": dtype, "max_new_tokens": max_new},
         export=export,
         unsafe_kernel=unsafe,

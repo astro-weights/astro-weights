@@ -968,3 +968,27 @@ def test_child_serve_in_process(
     assert store.edited() == []
     with pytest.raises(ConnectionError):
         server.call("names")
+
+
+@pytest.mark.parametrize(
+    ("argv", "compat"),
+    [
+        (["/usr/bin/bwrap", "--unshare-all", "--", "py"], True),
+        (["/usr/bin/bwrap", "--unshare-all", "--disable-userns", "--", "py"], False),
+        (["/usr/bin/sandbox-exec", "-p", "x", "--", "py"], False),
+    ],
+)
+def test_sandbox_compat_event_only_for_bwrap_without_disable_userns(
+    monkeypatch: pytest.MonkeyPatch, make: Make, argv: list[str], compat: bool
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_wrap(_argv: list[str], **kw: Any) -> list[str]:
+        seen.update(kw)
+        return argv
+
+    monkeypatch.setattr(sandbox, "wrap", fake_wrap)
+    _, _, events = make(False, allow_nested_userns=True)
+    assert seen["allow_nested_userns"] is True
+    names = [n for n, _ in events]
+    assert names == (["sandbox_compat"] if compat else [])

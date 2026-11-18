@@ -166,6 +166,8 @@ def test_kernel_and_forward_options(tmp_path: Path) -> None:
     assert spec.unsafe_kernel
     assert spec.limits.dollars == 1.0
     assert spec.run_json()["kernel"] == {"timeout_s": 30.0, "mem_gib": 2}
+    nested = load_config(write_config(tmp_path, kernel={"allow_nested_userns": True}))
+    assert nested.run_json()["kernel"]["allow_nested_userns"] is True
     assert spec.run_json()["forward"] == {
         "device": "cpu",
         "dtype": "float32",
@@ -307,6 +309,7 @@ BAD: list[tuple[dict[str, Any], str]] = [
     ({"kernel": {"timeout_s": "1"}}, r"\[kernel\] timeout_s must be a number"),
     ({"kernel": {"mem_gib": 0}}, r"kernel.mem_gib must be an int >= 1"),
     ({"kernel": {"unsafe": 1}}, r"\[kernel\] unsafe must be true or false"),
+    ({"kernel": {"allow_nested_userns": 1}}, r"allow_nested_userns must be true or"),
     ({"kernel": {"cpus": 1}}, r"unknown key \[kernel\] cpus"),
     ({"forward": {"device": "tpu"}}, r"forward.device must be one of"),
     ({"forward": {"dtype": "int8"}}, r"forward.dtype must be one of"),

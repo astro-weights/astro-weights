@@ -15,7 +15,7 @@ pip install "astro-weights[mcp,hf]"
 
 ## 1. Make a run directory
 
-Write `RUN_DIR/run.json` as in [Drive the agent tools from Claude Code](agent-claude-code.md#1-make-a-run-directory); every key is in [Reference: CLI](../reference/cli.md#mcp). Use an absolute `RUN_DIR`.
+Write `RUN_DIR/run.json` as in [Drive the agent tools from Claude Code](agent-claude-code.md#1-make-a-run-directory); every key is in [Reference: CLI](../reference/cli.md#mcp). Use an absolute `RUN_DIR`. Tools, result keys and refusals: [Reference: MCP server](../reference/mcp-server.md).
 
 ## 2. Add the server
 

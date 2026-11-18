@@ -59,6 +59,29 @@ def echo(params: dict[str, Any]) -> dict[str, Any]:
 
 
 @pytest.mark.anyio
+async def test_exec_python_description_names_the_kernel_api(tmp_path: Path) -> None:
+    # outside clients (Claude Code, Codex) see only tool descriptions, not agent.md
+    from astro_weights.mcp.edit_store import MAX_REL_CHANGE
+
+    async with Client(build_server(write_run(tmp_path))) as client:
+        tools = await client.list_tools()
+    text = next(t.description for t in tools.tools if t.name == "exec_python") or ""
+    helpers = [
+        "NAMES",
+        "names()",
+        "load(name)",
+        "load_original(name)",
+        "save_edit(name, w)",
+        "drop_edit(name)",
+        "edited()",
+        "forward_result(handle, key)",
+    ]
+    for helper in helpers:
+        assert helper in text
+    assert f"above {MAX_REL_CHANGE}" in text
+
+
+@pytest.mark.anyio
 async def test_lists_seven_tools(tmp_path: Path) -> None:
     async with Client(build_server(write_run(tmp_path))) as client:
         tools = await client.list_tools()

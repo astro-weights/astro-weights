@@ -28,7 +28,7 @@ The ledger `RUN_DIR/ledger.jsonl` is the only source of truth. Each line is a `c
 
 | OS | Sandbox | Notes |
 |---|---|---|
-| Linux | bubblewrap | needs bwrap 0.8 or newer (`--disable-userns`); a bwrap that AppArmor blocks counts as none. Memory capped by `kernel.mem_gib` (default 16) |
+| Linux | bubblewrap | needs bwrap 0.8 or newer (`--disable-userns`); a bwrap that AppArmor blocks counts as none. With an older bwrap (RHEL 9 ships 0.6), `kernel.allow_nested_userns = true` runs the same sandbox without `--disable-userns`: agent code can then create user namespaces, which opens more of the Linux kernel to it. The run record gets a `sandbox_compat` event. Memory capped by `kernel.mem_gib` (default 16) |
 | macOS | Seatbelt (`/usr/bin/sandbox-exec`) | deny by default. No memory cap |
 | Windows | none | `exec_python` is refused |
 

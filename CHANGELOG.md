@@ -16,6 +16,11 @@ Upgrading from 0.1.5: no public name was removed or changed, so 0.1.x code runs 
 - A local editor, `python -m astro_weights.mcp.editors.local RUN_DIR --base-url URL --model NAME`, lets any OpenAI-compatible model with tool calls drive the stdio MCP server, reporting its tokens to the ledger at no dollar cost.
 - Report agent usage, spend check and refusal tools on the MCP server for editors.
 - `astro-weights run CONFIG.toml` starts an agent run (run directory, budget, editor, export options) from one TOML file, never starts over a run that already exists, goes on with it under `--resume` with the budget used kept, prints its budget and last events with `--status`, and the run's `finish` now exports the stored edits as a PEFT adapter (and a spliced GGUF when `base_gguf` is set) to `RUN_DIR/export`.
+- On Linux with bubblewrap older than 0.8 (RHEL 9 ships 0.6), `kernel.allow_nested_userns = true` lets the agent kernel run sandboxed without `--disable-userns`; the default still refuses, and the run record notes the weaker sandbox.
+
+### Changed
+
+- The `exec_python` tool description now lists the kernel helpers (`save_edit`, `load`, `forward_result` and the rest) and the edit size cap, so MCP clients such as Claude Code and Codex can use them without probing the kernel.
 
 ### Fixed
 

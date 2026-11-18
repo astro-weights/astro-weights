@@ -113,6 +113,7 @@ def _kernel_executor(
             run_dir,
             edits,
             allow_unsafe=allow_unsafe,
+            allow_nested_userns=cfg.kernel_allow_nested_userns,
             timeout_s=cfg.kernel_timeout_s,
             mem_gib=cfg.kernel_mem_gib,
             on_event=lambda name, fields: record.event(name, **fields),
@@ -271,7 +272,17 @@ def build_server(
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
     def exec_python(code: str) -> dict[str, Any]:
-        """Start a Python code run; returns a handle to poll with status."""
+        """Start a Python code run; returns a handle to poll with status.
+
+        The kernel has numpy (``np``) and the standard library only; variables stay
+        between runs and the last bare expression is printed. Helpers: ``NAMES`` and
+        ``names()`` (editable weight names), ``load(name)`` (edited weight if saved,
+        else base, float32), ``load_original(name)``, ``save_edit(name, w)`` (the full
+        edited weight, same shape; refused when its relative Frobenius change from the
+        base is above 0.5), ``drop_edit(name)``, ``edited()``, and
+        ``forward_result(handle, key)`` (an array or list of texts from a finished
+        forward_pass).
+        """
         return submit("exec_python", "exec", {"code": code})
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
