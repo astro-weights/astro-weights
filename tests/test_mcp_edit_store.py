@@ -626,12 +626,13 @@ def test_export_with_gguf(store: EditStore, tmp_path: Path) -> None:
         assert np.linalg.norm(got - merged) / np.linalg.norm(merged) < 2e-2
 
 
-def test_export_gguf_unsupported_module_writes_nothing(
+def test_export_gguf_tensor_missing_from_base_keeps_adapter_only(
     store: EditStore, tmp_path: Path
 ) -> None:
+    """q_proj maps to attn_q, which the tiny base lacks: splice fails after the adapter."""
     base = tiny_gguf(tmp_path / "base.gguf", store)
-    edit_some(store, (O0, Q0))  # q_proj has no GGUF mapping here
-    with pytest.raises(ValueError, match="unsupported module"):
+    edit_some(store, (O0, Q0))
+    with pytest.raises(ValueError, match="not in base"):
         export_edits(
             store,
             tmp_path / "o",
@@ -640,7 +641,8 @@ def test_export_gguf_unsupported_module_writes_nothing(
             base_model="m",
             base_gguf=base,
         )
-    assert not (tmp_path / "o").exists()
+    assert (tmp_path / "o" / "adapter").is_dir()
+    assert not (tmp_path / "o" / "model.gguf").exists()
 
 
 def test_export_gguf_failure_leaves_no_gguf(store: EditStore, tmp_path: Path) -> None:
