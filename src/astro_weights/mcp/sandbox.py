@@ -38,7 +38,9 @@ __all__ = [
 
 Mode = Literal["bwrap", "seatbelt"]
 
-UNSAFE_HINT = "pass allow_unsafe=True to run agent code without a sandbox"
+UNSAFE_HINT = (
+    "pass allow_unsafe=True (CLI: --unsafe-kernel) to run agent code without a sandbox"
+)
 NESTED_USERNS_HINT = (
     "bwrap older than 0.8 has no --disable-userns; to sandbox anyway, letting agent code"
     " create nested user namespaces, set kernel.allow_nested_userns = true in run.json"
