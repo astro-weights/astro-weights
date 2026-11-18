@@ -43,3 +43,17 @@ def save_tiny_model(directory: Path) -> Path:
     )
     fast.save_pretrained(directory)
     return directory
+
+
+def weight_key(directory: Path, suffix: str) -> str:
+    """The one saved tensor key ending in ``.`` + suffix (key layout varies by version)."""
+    from safetensors import safe_open
+
+    keys: list[str] = []
+    for f in sorted(Path(directory).glob("*.safetensors")):
+        with safe_open(str(f), "np") as h:
+            names: list[str] = list(h.keys())
+        keys += [k for k in names if k.endswith("." + suffix)]
+    if len(keys) != 1:
+        raise ValueError(f"expected one key ending in {suffix!r}, got {keys}")
+    return keys[0]

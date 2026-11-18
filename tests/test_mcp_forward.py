@@ -430,9 +430,15 @@ TEXTS = ["w1 w2 w3 w4 w5 w6", "w7 w8 w9"]
 def tiny(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if not HF:
         pytest.skip("needs the hf extra")
-    from mcp_tiny_hf import save_tiny_model
+    from mcp_tiny_hf import save_tiny_model, weight_key
 
-    return save_tiny_model(tmp_path_factory.mktemp("tiny"))
+    directory = save_tiny_model(tmp_path_factory.mktemp("tiny"))
+    # transformers 5.4 saves model.language_model.layers.N, later versions
+    # model.layers.N: name the tensors the way this checkpoint does
+    global T0, T1
+    T0 = weight_key(directory, "layers.0.mlp.down_proj.weight")
+    T1 = weight_key(directory, "layers.1.self_attn.q_proj.weight")
+    return directory
 
 
 @pytest.fixture
