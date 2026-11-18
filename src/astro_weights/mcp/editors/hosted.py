@@ -241,7 +241,8 @@ class _Editor:
     handoff: dict[str, Any] | None = None
 
     def _tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        return anyio.from_thread.run(_call, self.session, name, args)
+        result: dict[str, Any] = anyio.from_thread.run(_call, self.session, name, args)
+        return result
 
     def _report(self, tokens: int, dollars: float, model: str) -> dict[str, Any]:
         self.tokens += tokens

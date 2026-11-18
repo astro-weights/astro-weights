@@ -40,7 +40,7 @@ __all__ = [
     "system_prompt",
 ]
 
-Session = Client | ClientSession
+type Session = Client | ClientSession
 Message = dict[str, Any]
 EDITOR_ONLY = frozenset({"report_usage", "check_spend", "report_refusal"})
 _JOB_TOOLS = frozenset({"exec_python", "forward_pass"})
