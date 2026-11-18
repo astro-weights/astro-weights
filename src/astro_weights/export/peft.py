@@ -25,7 +25,7 @@ FLOAT_DTYPES = {"F32", "F16"}
 
 
 def _write_json(path: Path, obj: object) -> None:
-    path.write_text(json.dumps(obj, indent=1, sort_keys=True) + "\n")
+    path.write_text(json.dumps(obj, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _sha256(arr: np.ndarray) -> str:
@@ -124,7 +124,7 @@ def save_peft(edit: Edit, out_dir: Path | str, *, overwrite: bool = False) -> No
 def _load_object(path: Path) -> dict[str, object]:
     """Parse a JSON file that must hold an object; ValueError otherwise."""
     try:
-        obj = json.loads(path.read_text())
+        obj = json.loads(path.read_text(encoding="utf-8"))
     except RecursionError:
         raise ValueError(f"{path.name}: JSON nested too deeply") from None
     except ValueError as e:

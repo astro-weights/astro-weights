@@ -55,7 +55,7 @@ def save_merged_tensors(
 
 def _read_manifest(directory: Path) -> dict[str, dict[str, Any]]:
     """Parse the manifest's `tensors` table; any malformed shape is a ValueError."""
-    manifest = json.loads((directory / MANIFEST).read_text())
+    manifest = json.loads((directory / MANIFEST).read_text(encoding="utf-8"))
     tensors = manifest.get("tensors") if isinstance(manifest, dict) else None
     if not isinstance(tensors, dict):
         raise ValueError("manifest must be an object with a `tensors` object")  # noqa: TRY004 (spec: ValueError)

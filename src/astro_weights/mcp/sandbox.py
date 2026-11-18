@@ -111,7 +111,14 @@ def _detect() -> tuple[Mode | None, str]:
 
 def _runs(cmd: list[str], mode: Mode) -> tuple[Mode | None, str]:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, f"{cmd[0]} failed to run: {e}"
     if r.returncode != 0:

@@ -406,7 +406,7 @@ class Kernel:
                 what = f"failed to start: protocol error: {end}"
             tail = read_capped(self._log, 100_000)[-1500:]
             raise KernelError(f"kernel {what}: {tail}".strip())
-        self._marker.write_text(f"{proc.pid}\n")
+        self._marker.write_text(f"{proc.pid}\n", encoding="utf-8")
         return proc
 
     def _stop(self) -> int | None:

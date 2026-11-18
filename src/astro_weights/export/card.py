@@ -151,5 +151,5 @@ def write_card(directory: Path | str, text: str, *, overwrite: bool = True) -> P
     path = out / "README.md"
     if path.exists() and not overwrite:
         raise FileExistsError(path)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
