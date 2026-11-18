@@ -1,1 +1,0 @@
-On Linux with bubblewrap older than 0.8 (RHEL 9 ships 0.6), `kernel.allow_nested_userns = true` lets the agent kernel run sandboxed without `--disable-userns`; the default still refuses, and the run record notes the weaker sandbox.

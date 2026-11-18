@@ -1,6 +1,6 @@
 # Agent budgets and sandbox
 
-!!! note "New in 0.2 (pre-release)"
+!!! note "New in 0.2"
 
 The MCP server runs code an agent wrote, on your machine, against your model. Two things limit it: a budget the agent cannot raise and an OS sandbox around its code. This page says what each one counts, when it charges, and what it does not stop.
 

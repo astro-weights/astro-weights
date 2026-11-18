@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.2.0] - 2026-11-18
+
+0.2.0 final: everything in 0.2.0a1 below, plus the editors and the one-command run listed here.
+
+Upgrading from 0.1.5: no public name was removed or changed, so 0.1.x code runs as before. The agent features are opt-in extras: `pip install "astro-weights[mcp,hf]"` for the MCP server and the scripted and local editors, and add `hosted` for the hosted Claude editor. The 0.1.5 model-card fix is included. The MCP server was run from Claude Code; the Codex setup page is not tested.
+
+### Added
+
+- A hosted editor, `python -m astro_weights.mcp.editors.hosted RUN_DIR --model ID` (the `hosted` extra), lets Claude drive the stdio MCP server on your own `ANTHROPIC_API_KEY`, checks every call against the run's dollar limit before making it (a run whose limit is above `--max-dollars`, $20 by default, is refused) and hands the run to a local model when Claude refuses.
+- A local editor, `python -m astro_weights.mcp.editors.local RUN_DIR --base-url URL --model NAME`, lets any OpenAI-compatible model with tool calls drive the stdio MCP server, reporting its tokens to the ledger at no dollar cost.
+- Report agent usage, spend check and refusal tools on the MCP server for editors.
+- `astro-weights run CONFIG.toml` starts an agent run (run directory, budget, editor, export options) from one TOML file, never starts over a run that already exists, goes on with it under `--resume` with the budget used kept, prints its budget and last events with `--status`, and the run's `finish` now exports the stored edits as a PEFT adapter (and a spliced GGUF when `base_gguf` is set) to `RUN_DIR/export`.
+- On Linux with bubblewrap older than 0.8 (RHEL 9 ships 0.6), `kernel.allow_nested_userns = true` lets the agent kernel run sandboxed without `--disable-userns`; the default still refuses, and the run record notes the weaker sandbox.
+
+### Changed
+
+- The `exec_python` tool description now lists the kernel helpers (`save_edit`, `load`, `forward_result` and the rest) and the edit size cap, so MCP clients such as Claude Code and Codex can use them without probing the kernel.
+
+### Fixed
+
+- A run config written with Windows line endings is now copied into the run directory byte for byte.
+- Every text file the library reads or writes (recipes, adapter configs, manifests, model cards) now uses UTF-8, so non-ASCII text no longer depends on the Windows locale.
+
 ## [0.2.0a1] - 2026-11-17
 
 Alpha: agent over MCP. Interfaces may change before 0.2.0.
@@ -20,6 +43,12 @@ Alpha: agent over MCP. Interfaces may change before 0.2.0.
 ### Changed
 
 - The docs and blog load Google Analytics only after you accept the cookie banner; Cookie settings in the footer changes the choice.
+
+## [0.1.5] - 2026-11-18
+
+### Fixed
+
+- Model cards for adapters saved with `model.language_model.layers` names now load the base with `AutoModelForImageTextToText`; the old `AutoModelForCausalLM` snippet loaded none of the adapter weights.
 
 ## [0.1.4] - 2026-11-17
 
@@ -171,7 +200,9 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.2.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.0
 [0.2.0a1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.0a1
+[0.1.5]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.5
 [0.1.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.4
 [0.1.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.3
 [0.1.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.2

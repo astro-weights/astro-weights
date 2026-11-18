@@ -1,1 +1,0 @@
-The `exec_python` tool description now lists the kernel helpers (`save_edit`, `load`, `forward_result` and the rest) and the edit size cap, so MCP clients such as Claude Code and Codex can use them without probing the kernel.

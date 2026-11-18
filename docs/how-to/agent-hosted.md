@@ -1,13 +1,13 @@
 # Run the agent on Claude with your own key
 
-!!! note "New in 0.2 (pre-release)"
+!!! note "New in 0.2"
 
 The hosted editor lets Claude drive the MCP server on your own Anthropic API key. It checks the dollar budget before every call and writes every call's cost to the ledger. When Claude refuses, the same run goes on with a local model.
 
 You need the `mcp`, `hf` and `hosted` extras, and a key in the environment:
 
 ```bash
-pip install --pre "astro-weights[mcp,hf,hosted]"
+pip install "astro-weights[mcp,hf,hosted]"
 export ANTHROPIC_API_KEY=...
 ```
 
