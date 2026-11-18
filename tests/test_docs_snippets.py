@@ -24,6 +24,7 @@ HF = ("torch", "transformers", "peft")
 # Optional modules a file needs; the whole file is skipped when one is missing.
 NEEDS: dict[str, tuple[str, ...]] = {
     "docs/tutorials/first-edit.md": HF,
+    "docs/tutorials/first-agent-run.md": (*HF, "mcp"),
     "docs/how-to/apply-across-model-classes.md": HF,
     "docs/how-to/export-gguf.md": ("gguf",),
     "docs/how-to/run-eval.md": HF,
