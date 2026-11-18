@@ -580,6 +580,25 @@ def test_start_cleans_planted_files(make: Make, tmp_path: Path) -> None:
     assert not stale.exists()
 
 
+def test_restart_when_old_files_cannot_be_deleted(
+    make: Make, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows can hold a killed child's files locked; restart must not need unlink."""
+    k, _, _ = make(True)
+    ok(k, "v = 1")
+
+    def locked(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError(13, "file in use", str(self))
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    out = fail(k, f"{SRV}srv._out.write(b'not json\\n'); srv._out.flush()")
+    assert out.endswith("kernel killed; its variables are lost]")
+    res = k.exec("'v' in globals()")
+    assert res["restarted"]
+    assert res["output"] == "False\n"
+    assert not (k.work / kmod.LOG).exists()
+
+
 # ---------------------------------------------------------------- file helpers
 
 
