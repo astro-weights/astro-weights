@@ -990,3 +990,15 @@ async def test_finish_passes_the_gguf_options_to_the_export(
     assert seen[0]["gguf_out_type"] == "bf16"
     assert seen[0]["rank"] == 3
     assert seen[0]["out_dir"] == run / "export"
+
+
+def test_start_event_records_library_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from astro_weights.mcp import server as server_mod
+
+    monkeypatch.setattr(server_mod, "library_commit", lambda: "abc-dirty")
+    run = write_run(tmp_path)
+    build_server(run)
+    start = RunRecord.open(run / "record.jsonl").read()[0]
+    assert start["library_commit"] == "abc-dirty"

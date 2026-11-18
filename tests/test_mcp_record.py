@@ -1,15 +1,18 @@
 import json
 import math
 import platform
+import shutil
+import subprocess
 import threading
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from astro_weights.mcp import record as record_mod
 from astro_weights.mcp.budget import Ledger, Limits
-from astro_weights.mcp.record import CATEGORY_MAX, DETAIL_MAX, RunRecord
+from astro_weights.mcp.record import CATEGORY_MAX, DETAIL_MAX, RunRecord, library_commit
 
 
 def start(tmp_path: Path, **kw: Any) -> RunRecord:
@@ -299,3 +302,78 @@ def test_failed_append_keeps_other_threads_lines(
     rec.event("b")
     monkeypatch.undo()
     assert [x["event"] for x in rec.read()] == ["start", "a", "b"]
+
+
+# ---------------------------------------------------------------- library_commit
+
+
+class _Dist:
+    def __init__(self, text: str | None) -> None:
+        self.text = text
+
+    def read_text(self, name: str) -> str | None:
+        assert name == "direct_url.json"
+        return self.text
+
+
+def _installed(monkeypatch: pytest.MonkeyPatch, info: Any) -> None:
+    text = info if info is None or isinstance(info, str) else json.dumps(info)
+    monkeypatch.setattr(record_mod, "distribution", lambda _: _Dist(text))
+
+
+def _git_repo(where: Path) -> str:
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(where), *args],
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout.strip()
+
+    where.mkdir()
+    git("init", "-q")
+    (where / "f.txt").write_text("a", encoding="utf-8")
+    git("add", "f.txt")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
+    return git("rev-parse", "HEAD")
+
+
+def test_library_commit_from_vcs_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    vcs = {"vcs": "git", "commit_id": "abc"}
+    _installed(monkeypatch, {"url": "https://x/y.git", "vcs_info": vcs})
+    assert library_commit() == "abc"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_library_commit_from_editable_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    head = _git_repo(tmp_path / "repo")
+    url = (tmp_path / "repo").as_uri()
+    _installed(monkeypatch, {"url": url, "dir_info": {"editable": True}})
+    assert library_commit() == head
+    (tmp_path / "repo" / "f.txt").write_text("b", encoding="utf-8")
+    assert library_commit() == f"{head}-dirty"
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        None,  # a wheel from an index has no direct_url.json
+        "not json",
+        {"url": "file:///nowhere/at/all", "dir_info": {"editable": True}},
+        {"url": "file:///tmp/x.whl", "archive_info": {}},
+        {"url": "https://x/y.git", "dir_info": {"editable": True}},
+    ],
+)
+def test_library_commit_none(monkeypatch: pytest.MonkeyPatch, info: Any) -> None:
+    _installed(monkeypatch, info)
+    assert library_commit() is None
+
+
+def test_library_commit_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(_: str) -> Any:
+        raise PackageNotFoundError("astro-weights")
+
+    monkeypatch.setattr(record_mod, "distribution", missing)
+    assert library_commit() is None

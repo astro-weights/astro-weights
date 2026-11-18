@@ -92,7 +92,7 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 | | `model_dir` | path to the model | absent: `exec_python` and `forward_pass` are off |
 | `[limits]` | `forward_passes`, `code_runs`, `tokens` | int >= 0 | required |
 | | `dollars` | number >= 0; must be > 0 for `hosted` | 20.0 for `hosted`, 0 for the others |
-| `[editor]` | `kind` | `scripted`, `local` or `hosted` | required |
+| `[editor]` | `kind` | `scripted`, `local` or `hosted` (`hosted` needs the `hosted` extra: `pip install "astro-weights[mcp,hf,hosted]"`) | required |
 | `local` | `base_url`, `model` | non-empty string | required |
 | | `api_key_env` | the name of an environment variable | no key |
 | | `max_turns` | int >= 1 | 40 |
