@@ -4,9 +4,14 @@ Reads only the GGUF header, over HTTP range requests or from a local path, so th
 multi-GB weights are never downloaded. Standard library only.
 
     python gguf_meta_diff.py A.gguf-or-URL B.gguf-or-URL [--dump-template DIR]
+    python gguf_meta_diff.py A.gguf B.gguf --tensors
 
 Prints one line per metadata key: "same" or "DIFF", with a sha256 of each value.
 Exit code 0 if every tokenizer.* key (chat template included) is byte-identical.
+
+--tensors (local files only) instead hashes each tensor's data, from its offset to the
+next tensor's offset (alignment padding included), and lists the tensors that differ
+in bytes, type or shape. Exit code 0 if none differ.
 """
 
 import hashlib
@@ -102,8 +107,61 @@ def meta(where):
     return version, out
 
 
+def tensors(path):
+    """sha256 of each tensor's bytes in a local GGUF (range = this offset to next offset)."""
+    s = Src(path)
+    assert s.read(4) == b"GGUF", f"{path}: not a GGUF file"
+    s.u("I")
+    nt, nkv = s.u("Q"), s.u("Q")
+    align = 32
+    for _ in range(nkv):
+        key = s.read(s.u("Q")).decode()
+        t = s.u("I")
+        raw, _ = value(s, t)
+        if key == "general.alignment":
+            align = struct.unpack("<I", raw)[0]
+    info = []
+    for _ in range(nt):
+        name = s.read(s.u("Q")).decode()
+        nd = s.u("I")
+        shape = [s.u("Q") for _ in range(nd)]
+        ttype, off = s.u("I"), s.u("Q")
+        info.append((off, name, ttype, shape))
+    start = (s.pos + align - 1) // align * align
+    size = Path(path).stat().st_size
+    info.sort()
+    out = {}
+    with Path(path).open("rb") as f:
+        for i, (off, name, ttype, shape) in enumerate(info):
+            end = info[i + 1][0] if i + 1 < len(info) else size - start
+            if start + end > size:
+                raise ValueError(f"{path}: tensor {name} runs past end of file")
+            f.seek(start + off)
+            h, left = hashlib.sha256(), end - off
+            while left:
+                chunk = f.read(min(left, CHUNK))
+                if not chunk:
+                    raise EOFError(path)
+                h.update(chunk)
+                left -= len(chunk)
+            out[name] = (h.hexdigest(), ttype, shape)
+    return out
+
+
 def main():
     a, b = sys.argv[1], sys.argv[2]
+    if "--tensors" in sys.argv:  # local files only: hashes every tensor's data
+        ta, tb = tensors(a), tensors(b)
+        same = [k for k in ta if k in tb and ta[k] == tb[k]]
+        diff = sorted(set(ta) ^ set(tb) | {k for k in ta if k in tb and ta[k] != tb[k]})
+        print(
+            f"tensors {len(ta)} / {len(tb)}; identical {len(same)}; differ {len(diff)}"
+        )
+        for k in diff:
+            print(
+                f"DIFF  {k}  {ta.get(k, ('-',))[0][:16]} type {ta.get(k, ('', '-'))[1]}  {tb.get(k, ('-',))[0][:16]} type {tb.get(k, ('', '-'))[1]}"
+            )
+        return 0 if not diff else 1
     dump = (
         Path(sys.argv[sys.argv.index("--dump-template") + 1])
         if "--dump-template" in sys.argv
