@@ -176,9 +176,10 @@ jobs:
         # --no-sources: torch from PyPI; the CPU index has no plain 2.4.0 Linux wheel (only 2.4.0+cpu)
         run: uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp --extra hosted pytest -m "not gpu" -n auto
 
+  # Not in ci-ok: hosted macOS can queue 15+ min. Runs after merge (push to main) and on release PRs; red goes to Eng.
   test-os:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && github.event_name != 'merge_group'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -226,9 +227,10 @@ jobs:
           exit "$bad"
 
   # Single required check. Passes only if every needed job ended success or skipped (matrix can end abandoned).
+  # test-os left out on purpose (see test-os).
   ci-ok:
     if: always()
-    needs: [changes, lint, test, test-hf, wheel-smoke, test-lowest, test-os, zizmor, dco]
+    needs: [changes, lint, test, test-hf, wheel-smoke, test-lowest, zizmor, dco]
     runs-on: ubuntu-latest
     steps:
       - env:

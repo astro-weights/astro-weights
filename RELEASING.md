@@ -10,7 +10,7 @@ Replace `X.Y.Z` with the new version. See [Versioning and support](CONTRIBUTING.
 2. Set the version: `uv version X.Y.Z`.
 3. Build the changelog: `uv run towncrier build --version X.Y.Z --yes`. This writes the fragments from `changes/` into `CHANGELOG.md` and deletes them. Then add the link for the new version at the bottom of `CHANGELOG.md`.
 4. Open a PR with the labels `release` and `skip-changelog`. Wait for the required checks, then squash merge.
-5. On the updated `main`, create an annotated tag and push it: `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`. A tag ruleset protects `v*`, so only repo admins can create these tags.
+5. On the updated `main`, check that the CI run for the merge commit is green, including `test-os` (macOS, Windows). Those jobs run only after merge and do not block it. Then create an annotated tag and push it: `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`. A tag ruleset protects `v*`, so only repo admins can create these tags.
 6. `release.yml` checks that the tag matches the version, builds, publishes to TestPyPI, then waits for a maintainer to approve the `pypi` environment. Check the TestPyPI page, then approve.
 7. Verify the published package in a fresh venv: `python -m venv /tmp/v && /tmp/v/bin/pip install astro-weights==X.Y.Z`.
 8. After `pypi` succeeds, `release.yml` job `github-release` publishes the GitHub release from the tag: notes from the changelog section, wheel and sdist attached. Check it on the Releases page.
