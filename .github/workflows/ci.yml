@@ -157,7 +157,7 @@ jobs:
           done < <(git log --no-merges --format='%H%x09%an <%ae>' "$BASE_SHA..HEAD")
           exit "$bad"
 
-  # Single required check. Skipped jobs pass; failed or cancelled jobs fail it.
+  # Single required check. Passes only if every needed job ended success or skipped (matrix can end abandoned).
   ci-ok:
     if: always()
     needs: [lint, test, test-hf, wheel-smoke, test-lowest, test-os, zizmor, dco]
@@ -167,4 +167,4 @@ jobs:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
           echo "$RESULTS"
-          case " $RESULTS " in *" failure "*|*" cancelled "*) exit 1 ;; esac
+          for r in $RESULTS; do case "$r" in success|skipped) ;; *) echo "::error::a needed job ended $r"; exit 1 ;; esac; done
