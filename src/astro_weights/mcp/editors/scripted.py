@@ -80,8 +80,8 @@ def _forward(arm: str) -> dict[str, Any]:
 def _compare(handles: Sequence[str]) -> dict[str, Any]:
     h_base, h_edit = handles[1], handles[2]
     code = (
-        f'a = forward_result("{h_base}", "hidden_L0")\n'
-        f'b = forward_result("{h_edit}", "hidden_L0")\n'
+        f'a = forward_result("{h_base}", "hidden_l0")\n'
+        f'b = forward_result("{h_edit}", "hidden_l0")\n'
         "print(float(abs(a - b).max()))\n"
     )
     return {"code": code}
@@ -202,10 +202,16 @@ def main(argv: list[str] | None = None) -> int:
     except ScriptFailed as exc:
         print(json.dumps({"error": str(exc), "step": exc.index, "result": exc.result}))
         return 1
-    handles = [r["handle"] for r in results if isinstance(r.get("handle"), str)]
+    handles = list(dict.fromkeys(r["handle"] for r in results if r.get("handle")))
+    outputs = [
+        r["result"]["output"]
+        for r in results
+        if isinstance(r.get("result"), dict) and "output" in r["result"]
+    ]
     summary = {
         "steps": len(results),
         "handles": handles,
+        "outputs": outputs,
         "budget": results[-1].get("budget"),
     }
     print(json.dumps(summary))

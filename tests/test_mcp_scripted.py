@@ -166,3 +166,39 @@ def test_main_reports_a_failed_step_over_stdio(
     out = json.loads(capsys.readouterr().out)
     assert out["step"] == 0
     assert "not available" in out["result"]["error"]
+
+
+def test_scripted_run_end_to_end(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from mcp_tiny_hf import save_tiny_model
+
+    from astro_weights.mcp import sandbox
+    from astro_weights.mcp.budget import Ledger, Limits
+
+    model = save_tiny_model(tmp_path / "model")
+    limits = {"forward_passes": 5, "code_runs": 5, "tokens": 0, "dollars": 0}
+    run = write_run(
+        tmp_path / "run",
+        limits=limits,
+        model_dir=str(model),
+        kernel={"timeout_s": 60},
+        forward={"device": "cpu", "max_new_tokens": 8},
+    )
+    flags = ["--unsafe-kernel"] if sandbox.probe() is None else []
+    assert main([str(run), *flags]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["steps"] == len(DEFAULT_SCRIPT)
+    assert len(printed["handles"]) == 4
+    assert float(printed["outputs"][-1]) > 0  # max |a - b|: the edit is visible
+    events = [e["event"] for e in RunRecord.open(run / "record.jsonl").read()]
+    assert events[0] == "start"
+    assert {"edit_saved", "summary", "finish"} <= set(events)
+    assert events[-1] == "finish"
+    used = Ledger(run / "ledger.jsonl", Limits(**limits)).used()
+    assert used == {"forward_passes": 2, "code_runs": 2, "tokens": 0, "dollars": 0}
+    final = printed["budget"]["used"]
+    assert final["tokens"] == 0
+    assert final["dollars"] == 0
