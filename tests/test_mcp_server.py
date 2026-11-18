@@ -621,14 +621,23 @@ async def test_report_usage_past_limit_still_records(tmp_path: Path) -> None:
     assert out["budget"]["remaining"]["dollars"] == 0
 
 
+NOT_JSON: list[dict[str, Any]] = [
+    {"dollars": float("nan")},
+    {"dollars": float("inf")},
+]
+
 BAD_USAGE: list[dict[str, Any]] = [
     {"tokens": True},
     {"tokens": -1},
     {"tokens": 1.5},
     {"dollars": True},
     {"dollars": -0.01},
-    {"dollars": float("nan")},
-    {"dollars": float("inf")},
+    {"dollars": "x"},
+    {"dollars": 10**400},
+    {"tokens": "x"},
+    {"turn": "x"},
+    {"model": 5},
+    {"model": "  "},
     {"turn": -1},
     {"turn": True},
     {"model": ""},
@@ -641,15 +650,24 @@ BAD_USAGE: list[dict[str, Any]] = [
 async def test_report_usage_bad_args(tmp_path: Path, bad: dict[str, Any]) -> None:
     good = {"tokens": 5, "dollars": 0.5, "turn": 1, "model": "m"}
     async with Client(build_server(write_run(tmp_path))) as client:
-        try:
+        out = await call(client, "report_usage", {**good, **bad})
+    assert "error" in out
+    assert ledger_lines(tmp_path) == []
+    assert [e["event"] for e in events(tmp_path)] == ["start"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("bad", NOT_JSON, ids=lambda b: str(b)[:30])
+async def test_report_usage_nan_inf(tmp_path: Path, bad: dict[str, Any]) -> None:
+    good = {"tokens": 5, "dollars": 0.5, "turn": 1, "model": "m"}
+    async with Client(build_server(write_run(tmp_path))) as client:
+        try:  # the client may refuse to send NaN or inf at all
             result = await client.call_tool("report_usage", {**good, **bad})
-        except Exception:  # noqa: BLE001 - a client may reject NaN before sending
-            return_error = True
+        except Exception:  # noqa: BLE001
+            refused = True
         else:
-            return_error = result.is_error or "error" in (
-                result.structured_content or {}
-            )
-    assert return_error
+            refused = result.is_error or "error" in (result.structured_content or {})
+    assert refused
     assert ledger_lines(tmp_path) == []
     assert [e["event"] for e in events(tmp_path)] == ["start"]
 
@@ -668,8 +686,8 @@ async def test_check_spend_boundary_writes_nothing(tmp_path: Path) -> None:
         over = await call(client, "check_spend", {"estimate": 0.61})
         free = await call(client, "check_spend", {"estimate": 0})
         bad = [
-            await client.call_tool("check_spend", {"estimate": x})
-            for x in (-1, True, "x")
+            await call(client, "check_spend", {"estimate": x})
+            for x in (-1, True, "x", 10**400)
         ]
     assert fits["ok"] is True
     assert fits["budget"]["used"]["dollars"] == 0.4
@@ -678,7 +696,8 @@ async def test_check_spend_boundary_writes_nothing(tmp_path: Path) -> None:
     assert over["budget"]["used"]["dollars"] == 0.4
     assert free["ok"] is True
     for r in bad:
-        assert r.is_error or "error" in (r.structured_content or {})
+        assert "error" in r
+        assert "ok" not in r
     assert ledger_lines(tmp_path) == before
     assert len(events(tmp_path)) == n
 
@@ -693,6 +712,24 @@ async def test_check_spend_failure_streak_not_ok(tmp_path: Path) -> None:
         out = await call(client, "check_spend", {"estimate": 0.1})
     assert out["ok"] is False
     assert "failed 3 times" in out["error"]
+    async with Client(build_server(run)) as client:
+        zero = await call(client, "check_spend", {"estimate": 0})
+    assert zero["ok"] is False
+    assert "failed 3 times" in zero["error"]
+
+
+@pytest.mark.anyio
+async def test_check_spend_zero_ok_when_over_limit(tmp_path: Path) -> None:
+    async with Client(build_server(write_run(tmp_path))) as client:
+        await call(
+            client,
+            "report_usage",
+            {"tokens": 1, "dollars": 6, "turn": 0, "model": "m"},
+        )
+        zero = await call(client, "check_spend", {"estimate": 0})
+        some = await call(client, "check_spend", {"estimate": 0.01})
+    assert zero["ok"] is True
+    assert some["ok"] is False
 
 
 @pytest.mark.anyio
@@ -722,6 +759,10 @@ async def test_report_refusal_records(tmp_path: Path) -> None:
         {"category": "  "},
         {"model": ""},
         {"model": "x" * 201},
+        {"model": "  "},
+        {"category": 5},
+        {"model": 5},
+        {"detail": 3},
     ],
 )
 async def test_report_refusal_bad_args(tmp_path: Path, bad: dict[str, Any]) -> None:
@@ -750,3 +791,6 @@ async def test_after_finish_only_report_usage_records(tmp_path: Path) -> None:
     after = events(tmp_path)[n:]
     assert [e["event"] for e in after] == ["usage"]
     assert len(ledger_lines(tmp_path)) == 2
+    finish = next(e for e in events(tmp_path) if e["event"] == "finish")
+    assert finish["budget"]["used"]["tokens"] == 0
+    assert usage["budget"]["used"]["tokens"] == 7

@@ -11,6 +11,9 @@ free, with no job. Its arrays are read from the kernel with ``forward_result``.
 
 Three tools are for editors, not the model: ``report_usage`` (tokens and dollars
 spent, always recorded), ``check_spend`` (free, no write) and ``report_refusal``.
+The ledger (or the sum of the ``usage`` events) is the source of truth for spend: a
+``report_usage`` after ``finish`` is still recorded, so ``finish.budget`` can leave
+out that last turn.
 """
 
 import argparse
@@ -32,7 +35,13 @@ except ModuleNotFoundError as e:
     ) from e
 
 from astro_weights.mcp import forward
-from astro_weights.mcp.budget import BudgetExceeded, Kind, Ledger, TooManyFailures
+from astro_weights.mcp.budget import (
+    MAX_FAILURES,
+    BudgetExceeded,
+    Kind,
+    Ledger,
+    TooManyFailures,
+)
 from astro_weights.mcp.edit_store import EditStore
 from astro_weights.mcp.handles import HandleStore, UnknownHandle
 from astro_weights.mcp.jobs import Executor, JobRunner, RunConfig, load_run_config
@@ -52,16 +61,16 @@ def _count(value: Any) -> bool:
 
 
 def _money(value: Any) -> bool:
-    return (
-        isinstance(value, int | float)
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value >= 0
-    )
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:  # an int too large for a float
+        return False
 
 
 def _model(value: Any) -> bool:
-    return isinstance(value, str) and 0 < len(value) <= _MODEL_MAX
+    return isinstance(value, str) and value.strip() != "" and len(value) <= _MODEL_MAX
 
 
 def _open_record(run_dir: Path, cfg: RunConfig) -> RunRecord:
@@ -271,8 +280,9 @@ def build_server(
 
         ``tokens`` and ``turn`` are ints >= 0, ``dollars`` a finite number >= 0,
         ``model`` a non-empty string of at most 200 characters (checked here, not
-        coerced). Always recorded, even past a limit and after finish. ``over``
-        lists the kinds now past their limit.
+        coerced). Always recorded, even past a limit and after finish; a usage
+        recorded after finish is not in ``finish.budget``, so read spend from the
+        ledger. ``over`` lists the kinds now past their limit.
         """
         if not (_count(tokens) and _money(dollars) and _count(turn) and _model(model)):
             return {"error": "bad usage report"}
@@ -292,7 +302,9 @@ def build_server(
     def check_spend(estimate: Any) -> dict[str, Any]:
         """Check that an estimated dollar cost fits the budget; for editors, not meant for the model.
 
-        Free: writes nothing.
+        Free: writes nothing. An estimate of 0 is ok even when dollars are already
+        past the limit (a local fallback turn costs nothing), but not while the
+        dollars failure streak blocks work.
         """
         if not _money(estimate):
             return {"error": "estimate must be a finite number >= 0"}
@@ -301,14 +313,16 @@ def build_server(
                 return {"error": "run already finished"}
             budget = ledger.to_json()
             try:
-                if estimate > 0:  # check() takes amounts > 0; zero always fits
+                if estimate > 0:  # check() takes amounts > 0
                     ledger.check("dollars", estimate)
+                elif budget["streaks"]["dollars"] >= MAX_FAILURES:
+                    raise TooManyFailures("dollars", budget["streaks"]["dollars"])
             except (BudgetExceeded, TooManyFailures) as exc:
                 return {"ok": False, "error": str(exc), "budget": budget}
         return {"ok": True, "budget": budget}
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
-    def report_refusal(category: str, model: str, detail: str = "") -> dict[str, Any]:
+    def report_refusal(category: Any, model: Any, detail: Any = "") -> dict[str, Any]:
         """Record that a model refused; for editors, not meant for the model."""
         if not (
             isinstance(category, str) and _model(model) and isinstance(detail, str)
