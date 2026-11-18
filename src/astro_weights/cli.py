@@ -403,6 +403,18 @@ def _export(
     kind = out_type or "q8_0"
     try:
         text = model_card(edit, "adapter", card) if card is not None else None
+        if gguf is not None and arch is not None:
+            try:
+                from astro_weights.export.gguf import (
+                    _lora_tensor_names,
+                    save_lora_gguf,
+                )
+            except ImportError:
+                return _error("GGUF export needs: pip install 'astro-weights[gguf]'")
+            try:
+                _lora_tensor_names(edit, arch)  # refuse before anything is written
+            except ValueError as e:
+                return _error(str(e))
         if splice is not None and base_model is not None and merged is not None:
             try:
                 path, replaced = _splice_merged(edit, base_model, splice, merged, kind)
@@ -410,10 +422,6 @@ def _export(
                 return _error(str(e))
             written.append(path)
         if gguf is not None and arch is not None:
-            try:
-                from astro_weights.export.gguf import save_lora_gguf
-            except ImportError:
-                return _error("GGUF export needs: pip install 'astro-weights[gguf]'")
             save_lora_gguf(edit, gguf, arch, overwrite=force)
             written.append(str(gguf))
         if text is not None:

@@ -1,5 +1,6 @@
 """Edit types: a set of rank-r deltas on named linear modules."""
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
@@ -123,16 +124,18 @@ def compose(*edits: Edit) -> Edit:
             raise ValueError(
                 f"different base models: {first.base_model!r} vs {e.base_model!r}"
             )
+    prefix = _layer_prefix(edits)
     sha: dict[str, str] = {}
     for e in edits:
         for key, value in e.base_sha256.items():
-            if sha.setdefault(key, value) != value:
+            if sha.setdefault(_with_prefix(key, prefix), value) != value:
                 raise ValueError(
                     f"{key}: base hashes differ; adapters built on different bases"
                 )
     parts: dict[str, list[LowRankDelta]] = {}
     for e in edits:
         for d in e.deltas:
+            d = LowRankDelta(_with_prefix(d.module, prefix), d.B, d.A)
             parts.setdefault(d.module, []).append(d)
     deltas = [_join(group) for group in parts.values()]
     return Edit.from_deltas(
@@ -141,6 +144,28 @@ def compose(*edits: Edit) -> Edit:
         sha,
         {"composed_from": [dict(e.meta) for e in edits]},
     )
+
+
+_LAYER = re.compile(r"^((?:.*?\.)?)(layers\.\d+\..*)$")
+
+
+def _layer_prefix(edits: tuple[Edit, ...]) -> str | None:
+    """Text before `layers.<N>` in the first layer module (e.g. `model.`), if any."""
+    for e in edits:
+        for d in e.deltas:
+            if m := _LAYER.match(d.module):
+                return m.group(1)
+    return None
+
+
+def _with_prefix(name: str, prefix: str | None) -> str:
+    """`name` with its text before `layers.<N>` replaced by `prefix`.
+
+    `model.layers.3.x` and `model.language_model.layers.3.x` name one layer in
+    two HF layouts; composing renames all to the first edit's layout.
+    """
+    m = _LAYER.match(name)
+    return name if m is None or prefix is None else prefix + m.group(2)
 
 
 def _join(group: list[LowRankDelta]) -> LowRankDelta:

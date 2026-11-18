@@ -226,3 +226,56 @@ def test_compose_peft_alpha_folded(tmp_path: Path) -> None:
     c = compose(load_peft(ext), load_peft(tmp_path / "ours"))
     want = 4.0 * (b3 @ a3) + ours.deltas[0].dense()
     np.testing.assert_allclose(c.deltas[0].dense(), want, rtol=1e-5, atol=1e-5)
+
+
+def test_compose_mixed_layouts_join_one_module() -> None:
+    a = _edit({"model.layers.3.mlp.down_proj": 1, "model.layers.4.mlp.up_proj": 1}, 1)
+    b = _edit({"model.language_model.layers.3.mlp.down_proj": 2}, 5)
+    c = compose(a, b)
+    assert sorted(d.module for d in c.deltas) == [
+        "model.layers.3.mlp.down_proj",
+        "model.layers.4.mlp.up_proj",
+    ]
+    got = {d.module: d for d in c.deltas}
+    want = a.deltas[0].dense() + b.deltas[0].dense()
+    np.testing.assert_allclose(
+        got["model.layers.3.mlp.down_proj"].dense(), want, rtol=1e-5, atol=1e-5
+    )
+
+
+def test_compose_first_edit_layout_wins_both_ways() -> None:
+    a = _edit({"model.language_model.layers.3.mlp.down_proj": 1}, 1)
+    b = _edit({"model.layers.3.mlp.down_proj": 1, "model.layers.7.mlp.up_proj": 1}, 5)
+    c = compose(a, b)
+    assert sorted(d.module for d in c.deltas) == [
+        "model.language_model.layers.3.mlp.down_proj",
+        "model.language_model.layers.7.mlp.up_proj",
+    ]
+
+
+def test_compose_mixed_layouts_sha_renamed_and_checked() -> None:
+    k = "layers.3.mlp.down_proj.weight"
+    a = Edit.from_deltas(
+        [rand_delta("model.layers.3.mlp.down_proj", 1)], "b", {"model." + k: "h"}
+    )
+    ok = Edit.from_deltas(
+        [rand_delta("model.language_model.layers.3.mlp.down_proj", 1)],
+        "b",
+        {"model.language_model." + k: "h"},
+    )
+    assert compose(a, ok).base_sha256 == {"model." + k: "h"}
+    bad = Edit.from_deltas(
+        [rand_delta("model.language_model.layers.3.mlp.down_proj", 1)],
+        "b",
+        {"model.language_model." + k: "other"},
+    )
+    with pytest.raises(ValueError, match="different bases"):
+        compose(a, bad)
+
+
+def test_compose_non_layer_modules_keep_names() -> None:
+    c = compose(_edit({"lm_head": 1}, 1), _edit({"model.layers.0.mlp.up_proj": 1}, 2))
+    assert sorted(d.module for d in c.deltas) == [
+        "lm_head",
+        "model.layers.0.mlp.up_proj",
+    ]

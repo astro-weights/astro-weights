@@ -229,6 +229,15 @@ def _check_qk_arch(arch: str, names: Iterable[str]) -> None:
         )
 
 
+def _lora_tensor_names(edit: Edit, architecture: str) -> dict[str, str]:
+    """GGUF tensor name per module; ValueError if `save_lora_gguf` would refuse it."""
+    names = {d.module: gguf_tensor_name(d.module) for d in edit.deltas}
+    if len(set(names.values())) != len(names):
+        raise ValueError("two modules map to the same GGUF tensor")
+    _check_qk_arch(architecture, names.values())
+    return names
+
+
 def save_lora_gguf(
     edit: Edit, path: Path | str, architecture: str, *, overwrite: bool = False
 ) -> None:
@@ -236,10 +245,7 @@ def save_lora_gguf(
     out = Path(path)
     if out.exists() and not overwrite:
         raise FileExistsError(f"{out} exists; pass overwrite=True to replace it")
-    names = {d.module: gguf_tensor_name(d.module) for d in edit.deltas}
-    if len(set(names.values())) != len(names):
-        raise ValueError("two modules map to the same GGUF tensor")
-    _check_qk_arch(architecture, names.values())
+    names = _lora_tensor_names(edit, architecture)
     tmp = _make_tmp(out)
     try:
         writer = gguf.GGUFWriter(tmp, architecture)

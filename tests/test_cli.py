@@ -1254,3 +1254,39 @@ def test_splice_qk_refused_on_llama_base(
     assert "q/k rows are reordered" in capsys.readouterr().err
     assert not merged.exists()
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_export_gguf_qk_llama_with_splice_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gguf = pytest.importorskip("gguf")
+    from astro_weights.export import tensor_sha256
+
+    w0 = np.random.default_rng(43).standard_normal((8, 16)).astype(np.float32)
+    model = tmp_path / "hf"
+    model.mkdir()
+    key = "model.layers.1.self_attn.q_proj.weight"
+    save_file({key: w0}, str(model / "model.safetensors"))
+    base = tmp_path / "base.gguf"
+    wr = gguf.GGUFWriter(base, "qwen35")
+    wr.add_block_count(3)
+    wr.add_tensor("blk.1.attn_q.weight", w0)
+    wr.write_header_to_file()
+    wr.write_kv_data_to_file()
+    wr.write_tensors_to_file(progress=False)
+    wr.close()
+    d = LowRankDelta(key[: -len(".weight")], np.ones((8, 1)), np.ones((1, 16)))
+    hashes = {key: tensor_sha256(model / "model.safetensors", key)}
+    save_peft(Edit((d,), "org/tiny", hashes), tmp_path / "a")
+    merged, lora = tmp_path / "m.gguf", tmp_path / "l.gguf"
+    argv = ["export", str(tmp_path / "a"), "--splice", str(base)]
+    argv += ["--base-model", str(model), "--merged", str(merged)]
+    argv += ["--out-type", "f16", "--gguf", str(lora), "--arch"]
+    assert main([*argv, "llama"]) == 2
+    assert "q/k rows are reordered" in capsys.readouterr().err
+    assert not merged.exists()
+    assert not lora.exists()
+    assert not list(tmp_path.glob("*.tmp"))
+    assert main([*argv, "qwen35"]) == 0
+    assert merged.exists()
+    assert lora.exists()
