@@ -1,7 +1,7 @@
 # CLI
 
 ```text
-astro-weights [--version] {build,compose,eval,export,inspect} ...
+astro-weights [--version] {build,compose,eval,export,inspect,mcp,run} ...
 ```
 
 | Command | Does |
@@ -11,8 +11,10 @@ astro-weights [--version] {build,compose,eval,export,inspect} ...
 | `build RECIPE.json --base MODEL_DIR --out DIR [--card LICENSE] [--force]` | build a PEFT adapter from a recipe file and the base model weights; print one line per module (`out x in`, rank), then `wrote DIR`; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) |
 | `compose ADAPTER ADAPTER [ADAPTER...] -o OUT_DIR [--base-model NAME] [--force]` | combine two or more PEFT adapters on the same base model into one adapter whose change is exactly their sum; print the module count and rank, then `wrote OUT_DIR` |
 | `export DIR [--gguf OUT.gguf --arch ARCH] [--card LICENSE] [--splice BASE.gguf --base-model DIR --merged OUT.gguf [--out-type TYPE]] [--force]` | verify the adapter in `DIR`, then write a GGUF LoRA adapter, a merged GGUF, a model card or any mix of them; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) and [How-to: use with Ollama](../how-to/use-with-ollama.md) |
+| `mcp RUN_DIR [--unsafe-kernel]` | serve the agent tools over stdio MCP for the run in `RUN_DIR`; see [mcp](#mcp) and [How-to: Claude Code](../how-to/agent-claude-code.md). New in 0.2.0a1 |
+| `run CONFIG [--resume] [--status] [--json]` | start a run from a TOML config: write `RUN_DIR/run.json`, then run the chosen editor, which starts the server; see [run](#run) and [Tutorial: first agent run](../tutorials/first-agent-run.md). After 0.2.0a1 |
 
-Every command takes `--json`, which prints one JSON object on stdout instead of text. Run without a command, `astro-weights` prints the help and exits 2. `python -m astro_weights` runs the same command line, for example `python -m astro_weights inspect DIR`.
+Every command except `mcp` takes `--json`, which prints one JSON object on stdout instead of text. Run without a command, `astro-weights` prints the help and exits 2. `python -m astro_weights` runs the same command line, for example `python -m astro_weights inspect DIR`.
 
 ## eval
 
@@ -45,6 +47,55 @@ Every command takes `--json`, which prints one JSON object on stdout instead of 
 - When the adapter records base weight hashes, a weight in `--base-model` that does not match is an error.
 - An existing `OUT.gguf` or `DIR/README.md` is refused unless `--force` is given. An `OUT.gguf` that names one of the adapter's own files is refused even with `--force`.
 - An adapter with hash problems is an error, and nothing is written.
+
+## mcp
+
+Needs the `mcp` extra; without it, exit 2 and the install hint. `forward_pass` also needs the `hf` extra. Exit 2 when `run.json` is missing or bad, or differs from the run record on `seed`, `editor`, `model` or `limits`.
+
+`RUN_DIR/run.json`:
+
+| Key | Type | Default |
+|---|---|---|
+| `seed` | int | required |
+| `editor` | non-empty string, a label for the record | required |
+| `model` | string or `null` | required |
+| `limits` | object with exactly `forward_passes`, `code_runs`, `tokens` (ints >= 0) and `dollars` (number >= 0) | required |
+| `model_dir` | path to the model, relative to `RUN_DIR` or absolute | absent: `exec_python` and `forward_pass` say they are not available |
+| `kernel` | object with `timeout_s` (number > 0) and `mem_gib` (int >= 1, Linux only) | `600.0`, `16` |
+| `forward` | object with `device` (`auto`, `cpu`, `cuda`), `dtype` (`auto`, `float32`, `bfloat16`, `float16`) and `max_new_tokens` (1 to 32768) | `auto`, `auto`, `4096` |
+
+Tools:
+
+| Tool | Does |
+|---|---|
+| `exec_python(code)` | start a cell in the sandboxed numpy kernel; returns a handle. One `code_runs` when it finishes |
+| `forward_pass(request)` | start a teacher-forced or generate pass on the base or edited weights; returns a handle. One `forward_passes` when it finishes. Request keys are in the `forward_pass` docstring |
+| `status(handle)` | the job's state (`queued`, `running`, `done`, `failed`), its result and the budget |
+| `finish(summary)` | end the run; works once |
+| `report_usage`, `check_spend`, `report_refusal` | for editors: record a turn's tokens and dollars, check a dollar estimate, record a refusal |
+
+State under `RUN_DIR`: `ledger.jsonl` (budget), `record.jsonl` (run history), `jobs/`, `edits/`, `forward/`, `kernel/`. `--unsafe-kernel` runs agent code without an OS sandbox when none works; see [Explanation: agent budgets and sandbox](../explanation/agent-budgets-and-sandbox.md).
+
+## run
+
+Not tested: written from the command's spec before it merged. TODO: check every key and flag against `astro-weights run --help`.
+
+`CONFIG` is a TOML file. Relative paths are read from its directory. An unknown key or a bad type is an error (exit 2).
+
+| Table | Keys |
+|---|---|
+| `[run]` | `dir` (the run directory), `seed`, `model_dir` |
+| `[limits]` | `forward_passes`, `code_runs`, `tokens`, `dollars` (default 20.0 for the `hosted` editor, 0 for the others) |
+| `[editor]` | `kind`: `scripted`, `local` or `hosted`, plus that editor's keys. `local`: `base_url`, `model`, `api_key_env`, `max_turns`, `temperature`. `hosted`: `model`, `max_output_tokens`, `max_turns`, and `fallback_base_url` with `fallback_model`, or `no_fallback` |
+| `[kernel]` | `timeout_s`, `mem_gib`, `unsafe` (bool, default false) |
+| `[forward]` | `device`, `dtype`, `max_new_tokens` |
+
+- `run CONFIG` writes `RUN_DIR/run.json` and a copy of the config, then runs the editor. The exit code is the editor's.
+- A `RUN_DIR` that already holds a `record.jsonl` is refused unless `--resume` is given. A run directory with any spend in its ledger is never deleted or overwritten.
+- `--resume` goes on with the same ledger, record and edits; budget already used stays used. The config must match the saved one on `seed`, `model_dir`, editor `kind` and `[limits]`; otherwise it is refused with the difference.
+- `--status` prints the budget, the last events and whether the run finished, from disk, without starting the server. With `--json`, as one JSON object.
+- Without the extra a run needs (`mcp`; `hf` for forward passes; `hosted` for the hosted editor): exit 2 and the install hint.
+- Editor details: [scripted](../tutorials/first-agent-run.md), [local](../how-to/agent-local-model.md), [hosted](../how-to/agent-hosted.md).
 
 ## JSON output
 
