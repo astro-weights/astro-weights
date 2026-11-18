@@ -127,7 +127,8 @@ def build_server(
     record = _open_record(run_dir, cfg)
     for job in store.list():  # a restart killed their threads; they can never finish
         if job.state in ("queued", "running"):
-            store.fail(job.handle, "server restarted")
+            job = store.fail(job.handle, "server restarted")
+        forward.discard_results(run_dir, job)
     available = dict(executors or {})
     unavailable: dict[str, tuple[str, str]] = {}  # kind -> (event, error)
     check: Checker | None = None
@@ -223,6 +224,8 @@ def build_server(
             job = store.get(handle)
         except UnknownHandle:
             return {"error": "unknown handle"}
+        if job.state == "failed":  # e.g. refused at charge time: results unreadable
+            forward.discard_results(run_dir, job)
         return {**job.to_json(), "budget": ledger.to_json()}
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]

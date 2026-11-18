@@ -526,3 +526,44 @@ def test_forward_needs_the_hf_extra(
     event = RunRecord.open(run / "record.jsonl").read()[-1]
     assert (event["event"], event["tool"]) == ("tool_unavailable", "forward_pass")
     assert "astro-weights[hf]" in event["error"]
+
+
+def test_unreadable_forward_results_are_deleted(tmp_path: Path) -> None:
+    from astro_weights.mcp import forward
+
+    run = write_run(tmp_path)
+    store = HandleStore(run)
+    folders: dict[str, Path] = {}
+
+    def job(state: str) -> str:
+        out = {"done": "d", "running": "e", "queued": "a", "failed": "f"}[state] * 32
+        j = store.submit("forward", {"request": {}, "out": out})
+        folders[state] = run / forward.RESULTS / out
+        folders[state].mkdir(parents=True)
+        if state != "queued":
+            store.start(j.handle)
+        if state == "done":
+            store.finish(j.handle, {"keys": []})
+        if state == "failed":
+            store.fail(j.handle, "budget exhausted")
+        return j.handle
+
+    for state in ("done", "running", "queued", "failed"):
+        job(state)
+    build_server(run)  # a restart deletes what nobody can read
+    assert {s for s, d in folders.items() if d.exists()} == {"done"}
+    # a job refused at charge time while the server runs: status deletes it
+    server = build_server(run)
+    later = store.submit("forward", {"request": {}, "out": "b" * 32})
+    folder = run / forward.RESULTS / ("b" * 32)
+    folder.mkdir()
+    store.start(later.handle)
+    store.fail(later.handle, "budget exhausted")
+
+    async def go() -> dict[str, Any]:
+        async with Client(server) as client:
+            return await call(client, "status", {"handle": later.handle})
+
+    assert anyio.run(go)["state"] == "failed"
+    assert not folder.exists()
+    assert folders["done"].exists()

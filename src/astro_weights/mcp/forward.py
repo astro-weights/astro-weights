@@ -27,12 +27,13 @@ from typing import Any, Protocol
 import numpy as np
 
 from astro_weights.mcp.edit_store import EditStore
-from astro_weights.mcp.handles import HANDLE_RE, HandleStore, UnknownHandle
+from astro_weights.mcp.handles import HANDLE_RE, HandleStore, Job, UnknownHandle
 
 __all__ = [
     "BadRequest",
     "ForwardBackend",
     "check_request",
+    "discard_results",
     "executor",
     "hf_available",
     "read_result",
@@ -46,7 +47,9 @@ MAX_ATTN_TEXTS = 2
 MAX_ATTN_TOKENS = 2048
 MAX_PROMPTS = 512
 MAX_SEED = 2**63
-TEXT_PREVIEW = 4096
+TEXT_PREVIEW = 4096  # chars per text in a generate summary
+PREVIEW_TOTAL = 32768  # chars over all texts of a generate summary
+MAX_ATTN_ELEMENTS = 2**28  # texts * layers * heads * tokens**2: 1 GiB of float32
 LAST_TOKENS = 36
 RESULTS = "forward"
 HF_HINT = "it needs torch and transformers: pip install 'astro-weights[hf]'"
@@ -71,8 +74,8 @@ class Model(Protocol):
         """Tokens per text; ``chat`` applies the chat template as generation does."""
         ...
 
-    def layers(self) -> tuple[int, list[int]]:
-        """(number of decoder layers, indices of full attention layers)."""
+    def layers(self) -> tuple[int, list[int], int]:
+        """(decoder layers, indices of full attention layers, attention heads)."""
         ...
 
 
@@ -95,6 +98,8 @@ def _strings(req: Mapping[str, Any], key: str, cap: int) -> list[str]:
         raise BadRequest(f'"{key}" must be a non-empty list of strings')
     if len(value) > cap:
         raise BadRequest(f'"{key}" holds {len(value)} items; at most {cap}')
+    if any(not t.strip() for t in value):
+        raise BadRequest(f'"{key}" must not hold empty or whitespace-only strings')
     return list(value)
 
 
@@ -127,6 +132,8 @@ def _check_arm(arm: Any, arms: tuple[str, ...], store: EditStore) -> str:
 
 
 def _check_tokens(counts: Sequence[int]) -> None:
+    if min(counts) == 0:
+        raise BadRequest("every text must have at least one token")
     if max(counts) > MAX_TEXT_TOKENS or sum(counts) > MAX_TOTAL_TOKENS:
         raise BadRequest(
             f"token limits: {MAX_TEXT_TOKENS} per text and {MAX_TOTAL_TOKENS} in "
@@ -151,7 +158,7 @@ def _teacher_forced(
             f"got {len(texts) * last}"
         )
     layers = req.get("layers", [])
-    n, full = model.layers()
+    n, full, heads = model.layers()
     if not isinstance(layers, list) or not all(
         _is_int(i) and 0 <= i < n for i in layers
     ):
@@ -172,8 +179,15 @@ def _teacher_forced(
     arm = _check_arm(req.get("arm"), ("base", "edited"), store)
     counts = model.count_tokens(texts, chat=False)
     _check_tokens(counts)
-    if "attn" in want and max(counts) > MAX_ATTN_TOKENS:
-        raise BadRequest(f'"attn" allows texts of at most {MAX_ATTN_TOKENS} tokens')
+    if "attn" in want:
+        if max(counts) > MAX_ATTN_TOKENS:
+            raise BadRequest(f'"attn" allows texts of at most {MAX_ATTN_TOKENS} tokens')
+        size = len(texts) * len(layers) * heads * max(counts) ** 2
+        if size > MAX_ATTN_ELEMENTS:
+            raise BadRequest(
+                f'"attn": texts * layers * heads * max_tokens**2 must be at most '
+                f"{MAX_ATTN_ELEMENTS}; got {size} ({heads} heads)"
+            )
     return {
         "kind": "teacher_forced",
         "texts": texts,
@@ -247,6 +261,15 @@ def _save_texts(path: Path, texts: list[str]) -> None:
     _write_atomic(path, lambda f: f.write(json.dumps(texts).encode()))
 
 
+def discard_results(run_dir: Path, job: Job) -> None:
+    """Delete the result folder of a forward job that is not done: nobody can read it."""
+    out = job.params.get("out")
+    if job.kind != "forward" or job.state == "done":
+        return
+    if isinstance(out, str) and OUT_RE.fullmatch(out) is not None:
+        shutil.rmtree(Path(run_dir) / RESULTS / out, ignore_errors=True)
+
+
 def read_result(
     run_dir: Path, jobs: HandleStore, handle: Any, key: Any
 ) -> np.ndarray | list[str]:
@@ -317,7 +340,7 @@ class ForwardBackend:
         self._lock = threading.Lock()  # jobs, the model and the applied map
         self._tok_lock = threading.Lock()  # the tool call's own tokenizer
         self._counter: Any = None
-        self._layers: tuple[int, list[int]] | None = None
+        self._layers: tuple[int, list[int], int] | None = None
         self._model: Any = None
         self._tok: Any = None
         self._params: dict[str, Any] = {}
@@ -349,8 +372,8 @@ class ForwardBackend:
             )
             return [len(ids) for ids in enc["input_ids"]]
 
-    def layers(self) -> tuple[int, list[int]]:
-        """(layers, full attention layers) of a weightless copy of the model."""
+    def layers(self) -> tuple[int, list[int], int]:
+        """(layers, full attention layers, heads) of a weightless copy of the model."""
         from astro_weights.runners.hooks import full_attention_layers, layer_count
 
         torch, transformers = _import_hf()
@@ -361,7 +384,12 @@ class ForwardBackend:
                 )
                 with torch.device("meta"):
                     shell = transformers.AutoModelForCausalLM.from_config(config)
-                self._layers = (layer_count(shell), full_attention_layers(shell))
+                heads = int(config.get_text_config().num_attention_heads)
+                self._layers = (
+                    layer_count(shell),
+                    full_attention_layers(shell),
+                    heads,
+                )
             return self._layers
 
     # job side
@@ -419,6 +447,8 @@ class ForwardBackend:
         with store._lock, torch.no_grad():  # no save or drop while edits are read
             recs = store.validate() if arm == "edited" else {}
             try:
+                if arm == "edited" and not recs:  # dropped since the check
+                    raise ValueError("there are no stored edits for the edited arm")
                 for name in sorted(set(self._applied) | set(recs)):
                     sha = recs[name]["sha256"] if name in recs else None
                     if self._applied.get(name) == sha:
@@ -469,6 +499,7 @@ class ForwardBackend:
             "n": len(ids),
             "total_tokens": sum(len(i) for i in ids),
             "last_tokens": req["last_tokens"],
+            "edits": dict(self._applied),
             "arrays": shapes,
             "keys": sorted(shapes),
         }
@@ -490,6 +521,7 @@ class ForwardBackend:
         arms = ["base", "edited"] if both else [req["arm"]]
         summary: dict[str, Any] = {}
         keys: list[str] = []
+        left = PREVIEW_TOTAL
         for arm in arms:
             self._sync(arm)
             torch.manual_seed(req["seed"])
@@ -502,8 +534,16 @@ class ForwardBackend:
             key = f"texts_{arm}" if both else "texts"
             _save_texts(out_dir / f"{key}.json", [r[0] for r in rows])
             keys.append(key)
+            shown = []
+            for r in rows:
+                shown.append(r[0][: min(TEXT_PREVIEW, left)])
+                left -= len(shown[-1])
             summary[arm] = {
-                "texts": [r[0][:TEXT_PREVIEW] for r in rows],
+                "edits": dict(self._applied),
+                "texts": shown,
+                "truncated": [
+                    len(t) < len(r[0]) for t, r in zip(shown, rows, strict=True)
+                ],
                 "n_tokens": [r[1] for r in rows],
                 "hit_cap": [r[2] for r in rows],
             }

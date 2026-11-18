@@ -24,6 +24,7 @@ from astro_weights.mcp import forward
 from astro_weights.mcp.budget import Ledger, Limits
 from astro_weights.mcp.edit_store import EditStore
 from astro_weights.mcp.forward import (
+    MAX_ATTN_ELEMENTS,
     MAX_ATTN_TEXTS,
     MAX_ATTN_TOKENS,
     MAX_PROMPTS,
@@ -47,17 +48,19 @@ CAP = 64  # max_new_tokens cap in these checks
 
 
 class Stub:
-    """A model for checks: one token per word, layers 0 and 1, 1 full attention."""
+    """A model for checks: one token per word ("_" has none), layers 0 and 1,
+    1 full attention, ``heads`` heads."""
 
-    def __init__(self) -> None:
+    def __init__(self, heads: int = 4) -> None:
         self.counted: list[list[str]] = []
+        self.heads = heads
 
     def count_tokens(self, texts: Sequence[str], *, chat: bool) -> list[int]:
         self.counted.append(list(texts))
-        return [len(t.split()) for t in texts]
+        return [len([w for w in t.split() if w != "_"]) for t in texts]
 
-    def layers(self) -> tuple[int, list[int]]:
-        return 2, [1]
+    def layers(self) -> tuple[int, list[int], int]:
+        return 2, [1], self.heads
 
 
 @pytest.fixture(scope="module")
@@ -129,6 +132,11 @@ def test_defaults_filled(edits: EditStore) -> None:
         (tf(texts=[]), '"texts" must be'),
         (tf(texts="a"), '"texts" must be'),
         (tf(texts=[1]), '"texts" must be'),
+        (tf(texts=["a", ""]), "empty or whitespace-only"),
+        (tf(texts=[" \n\t "]), "empty or whitespace-only"),
+        (gen(prompts=[" "]), "empty or whitespace-only"),
+        (tf(texts=["a", "_"]), "at least one token"),
+        (gen(prompts=["_"]), "at least one token"),
         (tf(**{"return": []}), '"return"'),
         (tf(**{"return": ["weights"]}), '"return"'),
         (tf(**{"return": "hidden"}), '"return"'),
@@ -230,6 +238,12 @@ def test_limit_edges(edits: EditStore) -> None:
     edge(
         edits, gen(prompts=["a"] * MAX_PROMPTS), gen(prompts=["a"] * (MAX_PROMPTS + 1))
     )
+    # 2 texts * 1 layer * 64 heads * t**2 <= 2**28 holds up to t = 1448
+    wide = Stub(heads=64)
+    check(tf(texts=["a", words(1448)], **attn), edits, wide)
+    with pytest.raises(BadRequest, match="64 heads"):
+        check(tf(texts=["a", words(1449)], **attn), edits, wide)
+    assert MAX_ATTN_ELEMENTS == 2**28
     edge(edits, gen(max_new_tokens=CAP), gen(max_new_tokens=CAP + 1))
     edge(
         edits,
@@ -369,6 +383,26 @@ def test_read_result_never_follows_links(tmp_path: Path) -> None:
         )
 
 
+def test_discard_results_only_unreadable_forward_folders(tmp_path: Path) -> None:
+    jobs = HandleStore(tmp_path)
+    made = {
+        "done": done_job(tmp_path, ["x"]),
+        "failed": done_job(tmp_path, ["x"], state="failed"),
+        "queued": done_job(tmp_path, ["x"], state="queued"),
+        "exec": done_job(tmp_path, ["x"], kind="exec", state="failed"),
+    }
+    for _, d in made.values():
+        d.mkdir(parents=True)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    bad, _ = done_job(tmp_path, ["x"], out="../victim", state="failed")
+    for job, _ in [*made.values(), (bad, None)]:
+        forward.discard_results(tmp_path, jobs.get(job.handle))
+    kept = {k for k, (_, d) in made.items() if d.exists()}
+    assert kept == {"done", "exec"}
+    assert victim.exists()
+
+
 def test_executor_checks_out_name(tmp_path: Path, edits: EditStore) -> None:
     run = forward.executor(ForwardBackend(tmp_path, edits), tmp_path)
     with pytest.raises(ValueError, match="bad result folder"):
@@ -432,7 +466,7 @@ def test_tool_call_checks_with_the_real_tokenizer(backend: ForwardBackend) -> No
     assert backend.count_tokens([words(MAX_TEXT_TOKENS + 50)], chat=False) == [
         MAX_TEXT_TOKENS + 1
     ]
-    assert backend.layers() == (2, [1])
+    assert backend.layers() == (2, [1], 4)
     assert backend._model is None  # the check never loads the weights
 
 
@@ -447,6 +481,7 @@ def test_teacher_forced_base_edited_restore(
         "n": 2,
         "total_tokens": 9,
         "last_tokens": 3,
+        "edits": {},
         "arrays": {
             "hidden_l0": [2, 32],
             "hidden_l1": [2, 32],
@@ -466,7 +501,9 @@ def test_teacher_forced_base_edited_restore(
     assert before["logprobs_top_ids"].dtype == np.int64
     original = weights(backend)
     save_edit(backend.store, T0, 0.2)
-    _, out_e = run(backend, {**TF, "arm": "edited"}, tmp_path)
+    summary_e, out_e = run(backend, {**TF, "arm": "edited"}, tmp_path)
+    sha = backend.store.validate()[T0]["sha256"]
+    assert summary_e["edits"] == {T0: sha}
     edited = arrays(out_e)
     assert not np.array_equal(edited["hidden_l0"], before["hidden_l0"])
     _, out_b = run(backend, TF, tmp_path)
@@ -494,18 +531,27 @@ def test_drop_edit_makes_edited_equal_base(
     backend.store.drop(T1)
     with pytest.raises(BadRequest, match="no stored edits"):
         run(backend, {**TF, "arm": "edited"}, tmp_path)
-    # with no edits left, an edited sync puts every original back
-    out2 = tmp_path / "direct"
-    backend.run(
-        {
-            **check_request(TF, backend, backend.store, max_new_tokens=CAP),
-            "arm": "edited",
-        },
-        out2,
-    )
-    for key, value in arrays(out2).items():
+    _, out_b = run(backend, TF, tmp_path)
+    for key, value in arrays(out_b).items():
         np.testing.assert_array_equal(value, before[key], err_msg=key)
+
+
+@needs_hf
+def test_edits_dropped_after_the_check_fail_the_run(
+    backend: ForwardBackend, tmp_path: Path
+) -> None:
+    save_edit(backend.store, T0, 0.2)
+    run(backend, {**TF, "arm": "edited"}, tmp_path)
+    w0 = backend.store.original(T0)
+    req = {**TF, "arm": "edited"}
+    clean = check_request(req, backend, backend.store, max_new_tokens=CAP)
+    backend.store.drop(T0)
+    out = tmp_path / "late"
+    with pytest.raises(ValueError, match="no stored edits"):
+        backend.run(clean, out)
+    assert not out.exists()
     assert backend._applied == {}
+    np.testing.assert_array_equal(backend._param(T0).detach().numpy(), w0)
 
 
 @needs_hf
@@ -567,12 +613,20 @@ def test_generate_both_arms_deterministic(
     assert any(len(t) > 4 for t in full)
     assert first["arms"]["base"]["n_tokens"] == [6, 6]
     assert first["arms"]["base"]["hit_cap"] == [True, True]
+    assert first["arms"]["base"]["truncated"] == [True, True]
     sampled = {**GEN, "temperature": 1.5}
     s1, _ = run(backend, sampled, tmp_path)
     s2, _ = run(backend, sampled, tmp_path)
     s3, _ = run(backend, {**sampled, "seed": 4}, tmp_path)
     assert s1 == s2
     assert s1["arms"] != s3["arms"]
+    monkeypatch.setattr(forward, "PREVIEW_TOTAL", 6)
+    capped, _ = run(backend, GEN, tmp_path)
+    base, edited = capped["arms"]["base"], capped["arms"]["edited"]
+    assert [len(t) for t in base["texts"] + edited["texts"]] == [4, 2, 0, 0]
+    assert base["truncated"] == edited["truncated"] == [True, True]
+    assert sorted(edited["edits"]) == [T0, T1]
+    assert base["edits"] == {}
     one, out1 = run(backend, {**GEN, "arm": "edited"}, tmp_path)
     assert one["keys"] == ["texts"]
     assert json.loads((out1 / "texts.json").read_text()) == json.loads(
@@ -753,6 +807,11 @@ def test_budget_of_one_with_two_jobs(
     with pytest.raises(ValueError, match="failed, not done"):
         read_result(tmp_path, jobs, outs[1].handle, "hidden_l0")
     assert read_result(tmp_path, jobs, outs[0].handle, "hidden_l0").shape == (2, 32)  # type: ignore[union-attr]
+    root = tmp_path / forward.RESULTS
+    assert (root / outs[1].params["out"]).is_dir()  # computed, then refused
+    for o in outs:
+        forward.discard_results(tmp_path, o)
+    assert sorted(p.name for p in root.iterdir()) == [outs[0].params["out"]]
 
 
 @needs_hf
