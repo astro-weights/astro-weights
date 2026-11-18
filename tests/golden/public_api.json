@@ -128,12 +128,12 @@
  },
  "astro_weights.mcp.jobs": {
   "JobRunner": "(store: astro_weights.mcp.handles.HandleStore, ledger: astro_weights.mcp.budget.Ledger, executors: collections.abc.Mapping[str, collections.abc.Callable[[dict[str, Any]], dict[str, Any]]], budget_kind: collections.abc.Mapping[str, typing.Literal['forward_passes', 'code_runs', 'tokens', 'dollars']]) -> None",
-  "RunConfig": "(seed: int, editor: str, model: str | None, limits: astro_weights.mcp.budget.Limits, model_dir: pathlib.Path | None = None, kernel_timeout_s: float = 600.0, kernel_mem_gib: int = 16, forward_device: str = 'auto', forward_dtype: str = 'auto', forward_max_new_tokens: int = 4096, export_rank: int = 8, export_max_rel_residual: float = 0.05, export_base_gguf: pathlib.Path | None = None, export_gguf_out_type: str = 'q8_0') -> None",
+  "RunConfig": "(seed: int, editor: str, model: str | None, limits: astro_weights.mcp.budget.Limits, model_dir: pathlib.Path | None = None, kernel_timeout_s: float = 600.0, kernel_mem_gib: int = 16, forward_device: str = 'auto', forward_dtype: str = 'auto', forward_max_new_tokens: int = 4096, export_rank: int = 8, export_max_rel_residual: float = 0.05, export_base_gguf: pathlib.Path | None = None, export_gguf_out_type: str = 'q8_0', kernel_allow_nested_userns: bool = False) -> None",
   "load_run_config": "(run_dir: pathlib.Path) -> astro_weights.mcp.jobs.RunConfig"
  },
  "astro_weights.mcp.kernel": {
   "EventSink": "(*args, **kwargs)",
-  "Kernel": "(run_dir: pathlib.Path, store: astro_weights.mcp.edit_store.EditStore, *, allow_unsafe: bool = False, timeout_s: float = 600, mem_gib: int = 16, stdout_cap: int = 10000, on_event: collections.abc.Callable[[str, dict[str, Any]], None] | None = None, jobs: astro_weights.mcp.handles.HandleStore | None = None) -> None",
+  "Kernel": "(run_dir: pathlib.Path, store: astro_weights.mcp.edit_store.EditStore, *, allow_unsafe: bool = False, allow_nested_userns: bool = False, timeout_s: float = 600, mem_gib: int = 16, stdout_cap: int = 10000, on_event: collections.abc.Callable[[str, dict[str, Any]], None] | None = None, jobs: astro_weights.mcp.handles.HandleStore | None = None) -> None",
   "KernelError": null
  },
  "astro_weights.mcp.kernel_child": {},
@@ -151,14 +151,14 @@
  "astro_weights.mcp.sandbox": {
   "Mode": "(*args, **kwargs)",
   "SandboxUnavailable": null,
-  "bwrap_command": "(argv: collections.abc.Sequence[str], ro: collections.abc.Sequence[pathlib.Path], rw: pathlib.Path, hide: collections.abc.Sequence[pathlib.Path] = (), exe: str = 'bwrap') -> list[str]",
+  "bwrap_command": "(argv: collections.abc.Sequence[str], ro: collections.abc.Sequence[pathlib.Path], rw: pathlib.Path, hide: collections.abc.Sequence[pathlib.Path] = (), exe: str = 'bwrap', *, nested_userns: bool = False) -> list[str]",
   "child_env": "(work: pathlib.Path) -> dict[str, str]",
   "harden_parent": "() -> None",
   "hidden_site_dirs": "(ro: collections.abc.Sequence[pathlib.Path]) -> list[pathlib.Path]",
   "probe": "() -> Literal['bwrap', 'seatbelt'] | None",
   "python_paths": "(packages: collections.abc.Sequence[str] = ('numpy',)) -> list[pathlib.Path]",
   "seatbelt_command": "(argv: collections.abc.Sequence[str], ro: collections.abc.Sequence[pathlib.Path], rw: pathlib.Path, hide: collections.abc.Sequence[pathlib.Path] = ()) -> list[str]",
-  "wrap": "(argv: collections.abc.Sequence[str], *, ro: collections.abc.Sequence[pathlib.Path], rw: pathlib.Path, allow_unsafe: bool = False) -> list[str]"
+  "wrap": "(argv: collections.abc.Sequence[str], *, ro: collections.abc.Sequence[pathlib.Path], rw: pathlib.Path, allow_unsafe: bool = False, allow_nested_userns: bool = False) -> list[str]"
  },
  "astro_weights.mcp.server": {
   "build_server": "(run_dir: pathlib.Path, executors: collections.abc.Mapping[str, collections.abc.Callable[[dict[str, Any]], dict[str, Any]]] | None = None, *, allow_unsafe_kernel: bool = False) -> mcp.server.mcpserver.server.MCPServer[Any]",

@@ -64,8 +64,10 @@ HOSTILE = 'we"ird)\n(allow default) =x'
 @pytest.fixture
 def fresh_probe() -> Iterator[None]:
     sandbox._detect.cache_clear()
+    sandbox._detect_nested_userns.cache_clear()
     yield
     sandbox._detect.cache_clear()
+    sandbox._detect_nested_userns.cache_clear()
 
 
 def _attack(code: str) -> str:
@@ -799,3 +801,106 @@ def test_linux_no_nested_user_namespace(work: Path) -> None:
     r = _run(cmd, work)
     # --disable-userns sets user.max_user_namespaces to 0 in the sandbox
     assert r.stdout.strip() == "ENOSPC", r.stdout + r.stderr
+
+
+# ------------------------------------------------- bwrap < 0.8 (no --disable-userns)
+
+OLD_BWRAP = (
+    "bwrap is installed but cannot sandbox here (exit 1): "
+    "bwrap: Unknown option --disable-userns"
+)
+
+
+def _old_bwrap(monkeypatch: pytest.MonkeyPatch, nested_ok: bool = True) -> None:
+    monkeypatch.setattr(sandbox, "_detect", lambda: (None, OLD_BWRAP))
+    monkeypatch.setattr(
+        sandbox,
+        "_detect_nested_userns",
+        lambda: ("bwrap", "") if nested_ok else (None, "bwrap still fails"),
+    )
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/bwrap")
+
+
+@posix_paths
+def test_old_bwrap_refused_by_default_with_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _old_bwrap(monkeypatch)
+    with pytest.raises(SandboxUnavailable) as e:
+        wrap([sys.executable], ro=[], rw=tmp_path)
+    assert "allow_nested_userns" in str(e.value)
+    assert "nested user namespaces" in str(e.value)
+
+
+@posix_paths
+def test_old_bwrap_opt_in_drops_only_disable_userns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _old_bwrap(monkeypatch)
+    cmd = wrap([sys.executable], ro=[], rw=tmp_path, allow_nested_userns=True)
+    assert cmd[0] == "/usr/bin/bwrap"
+    assert cmd[1:5] == [f for f in NAMESPACES if f != "--disable-userns"]
+    assert "--disable-userns" not in cmd
+    nested = bwrap_command(cmd[-1:], [], tmp_path, exe="b", nested_userns=True)
+    assert "--disable-userns" not in nested
+    assert "--disable-userns" in bwrap_command(cmd[-1:], [], tmp_path, exe="b")
+
+
+@posix_paths
+def test_opt_in_does_not_cover_other_bwrap_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _old_bwrap(monkeypatch)
+    monkeypatch.setattr(sandbox, "_detect", lambda: (None, "denied by policy"))
+    with pytest.raises(SandboxUnavailable, match="denied by policy"):
+        wrap([sys.executable], ro=[], rw=tmp_path, allow_nested_userns=True)
+
+
+@posix_paths
+def test_opt_in_when_old_bwrap_still_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _old_bwrap(monkeypatch, nested_ok=False)
+    with pytest.raises(SandboxUnavailable, match="bwrap still fails"):
+        wrap([sys.executable], ro=[], rw=tmp_path, allow_nested_userns=True)
+    # unsafe still wins over a failed compat probe, as before
+    argv = [sys.executable, "-c", "1"]
+    assert (
+        wrap(argv, ro=[], rw=tmp_path, allow_nested_userns=True, allow_unsafe=True)
+        == argv
+    )
+
+
+@pytest.mark.usefixtures("fresh_probe")
+def test_nested_probe_runs_without_disable_userns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_run(0, calls))
+    assert sandbox._detect_nested_userns() == ("bwrap", "")
+    assert calls[0][:5] == [
+        "bwrap",
+        *(f for f in NAMESPACES if f != "--disable-userns"),
+    ]
+
+
+@linux_sandbox
+def test_linux_old_bwrap_compat_still_sandboxes(
+    monkeypatch: pytest.MonkeyPatch, work: Path
+) -> None:
+    # real bwrap, the strict probe forced to fail as on bwrap < 0.8
+    monkeypatch.setattr(sandbox, "_detect", lambda: (None, OLD_BWRAP))
+    sandbox._detect_nested_userns.cache_clear()
+    code = (
+        "import ctypes, os\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        "print('home', os.path.exists('/home'))\n"
+        "print('nested', libc.unshare(0x10000000) == 0)"
+    )
+    argv = [sys.executable, "-I", "-S", "-c", code]
+    cmd = wrap(argv, ro=python_paths(), rw=work, allow_nested_userns=True)
+    assert "--disable-userns" not in cmd
+    assert "--unshare-all" in cmd
+    r = _run(cmd, work)
+    # the protection given up: the child can create a user namespace
+    assert r.stdout.split() == ["home", "False", "nested", "True"], r.stdout + r.stderr

@@ -240,6 +240,7 @@ class Kernel:
         store: EditStore,
         *,
         allow_unsafe: bool = False,
+        allow_nested_userns: bool = False,
         timeout_s: float = 600,
         mem_gib: int = 16,
         stdout_cap: int = 10_000,
@@ -249,7 +250,7 @@ class Kernel:
         """Check the sandbox and start the kernel thread; the child starts on first use.
 
         ``SandboxUnavailable`` when there is no OS sandbox and ``allow_unsafe`` is
-        False. ``jobs`` answers ``forward_result``; without it that request fails. ``on_event(event, fields)`` hears ``edit_saved`` (tensor,
+        False; ``allow_nested_userns`` is passed to ``sandbox.wrap``. ``jobs`` answers ``forward_result``; without it that request fails. ``on_event(event, fields)`` hears ``edit_saved`` (tensor,
         rel_frobenius), ``edit_rejected`` (tensor, error), ``edit_dropped``
         (tensor) and ``kernel_restarted``.
         """
@@ -271,7 +272,13 @@ class Kernel:
             ro=[*sandbox.python_paths(), CHILD],
             rw=self.work,
             allow_unsafe=allow_unsafe,
+            allow_nested_userns=allow_nested_userns,
         )
+        if Path(self._argv[0]).name == "bwrap" and "--disable-userns" not in self._argv:
+            self._emit(
+                "sandbox_compat",
+                {"lost": "nested user namespaces not blocked (bwrap < 0.8)"},
+            )
         # a kernel ran here before this process: its variables are gone
         self._marker = Path(run_dir).resolve() / MARKER
         self._log = Path(run_dir).resolve() / LOG

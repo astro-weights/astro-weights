@@ -113,6 +113,7 @@ def _kernel_executor(
             run_dir,
             edits,
             allow_unsafe=allow_unsafe,
+            allow_nested_userns=cfg.kernel_allow_nested_userns,
             timeout_s=cfg.kernel_timeout_s,
             mem_gib=cfg.kernel_mem_gib,
             on_event=lambda name, fields: record.event(name, **fields),

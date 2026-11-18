@@ -53,6 +53,7 @@ class RunConfig:
     export_max_rel_residual: float = 0.05
     export_base_gguf: Path | None = None
     export_gguf_out_type: str = "q8_0"
+    kernel_allow_nested_userns: bool = False
 
 
 def load_run_config(run_dir: Path) -> RunConfig:
@@ -86,7 +87,7 @@ def load_run_config(run_dir: Path) -> RunConfig:
     model_dir = raw.get("model_dir")
     if not (model_dir is None or (isinstance(model_dir, str) and model_dir)):
         raise ValueError(f"{path}: model_dir must be a non-empty string or absent")
-    timeout_s, mem_gib = _kernel_config(path, raw.get("kernel", {}))
+    timeout_s, mem_gib, nested_userns = _kernel_config(path, raw.get("kernel", {}))
     device, dtype, max_new = _forward_config(path, raw.get("forward", {}))
     rank, residual, base_gguf, out_type = _export_config(path, raw.get("export", {}))
     return RunConfig(
@@ -104,15 +105,15 @@ def load_run_config(run_dir: Path) -> RunConfig:
         residual,
         None if base_gguf is None else Path(run_dir) / base_gguf,
         out_type,
+        nested_userns,
     )
 
 
-def _kernel_config(path: Path, kernel: Any) -> tuple[float, int]:
-    """(timeout_s, mem_gib) from the optional ``kernel`` object of run.json."""
-    if not isinstance(kernel, dict) or not set(kernel) <= {"timeout_s", "mem_gib"}:
-        raise ValueError(
-            f"{path}: kernel must be an object with keys from ['timeout_s', 'mem_gib']"
-        )
+def _kernel_config(path: Path, kernel: Any) -> tuple[float, int, bool]:
+    """(timeout_s, mem_gib, allow_nested_userns) from run.json's optional ``kernel``."""
+    keys = ["timeout_s", "mem_gib", "allow_nested_userns"]
+    if not isinstance(kernel, dict) or not set(kernel) <= set(keys):
+        raise ValueError(f"{path}: kernel must be an object with keys from {keys}")
     timeout_s = kernel.get("timeout_s", 600.0)
     mem_gib = kernel.get("mem_gib", 16)
     number = isinstance(timeout_s, int | float) and not isinstance(timeout_s, bool)
@@ -120,7 +121,10 @@ def _kernel_config(path: Path, kernel: Any) -> tuple[float, int]:
         raise ValueError(f"{path}: kernel.timeout_s must be a positive number")
     if not isinstance(mem_gib, int) or isinstance(mem_gib, bool) or mem_gib < 1:
         raise ValueError(f"{path}: kernel.mem_gib must be an int >= 1")
-    return float(timeout_s), mem_gib
+    nested = kernel.get("allow_nested_userns", False)
+    if not isinstance(nested, bool):
+        raise ValueError(f"{path}: kernel.allow_nested_userns must be true or false")  # noqa: TRY004
+    return float(timeout_s), mem_gib, nested
 
 
 def _forward_config(path: Path, forward: Any) -> tuple[str, str, int]:

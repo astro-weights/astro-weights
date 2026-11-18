@@ -39,6 +39,11 @@ __all__ = [
 Mode = Literal["bwrap", "seatbelt"]
 
 UNSAFE_HINT = "pass allow_unsafe=True to run agent code without a sandbox"
+NESTED_USERNS_HINT = (
+    "bwrap older than 0.8 has no --disable-userns; to sandbox anyway, letting agent code"
+    " create nested user namespaces, set kernel.allow_nested_userns = true in run.json"
+    " ([kernel] allow_nested_userns = true in an astro-weights run config)"
+)
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 # Every namespace (user, ipc, pid, net, uts, cgroup); no nested user namespaces (the
 # kernel surface behind most unprivileged exploits; needs bwrap >= 0.8, older bwrap
@@ -51,6 +56,8 @@ BWRAP_NAMESPACES = (
     "--die-with-parent",
     "--new-session",
 )
+# Opt-in for bwrap < 0.8: the same namespaces without --disable-userns.
+BWRAP_NESTED_USERNS = tuple(f for f in BWRAP_NAMESPACES if f != "--disable-userns")
 # System files the interpreter and numpy load from. /sys, /run, /var, /home and the
 # rest of /etc stay out of view.
 BWRAP_SYSTEM = ("/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache")
@@ -90,6 +97,13 @@ class SandboxUnavailable(RuntimeError):
 
 def _platform() -> str:
     return sys.platform
+
+
+@functools.cache
+def _detect_nested_userns() -> tuple[Mode | None, str]:
+    """``_detect`` for bwrap without --disable-userns (only on explicit opt-in)."""
+    cmd = ["bwrap", *BWRAP_NESTED_USERNS, "--ro-bind", "/", "/", "--proc", "/proc"]
+    return _runs([*cmd, "--dev", "/dev", "--", "true"], "bwrap")
 
 
 @functools.cache
@@ -206,8 +220,13 @@ def bwrap_command(
     rw: Path,
     hide: Sequence[Path] = (),
     exe: str = "bwrap",
+    *,
+    nested_userns: bool = False,
 ) -> list[str]:
     """bwrap command line; ``hide`` dirs become empty, ``ro`` inside them stay.
+
+    ``nested_userns`` drops --disable-userns (bwrap < 0.8 lacks it): code inside
+    can then create user namespaces, which widens the kernel surface it reaches.
 
     bwrap builds the root and /dev as in-memory tmpfs. Both are remounted
     read-only at the end, as are hidden dirs: writes there would use RAM that
@@ -215,7 +234,8 @@ def bwrap_command(
     """
     for p in (*ro, rw, *hide):
         _check_abs(p)
-    cmd = [exe, *BWRAP_NAMESPACES, "--proc", "/proc", "--dev", "/dev"]
+    flags = BWRAP_NESTED_USERNS if nested_userns else BWRAP_NAMESPACES
+    cmd = [exe, *flags, "--proc", "/proc", "--dev", "/dev"]
     for d in BWRAP_SYSTEM:
         cmd += ["--ro-bind-try", d, d]
     for p in ro:
@@ -281,6 +301,7 @@ def wrap(
     ro: Sequence[Path],
     rw: Path,
     allow_unsafe: bool = False,
+    allow_nested_userns: bool = False,
 ) -> list[str]:
     """``argv`` as a sandboxed command line: read ``ro``, write ``rw``, no network.
 
@@ -288,7 +309,8 @@ def wrap(
     python runs as its base interpreter. Paths must be absolute and exist. Start
     the command with ``cwd=rw``: sandbox-exec cannot change directory itself.
     Without a working sandbox: ``SandboxUnavailable``, or ``list(argv)`` unchanged
-    when ``allow_unsafe`` is True.
+    when ``allow_unsafe`` is True. ``allow_nested_userns``: when bwrap fails only
+    for want of --disable-userns (bwrap < 0.8), sandbox without that flag.
     """
     if not argv:
         raise ValueError("argv is empty")
@@ -296,6 +318,13 @@ def wrap(
     ro_r = _unique([_resolve(p) for p in ro])
     rw_r = _resolve(rw)
     mode, why = _detect()
+    nested = False
+    if mode is None and "--disable-userns" in why:
+        if allow_nested_userns:
+            mode, why = _detect_nested_userns()
+            nested = mode is not None
+        else:
+            why = f"{why}; {NESTED_USERNS_HINT}"
     if mode is None:
         if allow_unsafe:
             return list(argv)
@@ -304,7 +333,12 @@ def wrap(
     hide = hidden_site_dirs(ro_r)
     if mode == "bwrap":
         return bwrap_command(
-            run, ro_r, rw_r, hide, exe=shutil.which("bwrap") or "bwrap"
+            run,
+            ro_r,
+            rw_r,
+            hide,
+            exe=shutil.which("bwrap") or "bwrap",
+            nested_userns=nested,
         )
     return seatbelt_command(run, ro_r, rw_r, hide)
 
