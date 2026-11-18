@@ -72,6 +72,22 @@ def test_title_summary_and_load_section() -> None:
     assert f"astro-weights {version('astro-weights')}" in text.splitlines()[-1]
 
 
+def test_load_class_follows_module_layout() -> None:
+    rng = np.random.default_rng(0)
+
+    def one(module: str) -> Edit:
+        delta = LowRankDelta(module, rng.normal(size=(4, 1)), rng.normal(size=(1, 8)))
+        return Edit((delta,), "org/base")
+
+    text = model_card(
+        one("model.language_model.layers.3.mlp.down_proj"), "adapter", "mit"
+    )
+    assert "AutoModelForImageTextToText.from_pretrained" in text
+    assert "AutoModelForCausalLM" not in text
+    text = model_card(one("model.layers.3.mlp.down_proj"), "adapter", "mit")
+    assert "AutoModelForCausalLM.from_pretrained" in text
+
+
 def test_results_only_when_given() -> None:
     assert "## Results" not in model_card(_edit(), "adapter", "mit")
     text = model_card(_edit(), "adapter", "mit", results={"acc": "0.9"})
