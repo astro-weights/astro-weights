@@ -174,6 +174,10 @@ def test_run_config_model_dir_and_kernel(tmp_path: Path) -> None:
     cfg = load_run_config(write_run(tmp_path, model_dir=absolute, kernel={}))
     assert cfg.model_dir == Path(absolute)
     assert (cfg.kernel_timeout_s, cfg.kernel_mem_gib) == (600, 16)
+    assert not cfg.kernel_allow_nested_userns
+    kernel = {"allow_nested_userns": True}
+    cfg = load_run_config(write_run(tmp_path, kernel=kernel))
+    assert cfg.kernel_allow_nested_userns
 
 
 def test_run_config_forward(tmp_path: Path) -> None:
@@ -214,6 +218,7 @@ def test_run_config_forward(tmp_path: Path) -> None:
         ({"kernel": {"mem_gib": 0}}, "mem_gib"),
         ({"kernel": {"mem_gib": 2.5}}, "mem_gib"),
         ({"kernel": {"mem_gib": True}}, "mem_gib"),
+        ({"kernel": {"allow_nested_userns": 1}}, "allow_nested_userns"),
         ({"forward": []}, "forward must be an object"),
         ({"forward": {"devices": "cpu"}}, "forward must be an object"),
         ({"forward": {"device": "tpu"}}, "forward.device"),

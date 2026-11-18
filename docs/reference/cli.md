@@ -61,7 +61,7 @@ Needs the `mcp` extra; without it, exit 2 and the install hint. `forward_pass` a
 | `model` | string or `null` | required |
 | `limits` | object with exactly `forward_passes`, `code_runs`, `tokens` (ints >= 0) and `dollars` (number >= 0) | required |
 | `model_dir` | path to the model, relative to `RUN_DIR` or absolute | absent: `exec_python` and `forward_pass` say they are not available |
-| `kernel` | object with `timeout_s` (number > 0) and `mem_gib` (int >= 1, Linux only) | `600.0`, `16` |
+| `kernel` | object with `timeout_s` (number > 0), `mem_gib` (int >= 1, Linux only) and `allow_nested_userns` (bool: sandbox with bwrap older than 0.8, see [Explanation: agent budgets and sandbox](../explanation/agent-budgets-and-sandbox.md)) | `600.0`, `16`, `false` |
 | `forward` | object with `device` (`auto`, `cpu`, `cuda`), `dtype` (`auto`, `float32`, `bfloat16`, `float16`) and `max_new_tokens` (1 to 32768) | `auto`, `auto`, `4096` |
 | `export` | object with `rank` (int >= 1), `max_rel_residual` (number >= 0), `base_gguf` (path relative to `RUN_DIR` or absolute) and `gguf_out_type` (`q8_0`, `f16`, `bf16`) | `8`, `0.05`, absent, `q8_0` |
 
@@ -102,7 +102,7 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 | | `max_turns` | int >= 1 | 40 |
 | | `fallback_base_url`, `fallback_model` | non-empty string | give both, or `no_fallback = true` |
 | | `no_fallback` | bool | false |
-| `[kernel]` | `timeout_s`, `mem_gib` | as in [run.json](#mcp) | 600.0, 16 |
+| `[kernel]` | `timeout_s`, `mem_gib`, `allow_nested_userns` | as in [run.json](#mcp) | 600.0, 16, false |
 | | `unsafe` | bool: pass `--unsafe-kernel` | false |
 | `[forward]` | `device`, `dtype`, `max_new_tokens` | as in [run.json](#mcp) | `auto`, `auto`, 4096 |
 | `[export]` | `rank` | int >= 1 | 8 |

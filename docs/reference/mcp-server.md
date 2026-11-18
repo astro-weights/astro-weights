@@ -66,7 +66,7 @@ Per client: [Claude Code](../how-to/agent-claude-code.md), [Codex](../how-to/age
 | `model` | string or `null`, a label for the record | required |
 | `limits` | object with exactly the four keys below | required |
 | `model_dir` | path to the model, relative to `RUN_DIR` or absolute | absent: `exec_python` and `forward_pass` return `... is not available yet` |
-| `kernel` | object: `timeout_s` (number > 0), `mem_gib` (int >= 1, Linux only) | `600.0`, `16` |
+| `kernel` | object: `timeout_s` (number > 0), `mem_gib` (int >= 1, Linux only), `allow_nested_userns` (bool: sandbox with bwrap older than 0.8) | `600.0`, `16`, `false` |
 | `forward` | object: `device` (`auto`, `cpu`, `cuda`), `dtype` (`auto`, `float32`, `bfloat16`, `float16`), `max_new_tokens` (int from 1 to 32768) | `auto`, `auto`, `4096` |
 | `export` | object: `rank` (int >= 1), `max_rel_residual` (finite number >= 0), `base_gguf` (path, relative to `RUN_DIR` or absolute), `gguf_out_type` (`q8_0`, `f16`, `bf16`) | `8`, `0.05`, absent, `q8_0` |
 
@@ -223,7 +223,7 @@ Every refusal is free.
 | 3 failed jobs of one kind in a row | `{"error": "code_runs failed 3 times in a row; an operator must fix this and reset it", "budget"}` | ledger `refuse`; record `refusal`, category `failure_streak` |
 | bad `forward_pass` request | `{"error": "bad request: ...", "budget"}` | record `refusal`, category `bad_request` |
 | the request check itself fails | `{"error": "<ExceptionType>: ...", "budget"}` | record `refusal`, category `forward_check` |
-| no working OS sandbox | `exec_python`: `{"error": "no OS sandbox: <why>; pass allow_unsafe=True to run agent code without a sandbox"}` | record `sandbox_unavailable` |
+| no working OS sandbox | `exec_python`: `{"error": "no OS sandbox: <why>; pass allow_unsafe=True (CLI: --unsafe-kernel) to run agent code without a sandbox"}` | record `sandbox_unavailable` |
 | no `model_dir` | `{"error": "exec_python is not available yet"}` (or `forward_pass`) | record `tool_unavailable` |
 | `hf` extra missing | `forward_pass`: `{"error": "forward_pass is not available yet: it needs torch and transformers: pip install 'astro-weights[hf]'"}` | record `tool_unavailable` |
 | after `finish` | `{"error": "run already finished"}` from every tool but `status` and `report_usage` | nothing |
@@ -247,6 +247,7 @@ Every refusal is free.
 | `tool_unavailable` | `tool`, sometimes `error` | a work tool that cannot run was called |
 | `sandbox_unavailable` | `tool`, `error` | `exec_python` was called with no sandbox |
 | `unsafe_kernel` | none | the server started with `--unsafe-kernel` |
+| `sandbox_compat` | `lost` | the kernel runs under bwrap without `--disable-userns` (`kernel.allow_nested_userns` on bwrap older than 0.8) |
 | `summary` | `text` | `finish` |
 | `export` | `adapter`, `gguf`, `residuals`, `rank` | `finish` exported the edits |
 | `export_skipped` | `reason` | `finish` found no edits |
