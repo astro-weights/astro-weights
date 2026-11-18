@@ -55,6 +55,7 @@ dev = [
     "towncrier>=26.9.0",
     "hypothesis>=6.170.15",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8",
 ]
 docs = [
     "mkdocstrings-python==2.0.11",

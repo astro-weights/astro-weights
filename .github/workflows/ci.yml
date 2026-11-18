@@ -4,15 +4,45 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}  # every main commit keeps its own result
 
 jobs:
+  # PR to main: fast tier (Linux 3.12/3.14 + coverage). Merge queue, push to main,
+  # PR to release/*: full tier. Tests skipped only on PRs that touch no file a test reads.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          code=true full=true
+          if [ "$EVENT" = pull_request ] && [[ "$BASE_REF" != release/* ]]; then
+            full=false
+            files=$(git diff --name-only "$BASE_SHA" HEAD)
+            # Paths no test reads. tests/test_docs_snippets.py runs README.md, docs/tutorials, docs/how-to.
+            skip='^(changes/|docs/(assets|blog|explanation|reference)/|docs/[^/]+$|[^/]+\.md$|\.github/ISSUE_TEMPLATE/|\.github/pull_request_template\.md$|zensical\.toml$)'
+            if ! grep -qx 'README.md' <<<"$files" && ! grep -qvE "$skip" <<<"$files"; then code=false; fi
+          fi
+          echo "code=$code full=$full"
+          { echo "code=$code"; echo "full=$full"; } >> "$GITHUB_OUTPUT"
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -26,11 +56,13 @@ jobs:
       - run: uv run lint-imports
 
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ${{ fromJSON(needs.changes.outputs.full == 'true' && '["3.12", "3.13", "3.14"]' || '["3.12", "3.14"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,9 +77,11 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv run pytest -m "not gpu"
+      - run: uv run pytest -m "not gpu" -n auto
 
   test-hf:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,7 +97,7 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
-      - run: uv run --extra hf --extra eval --extra gguf --extra mcp pytest -m "not gpu" --cov=astro_weights --cov-branch --cov-fail-under=95
+      - run: uv run --extra hf --extra eval --extra gguf --extra mcp pytest -m "not gpu" --cov=astro_weights --cov-branch --cov-fail-under=95 -n auto
 
   wheel-smoke:
     runs-on: ubuntu-latest
@@ -110,7 +144,13 @@ jobs:
           "$RUNNER_TEMP/smoke/bin/astro-weights" inspect "$RUNNER_TEMP/adapter"
 
   test-lowest:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [core, extras]
     env:
       UV_HTTP_TIMEOUT: 300  # torch 2.4.0 wheel (760 MB) from PyPI timed out at 30s default
     steps:
@@ -127,13 +167,18 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
+          cache-suffix: lowest-${{ matrix.part }}  # own cache key; lowest resolution differs from uv.lock
       - name: Core, lowest direct dependencies
-        run: uv run --resolution lowest-direct pytest -m "not gpu"
+        if: matrix.part == 'core'
+        run: uv run --resolution lowest-direct pytest -m "not gpu" -n auto
       - name: All extras, lowest direct dependencies
+        if: matrix.part == 'extras'
         # --no-sources: torch from PyPI; the CPU index has no plain 2.4.0 Linux wheel (only 2.4.0+cpu)
-        run: uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp pytest -m "not gpu"
+        run: uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp pytest -m "not gpu" -n auto
 
   test-os:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -146,7 +191,7 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
-      - run: uv run pytest -m "not gpu"
+      - run: uv run pytest -m "not gpu" -n auto
 
   zizmor:
     runs-on: ubuntu-latest
@@ -159,3 +204,35 @@ jobs:
         with:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+
+  # Sign-off check as a workflow job: the DCO app does not report on merge_group.
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          bad=0
+          while IFS=$'\t' read -r sha author; do
+            git log -1 --format=%B "$sha" | grep -qiF "Signed-off-by: $author" \
+              || { echo "::error::$sha has no 'Signed-off-by: $author' (git commit -s)"; bad=1; }
+          done < <(git log --no-merges --format='%H%x09%an <%ae>' "$BASE_SHA..HEAD")
+          exit "$bad"
+
+  # Single required check. Skipped jobs pass; failed or cancelled jobs fail it.
+  ci-ok:
+    if: always()
+    needs: [changes, lint, test, test-hf, wheel-smoke, test-lowest, test-os, zizmor, dco]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          case " $RESULTS " in *" failure "*|*" cancelled "*) exit 1 ;; esac
