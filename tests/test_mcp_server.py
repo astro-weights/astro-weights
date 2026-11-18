@@ -506,3 +506,64 @@ def test_main_unsafe_kernel_flag(
     assert main([str(run), "--unsafe-kernel"]) == 0
     events = RunRecord.open(run / "record.jsonl").read()
     assert [e["event"] for e in events] == ["start", "unsafe_kernel"]
+
+
+def test_forward_needs_the_hf_extra(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from astro_weights.mcp import forward
+
+    monkeypatch.setattr(forward, "hf_available", lambda: False)
+    run = kernel_run(tmp_path)
+
+    async def go() -> dict[str, Any]:
+        async with Client(build_server(run, {"exec": echo})) as client:
+            return await call(client, "forward_pass", {"request": {}})
+
+    out = anyio.run(go)
+    assert out["error"].startswith("forward_pass is not available yet")
+    assert "astro-weights[hf]" in out["error"]
+    event = RunRecord.open(run / "record.jsonl").read()[-1]
+    assert (event["event"], event["tool"]) == ("tool_unavailable", "forward_pass")
+    assert "astro-weights[hf]" in event["error"]
+
+
+def test_unreadable_forward_results_are_deleted(tmp_path: Path) -> None:
+    from astro_weights.mcp import forward
+
+    run = write_run(tmp_path)
+    store = HandleStore(run)
+    folders: dict[str, Path] = {}
+
+    def job(state: str) -> str:
+        out = {"done": "d", "running": "e", "queued": "a", "failed": "f"}[state] * 32
+        j = store.submit("forward", {"request": {}, "out": out})
+        folders[state] = run / forward.RESULTS / out
+        folders[state].mkdir(parents=True)
+        if state != "queued":
+            store.start(j.handle)
+        if state == "done":
+            store.finish(j.handle, {"keys": []})
+        if state == "failed":
+            store.fail(j.handle, "budget exhausted")
+        return j.handle
+
+    for state in ("done", "running", "queued", "failed"):
+        job(state)
+    build_server(run)  # a restart deletes what nobody can read
+    assert {s for s, d in folders.items() if d.exists()} == {"done"}
+    # a job refused at charge time while the server runs: status deletes it
+    server = build_server(run)
+    later = store.submit("forward", {"request": {}, "out": "b" * 32})
+    folder = run / forward.RESULTS / ("b" * 32)
+    folder.mkdir()
+    store.start(later.handle)
+    store.fail(later.handle, "budget exhausted")
+
+    async def go() -> dict[str, Any]:
+        async with Client(server) as client:
+            return await call(client, "status", {"handle": later.handle})
+
+    assert anyio.run(go)["state"] == "failed"
+    assert not folder.exists()
+    assert folders["done"].exists()

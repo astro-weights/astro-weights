@@ -176,6 +176,22 @@ def test_run_config_model_dir_and_kernel(tmp_path: Path) -> None:
     assert (cfg.kernel_timeout_s, cfg.kernel_mem_gib) == (600, 16)
 
 
+def test_run_config_forward(tmp_path: Path) -> None:
+    cfg = load_run_config(write_run(tmp_path))
+    assert (cfg.forward_device, cfg.forward_dtype, cfg.forward_max_new_tokens) == (
+        "auto",
+        "auto",
+        4096,
+    )
+    forward = {"device": "cuda", "dtype": "bfloat16", "max_new_tokens": 32768}
+    cfg = load_run_config(write_run(tmp_path, forward=forward))
+    assert (cfg.forward_device, cfg.forward_dtype, cfg.forward_max_new_tokens) == (
+        "cuda",
+        "bfloat16",
+        32768,
+    )
+
+
 @pytest.mark.parametrize(
     ("over", "match"),
     [
@@ -198,6 +214,14 @@ def test_run_config_model_dir_and_kernel(tmp_path: Path) -> None:
         ({"kernel": {"mem_gib": 0}}, "mem_gib"),
         ({"kernel": {"mem_gib": 2.5}}, "mem_gib"),
         ({"kernel": {"mem_gib": True}}, "mem_gib"),
+        ({"forward": []}, "forward must be an object"),
+        ({"forward": {"devices": "cpu"}}, "forward must be an object"),
+        ({"forward": {"device": "tpu"}}, "forward.device"),
+        ({"forward": {"dtype": "int8"}}, "forward.dtype"),
+        ({"forward": {"max_new_tokens": 0}}, "forward.max_new_tokens"),
+        ({"forward": {"max_new_tokens": 32769}}, "forward.max_new_tokens"),
+        ({"forward": {"max_new_tokens": True}}, "forward.max_new_tokens"),
+        ({"forward": {"max_new_tokens": 8.0}}, "forward.max_new_tokens"),
     ],
 )
 def test_run_config_bad(tmp_path: Path, over: dict[str, Any], match: str) -> None:

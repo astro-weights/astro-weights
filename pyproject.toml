@@ -78,7 +78,7 @@ strict = true
 
 # The core CI job has no extras installed; runners/hf.py and mcp/server.py import these.
 [[tool.mypy.overrides]]
-module = ["torch.*", "peft.*", "transformers.*", "math_verify.*", "gguf.*", "mcp.*"]
+module = ["torch.*", "peft.*", "transformers.*", "math_verify.*", "gguf.*", "mcp.*", "anyio.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
