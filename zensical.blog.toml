@@ -56,5 +56,5 @@ toggle.name = "Switch to dark mode"
 [project.plugins.blog]
 blog_dir = "."
 post_url_format = "{slug}"
-categories_allowed = ["research", "release", "how-to"]
+categories_allowed = ["research", "release", "how-to", "security"]
 archive = false
