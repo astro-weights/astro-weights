@@ -1,13 +1,13 @@
 # Drive the agent tools from Claude Code
 
-!!! note "New in 0.2 (pre-release)"
+!!! note "New in 0.2"
 
 `astro-weights mcp RUN_DIR` serves the agent tools over stdio MCP. Add it to Claude Code as a local server and Claude Code becomes the editor: it calls `exec_python`, `forward_pass`, `status` and `finish` on your model.
 
 You need the `mcp` extra, plus `hf` for `forward_pass`:
 
 ```bash
-pip install --pre "astro-weights[mcp,hf]"
+pip install "astro-weights[mcp,hf]"
 ```
 
 ## 1. Make a run directory

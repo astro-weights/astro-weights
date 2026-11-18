@@ -1,1 +1,0 @@
-A local editor, `python -m astro_weights.mcp.editors.local RUN_DIR --base-url URL --model NAME`, lets any OpenAI-compatible model with tool calls drive the stdio MCP server, reporting its tokens to the ledger at no dollar cost.

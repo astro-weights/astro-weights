@@ -1,13 +1,13 @@
 # Drive the agent tools from Codex
 
-!!! note "New in 0.2 (pre-release)"
+!!! note "New in 0.2"
 
 Add `astro-weights mcp RUN_DIR` to Codex as a stdio MCP server and Codex becomes the editor.
 
 You need the `mcp` extra, plus `hf` for `forward_pass`:
 
 ```bash
-pip install --pre "astro-weights[mcp,hf]"
+pip install "astro-weights[mcp,hf]"
 ```
 
 ## 1. Make a run directory

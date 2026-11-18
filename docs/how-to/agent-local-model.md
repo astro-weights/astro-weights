@@ -1,13 +1,13 @@
 # Run the agent on a local model
 
-!!! note "New in 0.2 (pre-release)"
+!!! note "New in 0.2"
 
 The local editor lets a model behind any OpenAI-compatible server with tool calls (vLLM, llama-server) drive the MCP server. It costs $0: tokens go to the ledger, dollars stay 0.
 
 You need the `mcp` and `hf` extras:
 
 ```bash
-pip install --pre "astro-weights[mcp,hf]"
+pip install "astro-weights[mcp,hf]"
 ```
 
 ## 1. Start a model server with tool calls on
