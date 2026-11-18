@@ -85,5 +85,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md
+          pre=()  # PEP 440 pre-release (a/b/rc): mark prerelease, never Latest
+          [[ "${GITHUB_REF_NAME#v}" =~ [0-9](a|b|rc)[0-9]+ ]] && pre=(--prerelease --latest=false)
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md "${pre[@]}"
           gh release edit "$GITHUB_REF_NAME" --draft=false
