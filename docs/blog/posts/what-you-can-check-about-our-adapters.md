@@ -61,7 +61,7 @@ Not bit-exact: adapter file's sha256 won't match ours. Rank-one LoRA stores chan
 
 This check proves one narrow thing: adapter is rank-one fit of edit matrices we published (fit leaves 0.1% to 0.6% of each layer's edit out). It doesn't show where those edits came from. AI agent made them by working on model's activations on GPU, and code it ran wasn't saved, so nobody can re-derive the edits, us included. Running agent again would most likely give different edit.
 
-27B adapter: file hashes and `inspect` today (rank one, 49 down-projection matrices). Its edit matrices aren't published yet, so rebuild check doesn't cover it.
+27B adapter: file hashes and `inspect` today (rank one, 49 down-projection matrices). Its edit matrices aren't published yet, so rebuild check doesn't cover it. We ran it ourselves: adapter points same direction as agent's edit (cosine 0.999996 or better per layer), but its scale sits 0.1% to 0.55% lower per layer. Cause wasn't recorded. All 27B results were measured on adapter as published. Its `lora_manifest.json` gives sizes of original edit, not of shipped factors, so manifest numbers run 0.1% to 0.55% above what file contains. We're correcting manifest note.
 
 ## Look at change itself
 
