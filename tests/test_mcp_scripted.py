@@ -192,7 +192,7 @@ def test_scripted_run_end_to_end(
     printed = json.loads(capsys.readouterr().out)
     assert printed["steps"] == len(DEFAULT_SCRIPT)
     assert len(printed["handles"]) == 4
-    assert float(printed["outputs"][-1]) > 0  # max |a - b|: the edit is visible
+    assert float(printed["outputs"][-1]) > 1e-4, printed["outputs"]  # max abs diff
     events = [e["event"] for e in RunRecord.open(run / "record.jsonl").read()]
     assert events[0] == "start"
     assert {"edit_saved", "summary", "finish"} <= set(events)
@@ -202,3 +202,11 @@ def test_scripted_run_end_to_end(
     final = printed["budget"]["used"]
     assert final["tokens"] == 0
     assert final["dollars"] == 0
+
+
+def test_main_bad_run_json_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "run.json").write_text("{}")
+    assert main([str(tmp_path)]) == 2
+    assert "could not run the server" in capsys.readouterr().err

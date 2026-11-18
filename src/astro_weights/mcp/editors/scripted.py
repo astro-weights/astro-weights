@@ -53,11 +53,11 @@ class ScriptFailed(RuntimeError):
 
 
 _EDIT = """\
-name = NAMES[0]
+name = next((n for n in NAMES if "mlp.down_proj" in n), NAMES[0])
 W = load(name)
 rng = np.random.default_rng(0)
 d = np.outer(rng.standard_normal(W.shape[0]), rng.standard_normal(W.shape[1]))
-W2 = W + d * (1e-2 * np.linalg.norm(W) / np.linalg.norm(d))
+W2 = W + d * (0.45 * np.linalg.norm(W) / np.linalg.norm(d))
 save_edit(name, W2.astype(np.float32))
 print(name, float(np.linalg.norm(W2 - W) / np.linalg.norm(W)))
 """
@@ -202,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
     except ScriptFailed as exc:
         print(json.dumps({"error": str(exc), "step": exc.index, "result": exc.result}))
         return 1
+    except Exception as exc:  # noqa: BLE001 - the server did not start or died
+        while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+            exc = exc.exceptions[0]
+        print(f"error: could not run the server: {exc!r}", file=sys.stderr)
+        return 2
     handles = list(dict.fromkeys(r["handle"] for r in results if r.get("handle")))
     outputs = [
         r["result"]["output"]
