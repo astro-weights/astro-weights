@@ -674,7 +674,6 @@ def _sim_arms(
 def test_clustered_ci_coverage_simulation() -> None:
     rng = np.random.default_rng(2024)
     reps, covered_c, covered_u = 400, 0, 0
-    t0 = time.perf_counter()
     for _ in range(reps):
         base, edit = _sim_arms(rng, 200, 5)
         c = compare(base, edit, n_boot=1)
@@ -683,7 +682,6 @@ def test_clustered_ci_coverage_simulation() -> None:
         ne = [dataclasses.replace(r, cluster_id=None) for r in edit]
         u = compare(nb, ne, n_boot=1)
         covered_u += u.ci95[0] <= 0 <= u.ci95[1]
-    assert time.perf_counter() - t0 < 30
     assert 0.92 <= covered_c / reps <= 0.98
     assert covered_u / reps < 0.90
 

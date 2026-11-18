@@ -1,1 +1,0 @@
-The MCP server's `forward_pass` tool runs the model (`hf` extra) on base or edited weights, in `teacher_forced` and `generate` modes, and agent code reads its arrays and texts with `forward_result(handle, key)`.
