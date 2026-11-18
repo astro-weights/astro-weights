@@ -48,8 +48,8 @@ Run all of them before opening a PR; CI runs the same set.
 
 ## Workflow
 
-- `main` is protected: PRs only, squash merge. Required checks: `lint`, `test` (3.12, 3.13, 3.14), `test-hf`, `zizmor`, `DCO`, `changelog`, `wheel-smoke`, `test-lowest`, `test-os` (macOS, Windows); see `CONTRIBUTING.md`.
-- Sign off every commit (DCO): `git commit -s`. The DCO check fails a PR with any unsigned commit.
+- `main` is protected: PRs only, squash merge through the merge queue. Required checks: `ci-ok` and `changelog`. `ci-ok` passes when every CI job passed or was skipped (`lint`, `test`, `test-hf`, `wheel-smoke`, `test-lowest`, `test-os`, `zizmor`, `dco`). A PR runs the fast tier: `test` on 3.12 and 3.14, no `test-lowest` or `test-os`, and no tests at all when it only touches paths no test reads (`changes/`, `docs/` outside `tutorials/` and `how-to/`, top-level `.md` other than `README.md`, `zensical.toml`). The merge queue and pushes to `main` run the full suite. Tests run with `-n auto` (pytest-xdist). See `CONTRIBUTING.md`.
+- Sign off every commit (DCO): `git commit -s`. The CI `dco` job fails a PR with any unsigned commit.
 - AI help is recorded with a commit trailer: `Assisted-by: <agent>:<model>` (a tool-added `Co-Authored-By:` is also accepted). See `AI_POLICY.md`.
 - Changelog: add a towncrier fragment in `changes/`, named `<PR number>.<type>.md` (or `+<slug>.<type>.md` before a PR number exists). Types: `added`, `changed`, `deprecated`, `removed`, `fixed`, `security`. Do not edit `CHANGELOG.md` by hand; the release builds it from the fragments.
 - The `Changelog` workflow checks each PR for a fragment. A PR with no user-visible change carries the `skip-changelog` label instead.

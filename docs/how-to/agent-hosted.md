@@ -1,7 +1,6 @@
 # Run the agent on Claude with your own key
 
 !!! note "New in 0.2 (pre-release)"
-    The hosted editor comes after 0.2.0a1.
 
 The hosted editor lets Claude drive the MCP server on your own Anthropic API key. It checks the dollar budget before every call and writes every call's cost to the ledger. When Claude refuses, the same run goes on with a local model.
 

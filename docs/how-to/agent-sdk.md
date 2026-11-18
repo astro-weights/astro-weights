@@ -1,6 +1,6 @@
 # Drive the agent tools from the Claude Agent SDK
 
-!!! note "New in 0.2.0a1 (pre-release)"
+!!! note "New in 0.2 (pre-release)"
 
 The built-in route to Claude is the hosted editor: [How-to: run the agent on Claude with your own key](agent-hosted.md). It calls the Messages API, checks the dollar budget before every call and reports every turn's cost to the ledger. With the Agent SDK as client, the server never sees the model calls, so it cannot stop one that would pass the dollar limit.
 

@@ -1,7 +1,6 @@
 # First agent run
 
 !!! note "New in 0.2 (pre-release)"
-    `astro-weights run` and the local and hosted editors come after 0.2.0a1. 0.2.0a1 on PyPI has the MCP server and the scripted editor only.
 
 In this tutorial you run the agent loop once on a tiny random model, with no API key and no GPU. The scripted editor stands in for a model: it sends a fixed list of tool calls to the MCP server, saves one edit, runs two forward passes and finishes. Then you read what the run left on disk.
 

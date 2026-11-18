@@ -1,6 +1,6 @@
 # Drive the agent tools from Codex
 
-!!! note "New in 0.2.0a1 (pre-release)"
+!!! note "New in 0.2 (pre-release)"
 
 Add `astro-weights mcp RUN_DIR` to Codex as a stdio MCP server and Codex becomes the editor.
 

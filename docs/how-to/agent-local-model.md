@@ -1,7 +1,6 @@
 # Run the agent on a local model
 
 !!! note "New in 0.2 (pre-release)"
-    The local editor comes after 0.2.0a1.
 
 The local editor lets a model behind any OpenAI-compatible server with tool calls (vLLM, llama-server) drive the MCP server. It costs $0: tokens go to the ledger, dollars stay 0.
 

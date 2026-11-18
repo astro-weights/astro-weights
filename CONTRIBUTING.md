@@ -23,16 +23,18 @@ uv run ruff format                                  # format
 uv run mypy src tests                               # type check (strict)
 uv run lint-imports                                 # layer contract
 uv run pytest                                       # core tests
-uv run --extra hf --extra eval --extra gguf pytest  # tests that need the optional extras
+uv run --extra hf --extra eval --extra gguf --extra mcp --extra hosted pytest  # tests that need the optional extras
 ```
 
 Docs changes: `uv run --only-group docs zensical build --strict` must pass; preview with `uv run --only-group docs zensical serve`. Blog posts live in `docs/blog/posts/` and build with their own config: `uv run --only-group docs zensical build -f zensical.blog.toml --strict` must pass too. The Docs workflow here only checks the build. The site is deployed from [astro-weights/astro-weights.github.io](https://github.com/astro-weights/astro-weights.github.io), which builds `docs/` into https://astro-weights.dev/docs/ beside the landing page.
 
 CI runs the same checks on Python 3.12 to 3.14. Tests that need a GPU are marked `@pytest.mark.gpu`; CI skips them, and maintainers run them by hand before each release. `tests/test_exit_0_1.py` is the release check for 0.1.0: it reruns the library against a real 9B base model and published edits. Those tests are marked `@pytest.mark.realdata` and skip unless `$ASTRO_REALDATA` names a directory that holds the files. CI does not set it, and contributors do not need it.
 
-Required CI jobs beyond the checks above: `wheel-smoke` builds the wheel, installs it alone in a clean venv and runs the CLI; `test-lowest` runs the tests with `--resolution lowest-direct`, so a dependency floor in `pyproject.toml` (for example `torch>=2.4` in the `hf` extra) must really work; `test-os` runs the core tests on macOS and Windows. All three are required checks on `main` (`test-os` counts as two: macOS and Windows). A weekly `Canary` workflow tests against peft and transformers `main`; it is not a required check, and a red run means upstream moved, not that a PR broke.
+Other CI jobs: `wheel-smoke` builds the wheel, installs it alone in a clean venv and runs the CLI; `test-lowest` runs the tests with `--resolution lowest-direct`, so a dependency floor in `pyproject.toml` (for example `torch>=2.4` in the `hf` extra) must really work; `test-os` runs the core tests on macOS and Windows; `dco` checks sign-offs. The Linux test jobs install bubblewrap, so the sandbox tests run for real. Tests run in parallel (`-n auto`, pytest-xdist).
 
-`test-hf` also enforces coverage: `--cov=astro_weights --cov-branch --cov-fail-under=95`, so branch coverage below 95% fails it. Run the same locally with `uv run --extra hf --extra eval --extra gguf pytest --cov=astro_weights --cov-branch --cov-fail-under=95`.
+Required checks on `main` are `ci-ok` and `changelog`. `ci-ok` passes when every CI job passed or was skipped. A PR runs a fast tier: `test` on Python 3.12 and 3.14 only, no `test-lowest` or `test-os`, and no tests at all when the PR only touches paths no test reads (`changes/`, `docs/` outside `tutorials/` and `how-to/`, top-level `.md` files other than `README.md`, `zensical.toml`). PRs merge through the merge queue, which runs the full suite (all Python versions, `test-lowest`, `test-os`) before the squash merge. A weekly `Canary` workflow tests against peft and transformers `main`; it is not a required check, and a red run means upstream moved, not that a PR broke.
+
+`test-hf` also enforces coverage: `--cov=astro_weights --cov-branch --cov-fail-under=95`, so branch coverage below 95% fails it. Run the same locally with `uv run --extra hf --extra eval --extra gguf --extra mcp --extra hosted pytest --cov=astro_weights --cov-branch --cov-fail-under=95`.
 
 ### Tests that guard the public surface
 
@@ -105,7 +107,7 @@ git commit -s
 
 which adds a line like `Signed-off-by: Your Name <you@example.com>` to the commit message.
 
-The DCO check is enforced by a GitHub App and is a required status check. Every commit in a PR needs a sign-off, or the PR cannot merge. To fix a missing sign-off, run `git rebase --signoff main` and force-push your branch.
+The `dco` job in CI checks every commit in a PR for a sign-off line matching its author; it is part of the required `ci-ok` check, so a PR with an unsigned commit cannot merge. To fix a missing sign-off, run `git rebase --signoff main` and force-push your branch.
 
 ## AI tools
 
