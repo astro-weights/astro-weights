@@ -36,7 +36,7 @@ fallback_base_url = "http://127.0.0.1:8000"
 fallback_model = "MODEL"
 ```
 
-- `dollars`: the run's dollar cap. Default 20.0 for the hosted editor. Set your own; 0 is refused, since a hosted run needs a dollar budget.
+- `dollars`: the run's dollar cap. Default 20.0 for the hosted editor. Set your own; it must be above 0, since a hosted run needs a dollar budget.
 - `model`: a Claude model id with a price in `astro_weights.mcp.editors.prices.PRICES` ([Reference](../reference/index.md)). Any other id is refused before the run starts.
 - `max_output_tokens` (default 16000) and `max_turns` (default 40).
 - `fallback_base_url` and `fallback_model`: the OpenAI-compatible server and model that take over after a refusal; set it up as in [How-to: run the agent on a local model](agent-local-model.md#1-start-a-model-server-with-tool-calls-on). Or `no_fallback = true` to end the run on a refusal. One of the two is required.
@@ -61,4 +61,6 @@ When Claude stops with a refusal, the refused turn is still charged, its partial
 
 Exit codes: 0 the run finished (by the model, the turn cap, a spent budget or the dollar cap); 1 refused with no fallback, or a loop or API error (as JSON on stdout, key removed); 2 bad arguments, a bad run directory, an unknown model, a dollar limit of 0, an unset key or a server that did not start.
 
-Not tested: never run against the real API; tested with fakes only, no key, no network. `astro-weights run` was checked against its spec only.
+`astro-weights run` checks that `ANTHROPIC_API_KEY` is set and not empty before it writes anything.
+
+Not tested: never run against the real API; the editor and `astro-weights run` with `kind = "hosted"` are tested with fakes only, no key, no network.

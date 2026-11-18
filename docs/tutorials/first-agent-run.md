@@ -84,7 +84,7 @@ from astro_weights.cli import main
 assert main(["run", "agent.toml"]) == 0
 ```
 
-`run` writes `runs/first/run.json` and a copy of the config, then starts the editor. The editor starts the MCP server (`python -m astro_weights.mcp runs/first`) as its child and talks to it over stdio. Exit code 0 means the run finished.
+`run` checks the config and the extras, writes `runs/first/run.json` and a copy of the config (`runs/first/config.toml`), then starts the editor. The editor starts the MCP server (`python -m astro_weights.mcp runs/first`) as its child and talks to it over stdio. Exit code 0 means the run finished.
 
 On Linux the agent's code runs under bubblewrap, on macOS under Seatbelt. With neither, the run stops with an error; see [Explanation: agent budgets and sandbox](../explanation/agent-budgets-and-sandbox.md).
 
@@ -104,7 +104,7 @@ Prints four charges, two `code_runs` and two `forward_passes`, each with the han
 
 ## 5. Read the record
 
-`record.jsonl` is the run's history: a `start` line (seed, limits, editor, library version), events such as `edit_saved`, the editor's `summary` and a final `finish` line with the budget.
+`record.jsonl` is the run's history: a `start` line (seed, limits, editor, library version), events such as `edit_saved`, the editor's `summary`, the `export` of the edits and a final `finish` line with the budget.
 
 ```python
 record = [json.loads(line) for line in open("runs/first/record.jsonl")]
@@ -115,11 +115,27 @@ print(record[-1]["outcome"], record[-1]["budget"]["used"])
 Prints:
 
 ```text
-['start', 'edit_saved', 'summary', 'finish']
+['start', 'edit_saved', 'summary', 'export', 'finish']
 finished {'forward_passes': 2, 'code_runs': 2, 'tokens': 0, 'dollars': 0.0}
 ```
 
 The saved edit sits in `runs/first/edits/`, and each job's request and result in `runs/first/jobs/`.
+
+## 6. Inspect the adapter
+
+On `finish` the server turned the stored edit into a PEFT LoRA adapter in `runs/first/export/adapter`:
+
+```bash
+astro-weights inspect runs/first/export/adapter
+```
+
+## 7. Status and resume
+
+```bash
+astro-weights run agent.toml --status
+```
+
+prints the state (`finished`), the budget used against each limit, the stored edits and the last events, from disk. Running `astro-weights run agent.toml` again is refused: the directory already holds a run. `--resume` goes on with an unfinished run and keeps the budget it used; a new run needs a new `[run] dir`.
 
 ## Next
 

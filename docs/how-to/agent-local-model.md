@@ -50,7 +50,7 @@ temperature = 0.0
 
 - `base_url`: `http://` or `https://`, with or without a trailing `/v1`. The editor posts to `{base_url}/v1/chat/completions`.
 - `model`: the name the server expects.
-- `api_key_env`: optional. The name of an environment variable that holds the server's key, for example `api_key_env = "VLLM_API_KEY"`. The key is never read from the config or the command line.
+- `api_key_env`: optional. The name of an environment variable that holds the server's key, for example `api_key_env = "VLLM_API_KEY"`. It must be a variable name; a key pasted there is refused and never printed. The variable must be set and not empty before the run starts. The key is never read from the config or the command line.
 - `max_turns` (default 40) and `temperature` (default 0.0).
 
 Every key is in [Reference: CLI](../reference/cli.md#run).
@@ -67,4 +67,4 @@ Exit codes: 0 the run finished; 1 the model refused (`finish_reason` `content_fi
 
 The server's own terms apply when it serves a hosted model.
 
-Not tested: `astro-weights run` (checked against its spec only) and real vLLM or llama-server output. The editor itself is tested against a fake OpenAI-compatible server.
+Not tested: real vLLM or llama-server output. The editor and `astro-weights run` with `kind = "local"` are tested against a fake OpenAI-compatible server.
