@@ -3,6 +3,7 @@ name: Changelog
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:  # required check must report in the queue; checked on the PR already
 
 permissions: {}
 
@@ -13,7 +14,8 @@ concurrency:
 jobs:
   changelog:
     if: >-
-      !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+      github.event_name == 'pull_request'
+      && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
       && !contains(github.event.pull_request.labels.*.name, 'dependencies')
     runs-on: ubuntu-latest
     permissions:
