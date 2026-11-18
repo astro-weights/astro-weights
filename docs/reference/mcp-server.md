@@ -1,6 +1,6 @@
 # MCP server
 
-!!! note "New in 0.2 (pre-release)"
+!!! note "New in 0.2"
 
 `astro-weights mcp RUN_DIR` is a stdio MCP server for one run directory. It serves seven tools. Any MCP client can drive it: the built-in editors of [`astro-weights run`](cli.md#run), Claude Code, Codex or your own.
 
