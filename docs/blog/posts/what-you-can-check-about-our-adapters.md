@@ -33,7 +33,16 @@ curl -LO https://raw.githubusercontent.com/astro-weights/astro-weights/23532d292
 python gguf_meta_diff.py https://huggingface.co/glitch401/qwen3.5-9B-terse/resolve/main/qwen3.5-9B-terse-Q4_K_M.gguf https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf
 ```
 
-Tensors too: our file has 427 tensors, and 422 are byte-identical to the Unsloth file. The 5 that differ are exactly `blk.{18,20,22,24,26}.ffn_down.weight`, the edited layers (stored as F16 in ours, quantised in theirs). Command for this check lands in `tools/` soon; we'll add it here.
+Tensors too: our file has 427 tensors, and 422 are byte-identical to the Unsloth file. The 5 that differ are exactly `blk.{18,20,22,24,26}.ffn_down.weight`, the edited layers (stored as F16 in ours, quantised in theirs). To check this yourself, download both files (about 12 GB in all) and run the newer version of the script with `--tensors`:
+
+```bash
+curl -LO https://raw.githubusercontent.com/astro-weights/astro-weights/366062389616c86e469a6ebdf4c0b0c6276b49cf/tools/gguf_meta_diff.py
+curl -LO https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf
+curl -LO https://huggingface.co/glitch401/qwen3.5-9B-terse/resolve/main/qwen3.5-9B-terse-Q4_K_M.gguf
+python gguf_meta_diff.py Qwen3.5-9B-Q4_K_M.gguf qwen3.5-9B-terse-Q4_K_M.gguf --tensors
+```
+
+Expect exit code 1. The script exits 1 when any tensor differs, and ours differ on purpose: the output shows 422 identical and 5 different, exactly the `ffn_down` names above. Any other differing tensor would be a real finding.
 
 ## Rebuild adapter from published edit
 
