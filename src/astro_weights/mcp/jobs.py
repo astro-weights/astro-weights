@@ -27,6 +27,10 @@ __all__ = ["JobRunner", "RunConfig", "load_run_config"]
 
 Executor = Callable[[dict[str, Any]], dict[str, Any]]
 _LIMIT_KEYS = ("forward_passes", "code_runs", "tokens", "dollars")
+_DEVICES = ("auto", "cpu", "cuda")
+_DTYPES = ("auto", "float32", "bfloat16", "float16")
+_FORWARD_KEYS = ("device", "dtype", "max_new_tokens")
+MAX_NEW_TOKENS = 32768
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,9 @@ class RunConfig:
     model_dir: Path | None = None
     kernel_timeout_s: float = 600.0
     kernel_mem_gib: int = 16
+    forward_device: str = "auto"
+    forward_dtype: str = "auto"
+    forward_max_new_tokens: int = 4096
 
 
 def load_run_config(run_dir: Path) -> RunConfig:
@@ -74,6 +81,7 @@ def load_run_config(run_dir: Path) -> RunConfig:
     if not (model_dir is None or (isinstance(model_dir, str) and model_dir)):
         raise ValueError(f"{path}: model_dir must be a non-empty string or absent")
     timeout_s, mem_gib = _kernel_config(path, raw.get("kernel", {}))
+    device, dtype, max_new = _forward_config(path, raw.get("forward", {}))
     return RunConfig(
         seed,
         editor,
@@ -82,6 +90,9 @@ def load_run_config(run_dir: Path) -> RunConfig:
         None if model_dir is None else Path(run_dir) / model_dir,
         timeout_s,
         mem_gib,
+        device,
+        dtype,
+        max_new,
     )
 
 
@@ -99,6 +110,27 @@ def _kernel_config(path: Path, kernel: Any) -> tuple[float, int]:
     if not isinstance(mem_gib, int) or isinstance(mem_gib, bool) or mem_gib < 1:
         raise ValueError(f"{path}: kernel.mem_gib must be an int >= 1")
     return float(timeout_s), mem_gib
+
+
+def _forward_config(path: Path, forward: Any) -> tuple[str, str, int]:
+    """(device, dtype, max_new_tokens) from the optional ``forward`` object of run.json."""
+    if not isinstance(forward, dict) or not set(forward) <= set(_FORWARD_KEYS):
+        raise ValueError(
+            f"{path}: forward must be an object with keys from {list(_FORWARD_KEYS)}"
+        )
+    device = forward.get("device", "auto")
+    dtype = forward.get("dtype", "auto")
+    max_new = forward.get("max_new_tokens", 4096)
+    if device not in _DEVICES:
+        raise ValueError(f"{path}: forward.device must be one of {list(_DEVICES)}")
+    if dtype not in _DTYPES:
+        raise ValueError(f"{path}: forward.dtype must be one of {list(_DTYPES)}")
+    whole = isinstance(max_new, int) and not isinstance(max_new, bool)
+    if not whole or not 1 <= max_new <= MAX_NEW_TOKENS:
+        raise ValueError(
+            f"{path}: forward.max_new_tokens must be an int from 1 to {MAX_NEW_TOKENS}"
+        )
+    return str(device), str(dtype), max_new
 
 
 class JobRunner:

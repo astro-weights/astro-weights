@@ -14,6 +14,7 @@ import itertools
 import json
 import os
 import queue
+import secrets
 import socket
 import sys
 import threading
@@ -27,9 +28,10 @@ import numpy as np
 import pytest
 from mcp_fakes import fake_model_dir
 
+from astro_weights.mcp import forward, kernel_child, sandbox
 from astro_weights.mcp import kernel as kmod
-from astro_weights.mcp import kernel_child, sandbox
 from astro_weights.mcp.edit_store import EditStore
+from astro_weights.mcp.handles import HandleStore
 from astro_weights.mcp.kernel import (
     Kernel,
     KernelError,
@@ -394,6 +396,92 @@ def test_kernel_cannot_write_edits(make: Make) -> None:
     assert not (edits / "x.safetensors").exists()
 
 
+# ---------------------------------------------------------------- forward results
+
+
+def forward_job(run: Path, keys: list[str], state: str = "done", **params: Any) -> str:
+    """A forward job in ``run`` with result files for ``keys``; its handle."""
+    jobs = HandleStore(run)
+    out = secrets.token_hex(16)
+    job = jobs.submit("forward", {"request": {}, "out": out, **params})
+    d = run / forward.RESULTS / out
+    d.mkdir(parents=True)
+    for key in keys:
+        if key.startswith("texts"):
+            forward._save_texts(d / f"{key}.json", ["one", "two"])
+        else:
+            forward._save_array(d / f"{key}.npy", np.arange(6, dtype=np.int64) << 40)
+    if state != "queued":
+        jobs.start(job.handle)
+    if state == "done":
+        jobs.finish(job.handle, {"keys": keys})
+    elif state == "failed":
+        jobs.fail(job.handle, "boom")
+    return job.handle
+
+
+def test_forward_result_reads_arrays_and_texts(
+    make: Make, unsafe: bool, tmp_path: Path
+) -> None:
+    run = tmp_path / "run"
+    k, _, _ = make(unsafe, jobs=HandleStore(run))
+    h = forward_job(run, ["logprobs_top_ids", "texts"])
+    out = ok(
+        k,
+        f"a = forward_result('{h}', 'logprobs_top_ids')\n"
+        f"print(a.dtype, a.tolist() == [i << 40 for i in range(6)])\n"
+        f"forward_result('{h}', 'texts')",
+    )
+    assert out == "int64 True\n['one', 'two']\n"
+    assert list(k.work.glob("in_*")) == []
+
+
+def test_forward_result_refusals(make: Make, unsafe: bool, tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    k, _, _ = make(unsafe, jobs=HandleStore(run))
+    good = forward_job(run, ["hidden_l0"])
+    queued = forward_job(run, ["hidden_l0"], state="queued")
+    failed = forward_job(run, ["hidden_l0"], state="failed")
+    exec_job = HandleStore(run).submit("exec", {"out": "0" * 32}).handle
+    other = forward_job(tmp_path / "other", ["hidden_l0"])  # another run's job
+    cases = [
+        ("../../x", "hidden_l0", "bad handle"),
+        (good, "../../../etc/passwd", "bad key"),
+        (good, "HIDDEN", "bad key"),
+        (good, None, "bad key"),
+        (other, "hidden_l0", "unknown handle"),
+        (exec_job, "hidden_l0", "not a forward_pass job"),
+        (queued, "hidden_l0", "queued, not done"),
+        (failed, "hidden_l0", "failed, not done"),
+        (good, "mlp_l0", "no result"),
+    ]
+    for handle, key, msg in cases:
+        out = fail(k, f"forward_result({handle!r}, {key!r})")
+        assert msg in out, (handle, key, out)
+    out = fail(k, f"{SRV}srv.call('forward_result', handle=[1], key={{}})")
+    assert "bad handle" in out
+    assert ok(k, f"forward_result('{good}', 'hidden_l0').shape") == "(6,)\n"
+
+
+def test_forward_result_needs_jobs(make: Make) -> None:
+    k, _, _ = make(True)
+    assert "not available in this kernel" in fail(
+        k, "forward_result('forward-0123456789abcdef', 'texts')"
+    )
+
+
+@needs_sandbox
+def test_kernel_cannot_write_forward_results(make: Make, tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    k, _, _ = make(False, jobs=HandleStore(run))
+    h = forward_job(run, ["hidden_l0"])
+    target = next((run / forward.RESULTS).iterdir()) / "hidden_l0.npy"
+    before = target.read_bytes()
+    assert "Error" in fail(k, f"open({str(target)!r}, 'wb').write(b'x')")
+    assert target.read_bytes() == before
+    assert ok(k, f"forward_result('{h}', 'hidden_l0').shape") == "(6,)\n"
+
+
 # ---------------------------------------------------------------- hostile requests
 
 
@@ -716,6 +804,10 @@ def test_write_npy_atomic(tmp_path: Path) -> None:
     p = tmp_path / "in_x.npy"
     write_npy(p, np.ones((2, 3), np.float64))
     assert np.load(p).dtype == np.float32
+    q = tmp_path / "in_y.npy"
+    write_npy(q, np.ones((2, 3), np.int64), None)
+    assert np.load(q).dtype == np.int64
+    q.unlink()
     assert list(tmp_path.iterdir()) == [p]
     p.with_suffix(".tmp").write_bytes(b"planted")
     with pytest.raises(FileExistsError):
@@ -821,7 +913,9 @@ def test_child_serve_in_process(
     make: Make, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """serve() and the cell functions, against the parent's request handler."""
-    k, store, _ = make(True)
+    run = tmp_path / "run"
+    k, store, _ = make(True, jobs=HandleStore(run))
+    h = forward_job(run, ["hidden_l0", "texts"])
     k.work.mkdir(parents=True, exist_ok=True)
     c2p_r, c2p_w = os.pipe()
     p2c_r, p2c_w = os.pipe()
@@ -832,6 +926,8 @@ def test_child_serve_in_process(
         "edited()",
         "raise SystemExit(2)",
         f"drop_edit('{N0}'); len(load_original('{N0}'))",
+        f"forward_result('{h}', 'hidden_l0').shape",
+        f"forward_result('{h}', 'texts')",
     ]
     done: queue.Queue[dict[str, Any]] = queue.Queue()
 
@@ -861,12 +957,14 @@ def test_child_serve_in_process(
     with out.open("wb") as f:
         kernel_child.serve(server, f.fileno(), ns)
     t.join(10)
-    oks = [done.get_nowait()["ok"] for _ in range(4)]
-    assert oks == [True, True, False, True]
+    oks = [done.get_nowait()["ok"] for _ in range(6)]
+    assert oks == [True, True, False, True, True, True]
     printed = capsys.readouterr().out
     assert f"['{N0}']" in printed
     assert "SystemExit: 2" in printed
     assert "32" in printed
+    assert "(6,)" in printed
+    assert "['one', 'two']" in printed
     assert store.edited() == []
     with pytest.raises(ConnectionError):
         server.call("names")
