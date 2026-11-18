@@ -1,6 +1,6 @@
 """Edit types and recipes."""
 
-from astro_weights.edits.core import Edit, LowRankDelta
+from astro_weights.edits.core import Edit, LowRankDelta, compose
 from astro_weights.edits.dense import from_dense
 from astro_weights.edits.recipe_file import build_edit, load_recipe, save_recipe
 from astro_weights.edits.recipes import (
@@ -20,6 +20,7 @@ __all__ = [
     "LowRankDelta",
     "build_edit",
     "column_shift",
+    "compose",
     "from_dense",
     "load_recipe",
     "masked_rank1",

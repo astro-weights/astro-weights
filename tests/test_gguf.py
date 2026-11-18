@@ -91,10 +91,39 @@ def test_tensor_name_mapping() -> None:
     )
 
 
+@pytest.mark.parametrize("prefix", ["model.layers.3", "model.language_model.layers.3"])
+@pytest.mark.parametrize(
+    ("suffix", "name"),
+    [
+        ("self_attn.q_proj", "attn_q"),
+        ("self_attn.k_proj", "attn_k"),
+        ("self_attn.v_proj", "attn_v"),
+        ("self_attn.o_proj", "attn_output"),
+        ("mlp.gate_proj", "ffn_gate"),
+        ("mlp.up_proj", "ffn_up"),
+        ("mlp.down_proj", "ffn_down"),
+    ],
+)
+def test_all_projection_names(prefix: str, suffix: str, name: str) -> None:
+    assert gguf_tensor_name(f"{prefix}.{suffix}") == f"blk.3.{name}.weight"
+
+
+def test_projection_names_exist_in_gguf_py() -> None:
+    from gguf import MODEL_ARCH, MODEL_TENSOR, MODEL_TENSORS, TENSOR_NAMES
+
+    from astro_weights.export.gguf import SUFFIXES
+
+    want = {f"blk.{{bid}}.{v}" for v in SUFFIXES.values()}
+    have = {TENSOR_NAMES[t] for t in MODEL_TENSORS[MODEL_ARCH.QWEN35]}
+    assert want <= have
+    assert MODEL_TENSOR.ATTN_Q in MODEL_TENSORS[MODEL_ARCH.LLAMA]
+
+
 @pytest.mark.parametrize(
     "module",
     [
-        "model.layers.0.mlp.up_proj",
+        "model.layers.0.mlp.shared_expert",
+        "model.layers.0.self_attn.qkv_proj",
         "model.mlp.down_proj",
         "model.layers.x.mlp.down_proj",
     ],
@@ -130,7 +159,11 @@ def test_adapter_round_trip(tmp_path: Path) -> None:
 
 def test_adapter_unsupported_module_writes_nothing(tmp_path: Path) -> None:
     edit = Edit(
-        (LowRankDelta("model.layers.0.mlp.up_proj", np.ones((2, 1)), np.ones((1, 2))),),
+        (
+            LowRankDelta(
+                "model.layers.0.mlp.shared_expert", np.ones((2, 1)), np.ones((1, 2))
+            ),
+        ),
         "m",
     )
     with pytest.raises(ValueError, match="unsupported module"):
@@ -277,7 +310,11 @@ def test_save_tmp_file_not_deleted(tmp_path: Path) -> None:
     precious = tmp_path / "a.gguf.tmp"
     precious.write_bytes(b"precious")
     bad = Edit(
-        (LowRankDelta("model.layers.0.mlp.up_proj", np.ones((2, 1)), np.ones((1, 2))),),
+        (
+            LowRankDelta(
+                "model.layers.0.mlp.shared_expert", np.ones((2, 1)), np.ones((1, 2))
+            ),
+        ),
         "m",
     )
     with pytest.raises(ValueError, match="unsupported module"):
@@ -764,3 +801,30 @@ def test_big_endian_file_still_opens(tmp_path: Path) -> None:
     p.write_bytes(bytes(bad))
     with pytest.raises(ValueError, match="cannot fit"):
         _open(p)
+
+
+def test_adapter_round_trip_all_projections(tmp_path: Path) -> None:
+    rng = np.random.default_rng(5)
+    mods = {
+        "self_attn.q_proj": "attn_q",
+        "self_attn.k_proj": "attn_k",
+        "self_attn.v_proj": "attn_v",
+        "mlp.gate_proj": "ffn_gate",
+        "mlp.up_proj": "ffn_up",
+    }
+    deltas = tuple(
+        LowRankDelta(
+            f"model.layers.2.{m}",
+            rng.standard_normal((6, 2)),
+            rng.standard_normal((2, 4)),
+        )
+        for m in mods
+    )
+    save_lora_gguf(Edit(deltas, "m"), tmp_path / "a.gguf", "qwen35")
+    tensors, meta = read_lora_gguf(tmp_path / "a.gguf")
+    assert meta["alpha"] == 2.0
+    assert sorted(tensors) == sorted(f"blk.2.{n}.weight" for n in mods.values())
+    for d, n in zip(deltas, mods.values(), strict=True):
+        b, a = tensors[f"blk.2.{n}.weight"]
+        assert np.array_equal(b, d.B)
+        assert np.array_equal(a, d.A)

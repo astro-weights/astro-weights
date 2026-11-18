@@ -17,6 +17,7 @@
   "LowRankDelta": "(module: str, B: numpy.ndarray, A: numpy.ndarray) -> None",
   "build_edit": "(recipe: dict[str, Any], weights: collections.abc.Callable[[str], numpy.ndarray], directory: pathlib.Path | str) -> astro_weights.edits.core.Edit",
   "column_shift": "(module: str, shift: numpy.ndarray, idx: numpy.ndarray, coef: numpy.ndarray, n_in: int) -> astro_weights.edits.core.LowRankDelta",
+  "compose": "(*edits: astro_weights.edits.core.Edit) -> astro_weights.edits.core.Edit",
   "from_dense": "(module: str, dW: numpy.ndarray, rank: int, max_rel_residual: float | None = None) -> tuple[astro_weights.edits.core.LowRankDelta, float]",
   "load_recipe": "(path: pathlib.Path | str) -> dict[str, Any]",
   "masked_rank1": "(module: str, W0: numpy.ndarray, u: numpy.ndarray, mask: numpy.ndarray, alpha: float) -> astro_weights.edits.core.LowRankDelta",

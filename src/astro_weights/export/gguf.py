@@ -35,12 +35,20 @@ except ModuleNotFoundError as e:
 
 SUFFIXES = {
     "mlp.down_proj": "ffn_down",
+    "mlp.gate_proj": "ffn_gate",
+    "mlp.up_proj": "ffn_up",
+    "self_attn.k_proj": "attn_k",
     "self_attn.o_proj": "attn_output",
+    "self_attn.q_proj": "attn_q",
+    "self_attn.v_proj": "attn_v",
 }
 SUFFIX_A = ".lora_a"
 SUFFIX_B = ".lora_b"
 OUT_TYPES = {"q8_0": Q.Q8_0, "f16": Q.F16, "bf16": Q.BF16}
-_MODULE = re.compile(r"(?:^|\.)layers\.(\d+)\.(mlp\.down_proj|self_attn\.o_proj)$")
+_MODULE = re.compile(
+    r"(?:^|\.)layers\.(\d+)\.("
+    r"mlp\.(?:down|gate|up)_proj|self_attn\.[qkvo]_proj)$"
+)
 _BLK = re.compile(r"blk\.(\d+)\.")
 _SAMPLE = 20
 _ADAPTER_TYPES = (Q.F32, Q.F16)

@@ -1000,3 +1000,193 @@ def test_splice_missing_gguf_package(
     assert main(sp.argv()) == 2
     assert "astro-weights[gguf]" in capsys.readouterr().err
     _no_files(sp)
+
+
+# compose
+
+
+def _two_adapters(tmp_path: Path) -> tuple[Path, Path]:
+    rng = np.random.default_rng(21)
+    down = "model.layers.1.mlp.down_proj"
+    q = "model.layers.1.self_attn.q_proj"
+
+    def delta(m: str, r: int) -> LowRankDelta:
+        return LowRankDelta(
+            m, rng.standard_normal((8, r)), rng.standard_normal((r, 12))
+        )
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    save_peft(Edit((delta(down, 1),), "org/tiny"), a)
+    save_peft(Edit((delta(down, 2), delta(q, 2)), "org/tiny"), b)
+    return a, b
+
+
+def test_compose_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    a, b = _two_adapters(tmp_path)
+    out = tmp_path / "out"
+    assert main(["compose", str(a), str(b), "-o", str(out)]) == 0
+    assert f"wrote {out}" in capsys.readouterr().out
+    got, problems = read_peft(out)
+    assert problems == []
+    ea, eb = read_peft(a)[0], read_peft(b)[0]
+    want = (
+        ea.deltas[0].dense() + next(d for d in eb.deltas if "down" in d.module).dense()
+    )
+    by = {d.module: d for d in got.deltas}
+    np.testing.assert_allclose(
+        by["model.layers.1.mlp.down_proj"].dense(), want, atol=1e-5
+    )
+    assert got.rank == 3
+    assert main(["inspect", str(out)]) == 0
+
+
+def test_compose_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    a, b = _two_adapters(tmp_path)
+    out = tmp_path / "out"
+    assert main(["compose", str(a), str(b), "-o", str(out), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "written": str(out),
+        "rank": 3,
+        "modules": [
+            "model.layers.1.mlp.down_proj",
+            "model.layers.1.self_attn.q_proj",
+        ],
+        "sources": [str(a), str(b)],
+    }
+
+
+def test_compose_three_adapters(tmp_path: Path) -> None:
+    a, b = _two_adapters(tmp_path)
+    out = tmp_path / "out"
+    assert main(["compose", str(a), str(b), str(a), "-o", str(out)]) == 0
+    assert read_peft(out)[0].rank == 4
+
+
+def test_compose_one_adapter_is_usage_error(tmp_path: Path) -> None:
+    a, _ = _two_adapters(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        main(["compose", str(a), "-o", str(tmp_path / "out")])
+    assert e.value.code == 2
+
+
+def test_compose_bad_input_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, _ = _two_adapters(tmp_path)
+    out = tmp_path / "out"
+    assert main(["compose", str(a), str(tmp_path / "nope"), "-o", str(out)]) == 2
+    assert "nope" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_compose_tampered_input_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = _two_adapters(tmp_path)
+    tensors = load_file(str(b / "adapter_model.safetensors"))
+    key = next(k for k in tensors if k.endswith("lora_A.weight"))
+    tensors[key] = tensors[key] + 1.0
+    save_file(tensors, str(b / "adapter_model.safetensors"))
+    assert main(["compose", str(a), str(b), "-o", str(tmp_path / "out")]) == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_compose_different_bases_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = _two_adapters(tmp_path)
+    save_peft(Edit(read_peft(b)[0].deltas, "other/model"), b, overwrite=True)
+    out = tmp_path / "out"
+    assert main(["compose", str(a), str(b), "-o", str(out)]) == 2
+    assert "different base models" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_compose_overwrite_refused_then_forced(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = _two_adapters(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "keep.txt").write_text("x")
+    assert main(["compose", str(a), str(b), "-o", str(out)]) == 2
+    assert "--force" in capsys.readouterr().err
+    assert not (out / "adapter_config.json").exists()
+    assert main(["compose", str(a), str(b), "-o", str(out), "--force"]) == 0
+    assert (out / "adapter_config.json").exists()
+    assert (out / "keep.txt").exists()
+
+
+@pytest.mark.parametrize("where", ["same", "inside"])
+def test_compose_out_in_input_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], where: str
+) -> None:
+    a, b = _two_adapters(tmp_path)
+    out = a if where == "same" else a / "sub"
+    assert main(["compose", str(a), str(b), "-o", str(out), "--force"]) == 2
+    assert "input adapter" in capsys.readouterr().err
+    assert read_peft(a)[1] == []
+    assert not (a / "sub").exists()
+
+
+def test_compose_then_splice_down_and_up(tmp_path: Path) -> None:
+    gguf = pytest.importorskip("gguf")
+    from astro_weights.export import tensor_sha256
+
+    rng = np.random.default_rng(31)
+    down, up = "model.layers.1.mlp.down_proj", "model.layers.1.mlp.up_proj"
+    w = {
+        down: rng.standard_normal((8, 16)).astype(np.float32),
+        up: rng.standard_normal((16, 8)).astype(np.float32),
+    }
+    model = tmp_path / "hf"
+    model.mkdir()
+    save_file(
+        {k + ".weight": v for k, v in w.items()}, str(model / "model.safetensors")
+    )
+    hashes = {
+        k + ".weight": tensor_sha256(model / "model.safetensors", k + ".weight")
+        for k in w
+    }
+    base = tmp_path / "base.gguf"
+    wr = gguf.GGUFWriter(base, "qwen35")
+    wr.add_block_count(3)
+    wr.add_tensor("blk.1.ffn_down.weight", w[down])
+    wr.add_tensor("blk.1.ffn_up.weight", w[up])
+    wr.add_tensor("token_embd.weight", rng.standard_normal((20, 8)).astype("f4"))
+    wr.write_header_to_file()
+    wr.write_kv_data_to_file()
+    wr.write_tensors_to_file(progress=False)
+    wr.close()
+
+    def delta(m: str, r: int) -> LowRankDelta:
+        o, i = w[m].shape
+        return LowRankDelta(m, rng.standard_normal((o, r)), rng.standard_normal((r, i)))
+
+    ea = Edit((delta(down, 1),), "org/tiny", hashes)
+    eb = Edit.from_deltas([delta(down, 2), delta(up, 1)], "org/tiny", hashes)
+    save_peft(ea, tmp_path / "a")
+    save_peft(eb, tmp_path / "b")
+    comp = tmp_path / "comp"
+    assert (
+        main(["compose", str(tmp_path / "a"), str(tmp_path / "b"), "-o", str(comp)])
+        == 0
+    )
+    merged = tmp_path / "merged.gguf"
+    argv = ["export", str(comp), "--splice", str(base), "--base-model", str(model)]
+    assert main([*argv, "--merged", str(merged), "--out-type", "f16", "--json"]) == 0
+    have = {
+        t.name: np.asarray(t.data, dtype=np.float32).reshape(w[down].shape)
+        if "down" in t.name
+        else np.asarray(t.data, dtype=np.float32).reshape(w[up].shape)
+        for t in gguf.GGUFReader(merged).tensors
+        if t.name.startswith("blk.1.")
+    }
+    want_down = w[down] + ea.deltas[0].dense() + eb.deltas[0].dense()
+    want_up = w[up] + eb.deltas[1].dense()
+    np.testing.assert_allclose(
+        have["blk.1.ffn_down.weight"], want_down, rtol=2e-3, atol=2e-3
+    )
+    np.testing.assert_allclose(
+        have["blk.1.ffn_up.weight"], want_up, rtol=2e-3, atol=2e-3
+    )

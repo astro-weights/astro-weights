@@ -104,3 +104,55 @@ class Edit:
     @property
     def rank(self) -> int:
         return self.deltas[0].rank
+
+
+def compose(*edits: Edit) -> Edit:
+    """Combine edits on one base into one edit whose dense delta is their sum.
+
+    A module in several edits gets concatenated factors (`hstack` of the B's,
+    `vstack` of the A's), so `B @ A` is the exact sum and the rank adds up; the
+    result is zero-padded to the largest rank. Edits must share `base_model`;
+    recorded `base_sha256` entries must agree. `meta` lists each input's meta
+    under `composed_from`.
+    """
+    if len(edits) < 2:
+        raise ValueError("compose needs at least two edits")
+    first = edits[0]
+    for e in edits[1:]:
+        if e.base_model != first.base_model:
+            raise ValueError(
+                f"different base models: {first.base_model!r} vs {e.base_model!r}"
+            )
+    sha: dict[str, str] = {}
+    for e in edits:
+        for key, value in e.base_sha256.items():
+            if sha.setdefault(key, value) != value:
+                raise ValueError(
+                    f"{key}: base hashes differ; adapters built on different bases"
+                )
+    parts: dict[str, list[LowRankDelta]] = {}
+    for e in edits:
+        for d in e.deltas:
+            parts.setdefault(d.module, []).append(d)
+    deltas = [_join(group) for group in parts.values()]
+    return Edit.from_deltas(
+        deltas,
+        first.base_model,
+        sha,
+        {"composed_from": [dict(e.meta) for e in edits]},
+    )
+
+
+def _join(group: list[LowRankDelta]) -> LowRankDelta:
+    """One delta equal to the sum of `group`, all on one module."""
+    if len(group) == 1:
+        return group[0]
+    module = group[0].module
+    for d in group[1:]:
+        if d.shape != group[0].shape:
+            raise ValueError(f"{module}: shape mismatch, {group[0].shape} vs {d.shape}")
+    return LowRankDelta(
+        module,
+        np.hstack([d.B for d in group]),
+        np.vstack([d.A for d in group]),
+    )

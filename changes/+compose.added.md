@@ -1,0 +1,1 @@
+Added `astro_weights.edits.compose` and `astro-weights compose`, which combine several LoRA adapters on the same base model into one exact adapter; GGUF export now also maps the `q_proj`, `k_proj`, `v_proj`, `gate_proj` and `up_proj` modules.
