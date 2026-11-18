@@ -506,3 +506,23 @@ def test_main_unsafe_kernel_flag(
     assert main([str(run), "--unsafe-kernel"]) == 0
     events = RunRecord.open(run / "record.jsonl").read()
     assert [e["event"] for e in events] == ["start", "unsafe_kernel"]
+
+
+def test_forward_needs_the_hf_extra(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from astro_weights.mcp import forward
+
+    monkeypatch.setattr(forward, "hf_available", lambda: False)
+    run = kernel_run(tmp_path)
+
+    async def go() -> dict[str, Any]:
+        async with Client(build_server(run, {"exec": echo})) as client:
+            return await call(client, "forward_pass", {"request": {}})
+
+    out = anyio.run(go)
+    assert out["error"].startswith("forward_pass is not available yet")
+    assert "astro-weights[hf]" in out["error"]
+    event = RunRecord.open(run / "record.jsonl").read()[-1]
+    assert (event["event"], event["tool"]) == ("tool_unavailable", "forward_pass")
+    assert "astro-weights[hf]" in event["error"]
