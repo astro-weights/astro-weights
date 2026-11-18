@@ -101,6 +101,7 @@ def started_run(spec: RunSpec, *, finish: bool = False) -> None:
     """A run directory as a server leaves it: run.json, record, ledger with spend."""
     spec.run_dir.mkdir(parents=True, exist_ok=True)
     (spec.run_dir / "run.json").write_text(json.dumps(spec.run_json()))
+    (spec.run_dir / "config.toml").write_text(spec.text)
     record = RunRecord.start(
         spec.run_dir / "record.jsonl",
         seed=spec.seed,
@@ -366,16 +367,70 @@ def test_start_writes_run_json_and_config_copy(
     assert not list(spec.run_dir.glob(".*.tmp"))
 
 
-def test_start_over_an_unstarted_dir_is_allowed(
-    tmp_path: Path, editor: FakeEditor
+def test_start_in_an_empty_dir(tmp_path: Path, editor: FakeEditor) -> None:
+    spec = load_config(write_config(tmp_path))
+    spec.run_dir.mkdir(parents=True)
+    assert run.start(spec) == 0
+    assert load_run_config(spec.run_dir).seed == 7
+
+
+@pytest.mark.parametrize("with_copy", [True, False])
+def test_start_over_an_aborted_start_of_the_same_run(
+    tmp_path: Path, editor: FakeEditor, with_copy: bool
+) -> None:
+    path = write_config(tmp_path)
+    spec = load_config(path)
+    spec.run_dir.mkdir(parents=True)
+    # checks passed and the files were written, but the editor never ran
+    (spec.run_dir / "run.json").write_text(json.dumps(spec.run_json()))
+    if with_copy:
+        (spec.run_dir / "config.toml").write_text("# an older copy\n")
+    changed = load_config(write_config(tmp_path, kernel={"timeout_s": 5}))
+    assert run.start(changed) == 0
+    assert load_run_config(spec.run_dir).kernel_timeout_s == 5.0
+    assert (spec.run_dir / "config.toml").read_bytes() == path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"config.toml": "# my own project config\n", "run.json": "{}"},
+        {"config.toml": "# my own project config\n"},
+        {"run.json": "not json"},
+        {"notes.txt": "mine"},
+        {"run.json": "SAME", "notes.txt": "mine"},
+        {"run.json": "OTHER"},
+    ],
+)
+def test_fresh_start_never_overwrites_a_foreign_dir(
+    tmp_path: Path, editor: FakeEditor, files: dict[str, str]
+) -> None:
+    spec = load_config(write_config(tmp_path))
+    other = load_config(write_config(tmp_path / "o", run={"seed": 8}))
+    saved = {"SAME": spec.run_json(), "OTHER": other.run_json()}
+    spec.run_dir.mkdir(parents=True)
+    for name, text in files.items():
+        content = json.dumps(saved[text]) if text in saved else text
+        (spec.run_dir / name).write_text(content)
+    before = snapshot(spec.run_dir)
+    with pytest.raises(RunError, match="is not empty and holds no run started"):
+        run.start(spec)
+    assert snapshot(spec.run_dir) == before
+    assert editor.calls == []
+
+
+def test_unlistable_run_dir_is_refused(
+    tmp_path: Path, editor: FakeEditor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spec = load_config(write_config(tmp_path))
     spec.run_dir.mkdir(parents=True)
-    (spec.run_dir / "run.json").write_text("{}")  # an earlier start that never ran
-    (spec.run_dir / "notes.txt").write_text("mine")
-    assert run.start(spec) == 0
-    assert load_run_config(spec.run_dir).seed == 7
-    assert (spec.run_dir / "notes.txt").read_text() == "mine"
+
+    def denied(self: Path) -> Any:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "iterdir", denied)
+    with pytest.raises(RunError, match="cannot read"):
+        run.start(spec)
 
 
 @pytest.mark.parametrize("marker", ["record.jsonl", "ledger.jsonl", "jobs", "edits"])
@@ -462,7 +517,38 @@ def test_resume_goes_on_and_may_change_runtime_options(
     assert load_run_config(spec.run_dir).kernel_timeout_s == 5.0
     assert (spec.run_dir / "ledger.jsonl").read_bytes() == ledger
     assert (spec.run_dir / "record.jsonl").read_bytes() == record
-    assert b"http://y" in (spec.run_dir / "config.toml").read_bytes()
+    assert b"http://y" in (spec.run_dir / "config.resume-1.toml").read_bytes()
+
+
+def test_resume_keeps_every_earlier_config_copy(
+    tmp_path: Path, editor: FakeEditor
+) -> None:
+    spec = load_config(write_config(tmp_path))
+    started_run(spec)
+    first = b"# the config the paid run started with\n"
+    (spec.run_dir / "config.toml").write_bytes(first)
+    one = write_config(tmp_path, kernel={"timeout_s": 5})
+    assert run.start(load_config(one), resume=True) == 0
+    second = (spec.run_dir / "config.resume-1.toml").read_bytes()
+    assert second == one.read_bytes()
+    two = write_config(tmp_path, kernel={"timeout_s": 9})
+    assert run.start(load_config(two), resume=True) == 0
+    assert (spec.run_dir / "config.toml").read_bytes() == first
+    assert (spec.run_dir / "config.resume-1.toml").read_bytes() == second
+    assert (spec.run_dir / "config.resume-2.toml").read_bytes() == two.read_bytes()
+    assert not list(spec.run_dir.glob(".*.tmp"))
+
+
+def test_resume_without_a_config_copy_writes_the_first(
+    tmp_path: Path, editor: FakeEditor
+) -> None:
+    path = write_config(tmp_path)
+    spec = load_config(path)
+    started_run(spec)
+    (spec.run_dir / "config.toml").unlink()
+    assert run.start(spec, resume=True) == 0
+    assert (spec.run_dir / "config.toml").read_bytes() == path.read_bytes()
+    assert not (spec.run_dir / "config.resume-1.toml").exists()
 
 
 def test_resume_needs_a_run(tmp_path: Path, editor: FakeEditor) -> None:
@@ -557,6 +643,59 @@ def test_base_gguf_is_checked_before_the_run(
     (tmp_path / "cfg" / "base.gguf").write_bytes(b"GGUF")
     monkeypatch.setattr(run, "_gguf_installed", lambda: True)
     assert run.start(spec) == 0
+
+
+SECRET = "sk-ant-api03-SECRETSECRET"
+
+
+@pytest.mark.parametrize("value", [SECRET, "1ABC", "A-B", "A B", "", "$KEY"])
+def test_api_key_env_must_name_a_variable_and_is_never_echoed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    path = write_config(tmp_path, editor={**LOCAL, "api_key_env": value})
+    with pytest.raises(RunError, match="api_key_env must be the name of an") as err:
+        load_config(path)
+    assert value not in str(err.value) or value == ""
+    assert cli(["run", str(path)]) == 2
+    out = capsys.readouterr()
+    assert SECRET not in out.out + out.err
+    assert not (tmp_path / "cfg" / "run").exists()
+
+
+def test_api_key_env_names_are_accepted(tmp_path: Path) -> None:
+    for name in ("MY_KEY", "_k", "a1"):
+        path = write_config(tmp_path, editor={**LOCAL, "api_key_env": name})
+        assert load_config(path).options["api_key_env"] == name
+
+
+def test_key_variables_are_checked_before_anything_is_written(
+    tmp_path: Path, editor: FakeEditor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AW_RUN_TEST_KEY", raising=False)
+    monkeypatch.delenv(run.HOSTED_KEY_ENV, raising=False)
+    local = load_config(
+        write_config(tmp_path, editor={**LOCAL, "api_key_env": "AW_RUN_TEST_KEY"})
+    )
+    with pytest.raises(RunError, match=r"\$AW_RUN_TEST_KEY is not set"):
+        run.start(local)
+    hosted = load_config(write_config(tmp_path / "h", editor=HOSTED))
+    with pytest.raises(RunError, match=r"\$ANTHROPIC_API_KEY is not set"):
+        run.start(hosted)
+    monkeypatch.setenv("AW_RUN_TEST_KEY", "")
+    with pytest.raises(RunError, match="is not set"):
+        run.start(local)
+    assert not local.run_dir.exists()
+    assert not hosted.run_dir.exists()
+    assert editor.calls == []
+    monkeypatch.setenv("AW_RUN_TEST_KEY", "k")
+    monkeypatch.setenv(run.HOSTED_KEY_ENV, "k")
+    assert run.start(local) == 0
+    assert run.start(hosted) == 0
+
+
+def test_hosted_key_variable_is_the_editors() -> None:
+    hosted = pytest.importorskip("astro_weights.mcp.editors.hosted")
+    assert hosted.KEY_ENV == run.HOSTED_KEY_ENV
 
 
 def test_editor_argparse_exit_is_its_exit_code(
@@ -989,8 +1128,7 @@ def test_hosted_run_without_a_key_exits_2(
     path = write_config(tmp_path, editor=HOSTED)
     assert cli(["run", str(path)]) == 2
     assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
-    # nothing ran: a later start is not blocked
-    assert not (tmp_path / "cfg" / "run" / "record.jsonl").exists()
+    assert not (tmp_path / "cfg" / "run").exists()  # checked before any write
 
 
 def test_gguf_installed_matches_the_import_system() -> None:

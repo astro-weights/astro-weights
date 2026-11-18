@@ -24,10 +24,12 @@ The config names the run directory, the budget, the editor and its options::
 
 ``start`` writes ``RUN_DIR/run.json`` and a copy of the config (``config.toml``),
 then runs the editor's ``main`` on the run directory; the editor starts the server.
-A run directory that already holds a run (a record, a ledger, jobs or edits) is
-never deleted or overwritten: ``start`` refuses it unless ``resume`` is set, and a
-resume must keep the seed, model directory, editor, editor model and limits, so the
-budget already used still counts. ``status`` reads the run from disk and writes
+Nothing in a run directory is ever deleted. A fresh start refuses a folder that is
+not empty, unless all it holds is what an aborted start of the same run wrote. A
+directory that holds a run (a record, a ledger, jobs or edits) is refused unless
+``resume`` is set, and a resume must keep the seed, model directory, editor, editor
+model and limits, so the budget already used still counts; it rewrites run.json
+and adds ``config.resume-<n>.toml``, keeping the first config copy. ``status`` reads the run from disk and writes
 nothing. Standard library only; the editor needs its extras.
 """
 
@@ -35,6 +37,8 @@ import importlib
 import importlib.util
 import json
 import math
+import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -54,6 +58,10 @@ __all__ = ["RunError", "RunSpec", "format_status", "load_config", "start", "stat
 HOSTED_DOLLARS = 20.0
 LAST_EVENTS = 10
 CONFIG_COPY = "config.toml"
+HOSTED_KEY_ENV = "ANTHROPIC_API_KEY"
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# all an aborted start (checks passed, files written, editor never ran) can leave
+_ABORTED = frozenset({"run.json", CONFIG_COPY})
 # any of these in a run directory means a server ran there: never overwrite it
 _STARTED = ("record.jsonl", "ledger.jsonl", "jobs", "edits")
 _SAME_ON_RESUME = ("seed", "model_dir", "editor", "model", "limits")
@@ -94,7 +102,7 @@ _EDITORS: dict[str, _Fields] = {
     "local": {
         "base_url": ("str", _REQUIRED),
         "model": ("str", _REQUIRED),
-        "api_key_env": ("str", None),
+        "api_key_env": ("env", None),
         "max_turns": ("positive", None),
         "temperature": ("money", None),
     },
@@ -111,6 +119,7 @@ _TABLES = ("run", "limits", "editor", "kernel", "forward", "export")
 _TYPE_TEXT = {
     "path": "a non-empty string",
     "str": "a non-empty string",
+    "env": "the name of an environment variable",
     "int": "an int",
     "count": "an int >= 0",
     "positive": "an int >= 1",
@@ -142,6 +151,8 @@ def _finite(value: float) -> bool:
 def _ok(kind: str, value: object) -> bool:
     if kind in ("path", "str"):
         return isinstance(value, str) and value.strip() != ""
+    if kind == "env":
+        return isinstance(value, str) and _ENV_NAME.fullmatch(value) is not None
     if kind == "int":
         return _whole(value)
     if kind in ("count", "positive"):
@@ -171,9 +182,9 @@ def _table(where: str, raw: object, fields: _Fields, name: str) -> dict[str, Any
             continue
         value = raw[key]
         if not _ok(kind, value):
-            raise RunError(
-                f"{where}: [{name}] {key} must be {_TYPE_TEXT[kind]}, got {value!r}"
-            )
+            # a pasted secret in place of a variable name is never echoed
+            got = "" if kind == "env" else f", got {value!r}"
+            raise RunError(f"{where}: [{name}] {key} must be {_TYPE_TEXT[kind]}{got}")
         out[key] = value
     return out
 
@@ -388,6 +399,7 @@ def _check_resume(spec: RunSpec) -> None:
 
 
 def _check_start(spec: RunSpec) -> None:
+    """A fresh start needs a new or empty run dir, or one an aborted start of this run left."""
     run_dir = spec.run_dir
     if run_dir.exists() and not run_dir.is_dir():
         raise RunError(f"{run_dir} exists and is not a directory")
@@ -396,6 +408,46 @@ def _check_start(spec: RunSpec) -> None:
             f"{run_dir} already holds a run; pass --resume to go on with it, "
             "or set a new [run] dir"
         )
+    if not run_dir.is_dir():
+        return
+    try:
+        names = {p.name for p in run_dir.iterdir()}
+    except OSError as exc:
+        raise RunError(f"cannot read {run_dir}: {exc}") from None
+    if not names:
+        return
+    aborted = names <= _ABORTED and "run.json" in names
+    if aborted:
+        try:
+            aborted = not _differences(_saved(run_dir), spec.run_json())
+        except RunError:
+            aborted = False
+    if not aborted:
+        raise RunError(
+            f"{run_dir} is not empty and holds no run started from this config; "
+            "set a new [run] dir (files there are never overwritten)"
+        )
+
+
+def _check_keys(spec: RunSpec) -> None:
+    """The editor's API key variable must be set; checked before anything is written."""
+    names = [spec.options.get("api_key_env")]
+    if spec.editor == "hosted":
+        names.append(HOSTED_KEY_ENV)
+    for name in names:
+        if isinstance(name, str) and not os.environ.get(name):
+            raise RunError(f"${name} is not set")
+
+
+def _config_copy(run_dir: Path, resume: bool) -> Path:
+    """Where the config copy goes; a resume never replaces an earlier copy."""
+    first = run_dir / CONFIG_COPY
+    if not resume or not first.exists():
+        return first
+    n = 1
+    while (run_dir / f"config.resume-{n}.toml").exists():
+        n += 1
+    return run_dir / f"config.resume-{n}.toml"
 
 
 def _editor_main(kind: str) -> Callable[[list[str]], int]:
@@ -428,13 +480,17 @@ def start(spec: RunSpec, *, resume: bool = False) -> int:
     RunError, before anything is written, when the run directory already holds a
     run (and ``resume`` is not set), when a resume does not match the saved run or
     the run already finished, when the model directory or ``export.base_gguf`` is
-    missing, or when an extra the run needs is not installed.
+    missing, when the editor's API key variable is not set, or when an extra the
+    run needs is not installed. A fresh start needs a new or empty run directory
+    (or one only an aborted start of this same run wrote to); a resume keeps
+    ``config.toml`` and writes its own copy as ``config.resume-<n>.toml``.
     """
     if resume:
         _check_resume(spec)
     else:
         _check_start(spec)
     main = _editor_main(spec.editor)
+    _check_keys(spec)
     if spec.model_dir is not None:
         if not forward.hf_available():
             raise RunError(f"forward_pass {forward.HF_HINT}")
@@ -450,7 +506,7 @@ def start(spec: RunSpec, *, resume: bool = False) -> int:
     try:
         spec.run_dir.mkdir(parents=True, exist_ok=True)
         _write(spec.run_dir / "run.json", run_json.encode())
-        _write(spec.run_dir / CONFIG_COPY, spec.text.encode())
+        _write(_config_copy(spec.run_dir, resume), spec.text.encode())
     except OSError as exc:
         raise RunError(f"cannot write the run directory: {exc}") from None
     try:
