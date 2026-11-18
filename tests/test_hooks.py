@@ -1,3 +1,6 @@
+import importlib
+import importlib.util
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -6,16 +9,26 @@ from typing import Any
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch")
-pytest.importorskip("transformers")
+HAS_TORCH = importlib.util.find_spec("torch") is not None
+if HAS_TORCH:
+    import torch
+    from mcp_tiny_hf import save_tiny_model
 
-from mcp_tiny_hf import save_tiny_model
+    from astro_weights.runners.hooks import (
+        capture,
+        full_attention_layers,
+        layer_count,
+    )
 
-from astro_weights.runners.hooks import (
-    capture,
-    full_attention_layers,
-    layer_count,
-)
+
+def test_missing_torch_names_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in [n for n in sys.modules if n.startswith("torch.")]:
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setitem(sys.modules, "torch", None)
+    monkeypatch.delitem(sys.modules, "astro_weights.runners.hooks", raising=False)
+    with pytest.raises(ModuleNotFoundError, match=r"astro-weights\[hf\]"):
+        importlib.import_module("astro_weights.runners.hooks")
+
 
 IDS = [[1, 5, 9, 33, 100, 7, 64, 2], [3, 4, 5]]
 LAST = 4
@@ -182,6 +195,7 @@ def test_cleanup_after_exception(tiny_qwen_text: Any) -> None:
     assert model.config._attn_implementation == impl
 
 
+@pytest.mark.skipif(not HAS_TORCH, reason="needs the hf extra")
 def test_save_tiny_model_round_trip(tmp_path: Path) -> None:
     transformers = pytest.importorskip("transformers")
     from astro_weights.mcp.edit_store import EditStore
