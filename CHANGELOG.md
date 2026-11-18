@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.2.1] - 2026-11-18
+
+### Fixed
+
+- The run record's `start` line now fills `library_commit`: the git commit of a `pip install git+...` install, or of an editable checkout (with `-dirty` when it has uncommitted changes). A wheel installed from PyPI carries no commit, so there it stays `null`: `library_version` names the release, and the release's `v` tag names the commit.
+
 ## [0.2.0] - 2026-11-18
 
 0.2.0 final: everything in 0.2.0a1 below, plus the editors and the one-command run listed here.
@@ -200,6 +206,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.2.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.1
 [0.2.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.0
 [0.2.0a1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.0a1
 [0.1.5]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.5
