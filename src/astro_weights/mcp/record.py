@@ -11,13 +11,16 @@ import json
 import math
 import os
 import platform
+import subprocess
 import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from importlib.metadata import PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, distribution
 from importlib.metadata import version as _dist_version
 from pathlib import Path
 from typing import Any, Self
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 __all__ = ["RunRecord"]
 
@@ -146,6 +149,47 @@ def _library_version() -> str | None:
         PackageNotFoundError
     ):  # pragma: no cover - only in an uninstalled source tree
         return None
+
+
+def library_commit() -> str | None:
+    """Git commit the installed library was built from, or None (a release wheel).
+
+    From the install's ``direct_url.json`` (PEP 610): ``vcs_info.commit_id`` for a
+    ``pip install git+...``; for an editable install of a local checkout, that
+    checkout's ``HEAD``, with ``-dirty`` when tracked files have changes. Never raises.
+    """
+    try:
+        raw = distribution("astro-weights").read_text("direct_url.json")
+        info = json.loads(raw) if raw else {}
+        commit = info.get("vcs_info", {}).get("commit_id")
+        if isinstance(commit, str) and commit:
+            return commit
+        url = urlparse(info.get("url", ""))
+        if url.scheme != "file" or not info.get("dir_info", {}).get("editable"):
+            return None
+        where = url2pathname(url.path)
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", where, *args],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                check=True,
+            ).stdout.strip()
+
+        head = git("rev-parse", "HEAD")
+        dirty = git("status", "--porcelain", "--untracked-files=no")
+    except (
+        PackageNotFoundError,
+        OSError,
+        ValueError,
+        AttributeError,
+        subprocess.SubprocessError,
+    ):
+        return None
+    return f"{head}-dirty" if dirty else head or None
 
 
 def _text(value: Any, name: str, cap: int | None = None) -> str:

@@ -52,7 +52,7 @@ from astro_weights.mcp.edit_store import EditStore, export_edits
 from astro_weights.mcp.handles import HandleStore, UnknownHandle
 from astro_weights.mcp.jobs import Executor, JobRunner, RunConfig, load_run_config
 from astro_weights.mcp.kernel import Kernel
-from astro_weights.mcp.record import RunRecord
+from astro_weights.mcp.record import RunRecord, library_commit
 from astro_weights.mcp.sandbox import SandboxUnavailable
 
 __all__ = ["build_server", "main"]
@@ -95,7 +95,12 @@ def _open_record(run_dir: Path, cfg: RunConfig) -> RunRecord:
             raise ValueError("run.json differs from the run record")
         return record
     return RunRecord.start(
-        path, seed=cfg.seed, config=config, editor=cfg.editor, model=cfg.model
+        path,
+        seed=cfg.seed,
+        config=config,
+        editor=cfg.editor,
+        model=cfg.model,
+        library_commit=library_commit(),
     )
 
 
