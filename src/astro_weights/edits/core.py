@@ -146,11 +146,12 @@ def compose(*edits: Edit) -> Edit:
     )
 
 
-_LAYER = re.compile(r"^((?:.*?\.)?)(layers\.\d+\..*)$")
+# the two HF layouts of a language model's layers; other names (vision towers…) stay
+_LAYER = re.compile(r"^(model\.(?:language_model\.)?)(layers\.\d+\..*)$")
 
 
 def _layer_prefix(edits: tuple[Edit, ...]) -> str | None:
-    """Text before `layers.<N>` in the first layer module (e.g. `model.`), if any."""
+    """`model.` or `model.language_model.` of the first module that has one, if any."""
     for e in edits:
         for d in e.deltas:
             if m := _LAYER.match(d.module):
@@ -159,7 +160,7 @@ def _layer_prefix(edits: tuple[Edit, ...]) -> str | None:
 
 
 def _with_prefix(name: str, prefix: str | None) -> str:
-    """`name` with its text before `layers.<N>` replaced by `prefix`.
+    """`name` with its `model.` / `model.language_model.` layers prefix replaced by `prefix`.
 
     `model.layers.3.x` and `model.language_model.layers.3.x` name one layer in
     two HF layouts; composing renames all to the first edit's layout.

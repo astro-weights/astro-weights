@@ -279,3 +279,30 @@ def test_compose_non_layer_modules_keep_names() -> None:
         "lm_head",
         "model.layers.0.mlp.up_proj",
     ]
+
+
+def test_compose_vlm_vision_module_not_renamed() -> None:
+    vis = "model.vision_tower.encoder.layers.0.self_attn.q_proj"
+    lm = "model.language_model.layers.5.mlp.down_proj"
+    a = _edit({vis: 1, lm: 1}, 1)
+    b = _edit({lm: 2}, 5)
+    c = compose(a, b)
+    got = {d.module: d for d in c.deltas}
+    assert sorted(got) == sorted([vis, lm])
+    np.testing.assert_allclose(
+        got[lm].dense(),
+        a.deltas[1].dense() + b.deltas[0].dense(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    assert np.array_equal(got[vis].dense(), a.deltas[0].dense())
+
+
+def test_compose_vision_first_does_not_set_prefix() -> None:
+    vis = "model.vision_tower.encoder.layers.0.self_attn.q_proj"
+    a = _edit({vis: 1}, 1)
+    b = _edit({"model.layers.2.mlp.up_proj": 1}, 2)
+    c = compose(a, b)
+    assert sorted(d.module for d in c.deltas) == sorted(
+        [vis, "model.layers.2.mlp.up_proj"]
+    )
