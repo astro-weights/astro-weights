@@ -135,7 +135,7 @@ wheels = [
 
 [[package]]
 name = "astro-weights"
-version = "0.1.2"
+version = "0.2.0a1"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },

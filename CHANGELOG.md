@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.2.0a1] - 2026-11-17
+
+Alpha: agent over MCP. Interfaces may change before 0.2.0.
+
+### Added
+
+- New `[mcp]` extra and `astro-weights mcp RUN_DIR`, a stdio MCP server with `exec_python`, `forward_pass`, `status` and `finish` tools, budgets for forward passes, code runs, tokens and dollars, and a run record.
+- `exec_python` runs numpy code in a sandboxed kernel (bubblewrap on Linux, Seatbelt on macOS; elsewhere only with `--unsafe-kernel`); edits are checked and saved by the server.
+- The MCP server's `forward_pass` tool runs the model (`hf` extra) on base or edited weights, in `teacher_forced` and `generate` modes, and agent code reads its arrays and texts with `forward_result(handle, key)`.
+- Adds `runners.hooks.capture`, which reads hidden states, MLP inputs, attention and logprobs on chosen layers of a transformers model.
+- A scripted editor, `python -m astro_weights.mcp.editors.scripted RUN_DIR`, drives the stdio MCP server end to end with a fixed edit-and-compare script and no model.
+- Blog scaffold: `zensical.blog.toml` builds `docs/blog/` to https://astro-weights.dev/blog/. First post: https://astro-weights.dev/blog/0-1-on-real-gpus/.
+
+### Changed
+
+- The docs and blog load Google Analytics only after you accept the cookie banner; Cookie settings in the footer changes the choice.
+
 ## [0.1.4] - 2026-11-17
 
 ### Added
@@ -154,6 +171,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.2.0a1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.0a1
 [0.1.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.4
 [0.1.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.3
 [0.1.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.2
