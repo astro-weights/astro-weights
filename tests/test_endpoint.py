@@ -1,12 +1,11 @@
 import json
-import threading
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fake_endpoint import Reply, Server, serve
+from fake_endpoint import ok as _ok
 
 from astro_weights.eval import Record, compare, grade_exact, pair, read_jsonl
 from astro_weights.runners import endpoint
@@ -17,73 +16,6 @@ ITEMS = [
     for k in range(4)
 ]
 KEY = "sk-secret-key-123"
-
-Reply = tuple[int, str]
-Responder = Callable[[dict[str, Any]], Reply]
-
-
-def _ok(
-    content: Any = "2", *, finish: str = "stop", usage: Any = None, **extra: Any
-) -> Reply:
-    obj: dict[str, Any] = {
-        "choices": [{"message": {"content": content}, "finish_reason": finish}],
-        "usage": {"completion_tokens": 3} if usage is None else usage,
-    }
-    obj.update(extra)
-    return 200, json.dumps(obj)
-
-
-class _Server:
-    def __init__(self, respond: Responder) -> None:
-        self.respond = respond
-        self.requests: list[dict[str, Any]] = []
-        self.models: Reply = (200, json.dumps({"data": []}))
-        self.location: str | None = None
-
-
-@contextmanager
-def serve(respond: Responder) -> Iterator[tuple[str, _Server]]:
-    state = _Server(respond)
-
-    class Handler(BaseHTTPRequestHandler):
-        def _send(self, reply: Reply) -> None:
-            data = reply[1].encode()
-            self.send_response(reply[0])
-            self.send_header("Content-Length", str(len(data)))
-            if state.location is not None:
-                self.send_header("Location", state.location)
-            self.end_headers()
-            self.wfile.write(data)
-
-        def do_GET(self) -> None:
-            state.requests.append(
-                {"path": self.path, "auth": self.headers["Authorization"]}
-            )
-            self._send(state.models)
-
-        def do_POST(self) -> None:
-            raw = self.rfile.read(int(self.headers["Content-Length"]))
-            body = json.loads(raw)
-            state.requests.append(
-                {"path": self.path, "auth": self.headers["Authorization"], "body": body}
-            )
-            try:
-                self._send(state.respond(body))
-            except (BrokenPipeError, ConnectionError):
-                pass
-
-        def log_message(self, format: str, *args: Any) -> None:
-            pass
-
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{httpd.server_address[1]}", state
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-        thread.join()
 
 
 @pytest.fixture(autouse=True)
@@ -373,7 +305,7 @@ def test_run_header_http_server_down() -> None:
     assert "server_model" not in header
 
 
-def _redirect_pair(path: str = "/steal") -> Iterator[tuple[str, str, _Server, _Server]]:
+def _redirect_pair(path: str = "/steal") -> Iterator[tuple[str, str, Server, Server]]:
     with (
         serve(lambda _b: _ok()) as (other, other_state),
         serve(lambda _b: (302, "moved")) as (url, state),

@@ -1,0 +1,1 @@
+Model cards for adapters saved with `model.language_model.layers` names now load the base with `AutoModelForImageTextToText`; the old `AutoModelForCausalLM` snippet loaded none of the adapter weights.

@@ -1,4 +1,4 @@
-"""Stdio MCP server: four tools over the handle store, budget ledger and run record.
+"""Stdio MCP server: seven tools over the handle store, budget ledger and run record.
 
 Needs the ``mcp`` extra. All state lives under the run directory (``run.json``,
 ``jobs/``, ``ledger.jsonl``, ``record.jsonl``, ``edits/``, ``kernel/``); one store,
@@ -8,9 +8,22 @@ numpy kernel (one per server process) that saves edits through the edit store, a
 ``forward_pass`` runs the model in this process (``hf`` extra) on base or edited
 weights. A forward request is checked in the tool call; a bad one is refused for
 free, with no job. Its arrays are read from the kernel with ``forward_result``.
+
+``finish`` exports the stored edits (when run.json names a ``model_dir`` and there
+are any) to ``RUN_DIR/export``: a PEFT adapter, and a spliced GGUF when
+``export.base_gguf`` is set. A failed export does not stop the run from finishing;
+the result and the record say why.
+
+Three tools are for editors, not the model: ``report_usage`` (tokens and dollars
+spent, always recorded), ``check_spend`` (free, no write) and ``report_refusal``.
+The ledger (or the sum of the ``usage`` events) is the source of truth for spend: a
+``report_usage`` after ``finish`` is still recorded, so ``finish.budget`` can leave
+out that last turn.
 """
 
 import argparse
+import json
+import math
 import secrets
 import sys
 import threading
@@ -28,8 +41,14 @@ except ModuleNotFoundError as e:
     ) from e
 
 from astro_weights.mcp import forward
-from astro_weights.mcp.budget import BudgetExceeded, Kind, Ledger, TooManyFailures
-from astro_weights.mcp.edit_store import EditStore
+from astro_weights.mcp.budget import (
+    MAX_FAILURES,
+    BudgetExceeded,
+    Kind,
+    Ledger,
+    TooManyFailures,
+)
+from astro_weights.mcp.edit_store import EditStore, export_edits
 from astro_weights.mcp.handles import HandleStore, UnknownHandle
 from astro_weights.mcp.jobs import Executor, JobRunner, RunConfig, load_run_config
 from astro_weights.mcp.kernel import Kernel
@@ -40,6 +59,24 @@ __all__ = ["build_server", "main"]
 
 _BUDGET_KIND: dict[str, Kind] = {"exec": "code_runs", "forward": "forward_passes"}
 _SUMMARY_MAX = 2000
+_MODEL_MAX = 200
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _money(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:  # an int too large for a float
+        return False
+
+
+def _model(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() != "" and len(value) <= _MODEL_MAX
 
 
 def _open_record(run_dir: Path, cfg: RunConfig) -> RunRecord:
@@ -106,6 +143,50 @@ def _forward(
     return forward.executor(backend, run_dir), check
 
 
+def _base_model(model_dir: Path) -> str:
+    """The base model's name from its config.json, else its directory."""
+    try:
+        name = json.loads((model_dir / "config.json").read_text("utf-8")).get(
+            "_name_or_path"
+        )
+    except (OSError, ValueError, RecursionError, AttributeError):
+        name = None
+    return name if isinstance(name, str) and name.strip() else str(model_dir)
+
+
+def _export(
+    run_dir: Path, cfg: RunConfig, edits: EditStore | None, record: RunRecord
+) -> dict[str, Any]:
+    """Export the stored edits for ``finish``; the keys to add to its result."""
+    if edits is None:
+        return {"export": None, "note": "no model_dir: nothing to export"}
+    try:
+        if not edits.edited():
+            record.event("export_skipped", reason="no edits")
+            return {"export": None, "note": "no edits: nothing to export"}
+        out = export_edits(
+            edits,
+            run_dir / "export",
+            rank=cfg.export_rank,
+            max_rel_residual=cfg.export_max_rel_residual,
+            base_model=_base_model(edits.model_dir),
+            base_gguf=cfg.export_base_gguf,
+            gguf_out_type=cfg.export_gguf_out_type,
+        )
+    except Exception as exc:  # noqa: BLE001 - the run must still finish
+        error = f"{type(exc).__name__}: {exc}"[:_SUMMARY_MAX]
+        record.event("export_failed", error=error)
+        return {"export": None, "export_error": error}
+    summary = {
+        "adapter": str(out["adapter"]),
+        "gguf": None if out["gguf"] is None else str(out["gguf"]),
+        "residuals": dict(out["residuals"]),
+        "rank": out["rank"],
+    }
+    record.event("export", **summary)
+    return {"export": summary}
+
+
 def build_server(
     run_dir: Path,
     executors: Mapping[str, Executor] | None = None,
@@ -134,6 +215,7 @@ def build_server(
     check: Checker | None = None
     if allow_unsafe_kernel:
         record.event("unsafe_kernel")
+    edits: EditStore | None = None
     if cfg.model_dir is not None:
         # one store and its lock, shared by the kernel and the model
         edits = EditStore(run_dir, cfg.model_dir)
@@ -230,16 +312,84 @@ def build_server(
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
     def finish(summary: str) -> dict[str, Any]:
-        """End the run and write the run record. Works once."""
+        """End the run, export the stored edits and write the run record. Works once."""
         nonlocal finished
         with finish_lock:
             if finished:
                 return {"error": "run already finished"}
             record.event("summary", text=summary[:_SUMMARY_MAX])
+            exported = _export(run_dir, cfg, edits, record)
             budget = ledger.to_json()
             record.finish(budget=budget, outcome="finished")
             finished = True
-        return {"state": "finished", "budget": budget}
+        return {"state": "finished", "budget": budget, **exported}
+
+    @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
+    def report_usage(
+        tokens: Any, dollars: Any, turn: Any, model: Any
+    ) -> dict[str, Any]:
+        """Record one model turn's usage; for editors, not meant for the model.
+
+        ``tokens`` and ``turn`` are ints >= 0, ``dollars`` a finite number >= 0,
+        ``model`` a non-empty string of at most 200 characters (checked here, not
+        coerced). Always recorded, even past a limit and after finish; a usage
+        recorded after finish is not in ``finish.budget``, so read spend from the
+        ledger. ``over`` lists the kinds now past their limit.
+        """
+        if not (_count(tokens) and _money(dollars) and _count(turn) and _model(model)):
+            return {"error": "bad usage report"}
+        with finish_lock:
+            if tokens > 0:
+                ledger.charge("tokens", tokens, ref=f"turn {turn}")
+            if dollars > 0:
+                ledger.charge("dollars", dollars, ref=f"turn {turn}")
+            record.event(
+                "usage", turn=turn, model=model, tokens=tokens, dollars=dollars
+            )
+            budget = ledger.to_json()
+        over = [k for k, used in budget["used"].items() if used > budget["limits"][k]]
+        return {"budget": budget, "over": over}
+
+    @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
+    def check_spend(estimate: Any) -> dict[str, Any]:
+        """Check that an estimated dollar cost fits the budget; for editors, not meant for the model.
+
+        Free: writes nothing. An estimate of 0 is ok even when dollars are already
+        past the limit (a local fallback turn costs nothing), but not while the
+        dollars failure streak blocks work.
+        """
+        if not _money(estimate):
+            return {"error": "estimate must be a finite number >= 0"}
+        with finish_lock:
+            if finished:
+                return {"error": "run already finished"}
+            budget = ledger.to_json()
+            try:
+                if estimate > 0:  # check() takes amounts > 0
+                    ledger.check("dollars", estimate)
+                elif budget["streaks"]["dollars"] >= MAX_FAILURES:
+                    raise TooManyFailures("dollars", budget["streaks"]["dollars"])
+            except (BudgetExceeded, TooManyFailures) as exc:
+                return {"ok": False, "error": str(exc), "budget": budget}
+        return {"ok": True, "budget": budget}
+
+    @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
+    def report_refusal(category: Any, model: Any, detail: Any = "") -> dict[str, Any]:
+        """Record that a model refused; for editors, not meant for the model."""
+        if not (
+            isinstance(category, str) and _model(model) and isinstance(detail, str)
+        ):
+            return {"error": "bad refusal report"}
+        with finish_lock:
+            if finished:
+                return {"error": "run already finished"}
+            try:
+                record.refusal(
+                    category=category, editor=cfg.editor, model=model, detail=detail
+                )
+            except ValueError as exc:
+                return {"error": str(exc)}
+        return {"recorded": True}
 
     return server
 

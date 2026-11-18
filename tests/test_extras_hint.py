@@ -11,6 +11,7 @@ import pytest
         ("astro_weights.runners.generate", "torch", "hf"),
         ("astro_weights.export.gguf", "gguf", "gguf"),
         ("astro_weights.mcp.server", "mcp", "mcp"),
+        ("astro_weights.mcp.editors.hosted", "anthropic", "hosted"),
     ],
 )
 def test_missing_extra_names_the_install(
@@ -30,6 +31,7 @@ def test_missing_extra_names_the_install(
         "peft",
         "gguf",
         "mcp",
+        "anthropic",
     }
     assert str(info.value).startswith(module)
     assert str(info.value).endswith(f"pip install 'astro-weights[{extra}]'")

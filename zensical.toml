@@ -12,7 +12,7 @@ extra_css = ["assets/brand.css"]
 extra_javascript = ["assets/home-link.js"]
 nav = [
   { "Home" = "index.md" },
-  { "Tutorials" = ["tutorials/first-edit.md"] },
+  { "Tutorials" = ["tutorials/first-edit.md", "tutorials/first-agent-run.md"] },
   { "How-to" = [
     "how-to/inspect-adapter.md",
     "how-to/apply-across-model-classes.md",
@@ -24,9 +24,14 @@ nav = [
     "how-to/find-direction.md",
     "how-to/compare-arms.md",
     "how-to/run-eval.md",
+    "how-to/agent-local-model.md",
+    "how-to/agent-hosted.md",
+    "how-to/agent-claude-code.md",
+    "how-to/agent-codex.md",
+    "how-to/agent-sdk.md",
   ] },
   { "Reference" = ["reference/index.md", "reference/cli.md"] },
-  { "Explanation" = ["explanation/why-lora.md"] },
+  { "Explanation" = ["explanation/why-lora.md", "explanation/agent-budgets-and-sandbox.md"] },
   { "Blog" = "https://astro-weights.dev/blog/" },
 ]
 

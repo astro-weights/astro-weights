@@ -1,0 +1,1 @@
+A hosted editor, `python -m astro_weights.mcp.editors.hosted RUN_DIR --model ID` (the `hosted` extra), lets Claude drive the stdio MCP server on your own `ANTHROPIC_API_KEY`, checks every call against the run's dollar limit before making it (a run whose limit is above `--max-dollars`, $20 by default, is refused) and hands the run to a local model when Claude refuses.

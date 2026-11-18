@@ -71,6 +71,99 @@
   "splice_gguf": "(base: pathlib.Path | str, out: pathlib.Path | str, replace: collections.abc.Mapping[str, numpy.ndarray], out_type: str = 'q8_0') -> None",
   "verify_splice": "(base: pathlib.Path | str, out: pathlib.Path | str, names: list[str], seed: int = 0) -> list[str]"
  },
+ "astro_weights.mcp": {},
+ "astro_weights.mcp.budget": {
+  "BudgetExceeded": "(kind: str, used: float, limit: float, requested: float) -> None",
+  "Kind": "(*args, **kwargs)",
+  "Ledger": "(path: pathlib.Path, limits: astro_weights.mcp.budget.Limits) -> None",
+  "Limits": "(forward_passes: int, code_runs: int, tokens: int, dollars: float) -> None",
+  "MAX_FAILURES": null,
+  "TooManyFailures": "(kind: str, streak: int) -> None"
+ },
+ "astro_weights.mcp.editors.hosted": {
+  "HANDOFF": null,
+  "KEY_ENV": null,
+  "main": "(argv: list[str] | None = None) -> int"
+ },
+ "astro_weights.mcp.editors.local": {
+  "main": "(argv: list[str] | None = None) -> int",
+  "make_chat": "(base_url: str, model: str, api_key: str | None, temperature: float) -> collections.abc.Callable[[list[dict[str, Any]], list[dict[str, Any]]], astro_weights.mcp.editors.loop.Reply]"
+ },
+ "astro_weights.mcp.editors.loop": {
+  "ChatFn": "(*args, **kwargs)",
+  "EDITOR_ONLY": null,
+  "LoopError": null,
+  "Message": "(*args, **kwargs)",
+  "OnTurn": "(*args, **kwargs)",
+  "RESULT_CAP": null,
+  "Refused": "(category: str, detail: str = '', tokens: int = 0) -> None",
+  "Reply": "(message: dict[str, Any], tokens: int, usage: dict[str, Any] | None = None) -> None",
+  "ToolBox": "(session: Session, tools: list[dict[str, Any]], summaries: list[str] = <factory>, poll_s: float = 0.2, timeout_s: float = 600) -> None",
+  "run_loop": "(session: Session, chat_fn: collections.abc.Callable[[list[dict[str, Any]], list[dict[str, Any]]], astro_weights.mcp.editors.loop.Reply], *, max_turns: int, system: str, model: str, on_turn: collections.abc.Callable[[int, astro_weights.mcp.editors.loop.Reply], None] | None = None, poll_s: float = 0.2, timeout_s: float = 600) -> dict[str, Any]",
+  "system_prompt": "() -> str"
+ },
+ "astro_weights.mcp.editors.prices": {
+  "PRICES": null,
+  "Price": "(input: float, cache_write_5m: float, cache_write_1h: float, cache_read: float, output: float) -> None",
+  "US_GEO": null,
+  "max_cost": "(model: str, prompt_tokens: int, max_output_tokens: int) -> float",
+  "price": "(model: str, prompt_tokens: int = 0) -> astro_weights.mcp.editors.prices.Price",
+  "turn_cost": "(model: str, usage: collections.abc.Mapping[str, Any]) -> float"
+ },
+ "astro_weights.mcp.editors.scripted": {
+  "DEFAULT_SCRIPT": null,
+  "ScriptFailed": "(index: int, result: collections.abc.Mapping[str, Any]) -> None",
+  "Step": "(tool: str | None = None, args: collections.abc.Mapping[str, Any] | collections.abc.Callable[[collections.abc.Sequence[str]], collections.abc.Mapping[str, Any]] = <factory>) -> None",
+  "main": "(argv: list[str] | None = None) -> int",
+  "run_scripted": "(session: mcp.client.client.Client | mcp.client.session.ClientSession, script: collections.abc.Sequence[astro_weights.mcp.editors.scripted.Step] = (Step(tool='exec_python', args={'code': 'name = next((n for n in NAMES if \"mlp.down_proj\" in n), NAMES[0])\\nW = load(name)\\nrng = np.random.default_rng(0)\\nd = np.outer(rng.standard_normal(W.shape[0]), rng.standard_normal(W.shape[1]))\\nW2 = W + d * (0.45 * np.linalg.norm(W) / np.linalg.norm(d))\\nsave_edit(name, W2.astype(np.float32))\\nprint(name, float(np.linalg.norm(W2 - W) / np.linalg.norm(W)))\\n'}), Step(tool=None, args={}), Step(tool='forward_pass', args={'request': {'kind': 'teacher_forced', 'texts': ['The quick brown fox jumps over the lazy dog.'], 'return': ['hidden'], 'layers': [0], 'last_tokens': 4, 'arm': 'base'}}), Step(tool=None, args={}), Step(tool='forward_pass', args={'request': {'kind': 'teacher_forced', 'texts': ['The quick brown fox jumps over the lazy dog.'], 'return': ['hidden'], 'layers': [0], 'last_tokens': 4, 'arm': 'edited'}}), Step(tool=None, args={}), Step(tool='exec_python', args=<function _compare>), Step(tool=None, args={}), Step(tool='finish', args={'summary': 'scripted run: edited one weight, compared hidden states'})), *, poll_s: float = 0.2, timeout_s: float = 600) -> list[dict[str, Any]]"
+ },
+ "astro_weights.mcp.forward": {
+  "BadRequest": null,
+  "ForwardBackend": "(model_dir: pathlib.Path, store: astro_weights.mcp.edit_store.EditStore, *, device: str = 'auto', dtype: str = 'auto') -> None",
+  "check_request": "(request: Any, model: astro_weights.mcp.forward.Model, store: astro_weights.mcp.edit_store.EditStore, *, max_new_tokens: int) -> dict[str, Any]",
+  "discard_results": "(run_dir: pathlib.Path, job: astro_weights.mcp.handles.Job) -> None",
+  "executor": "(backend: astro_weights.mcp.forward.ForwardBackend, run_dir: pathlib.Path) -> collections.abc.Callable[[dict[str, Any]], dict[str, Any]]",
+  "hf_available": "() -> bool",
+  "read_result": "(run_dir: pathlib.Path, jobs: astro_weights.mcp.handles.HandleStore, handle: Any, key: Any) -> numpy.ndarray | list[str]"
+ },
+ "astro_weights.mcp.jobs": {
+  "JobRunner": "(store: astro_weights.mcp.handles.HandleStore, ledger: astro_weights.mcp.budget.Ledger, executors: collections.abc.Mapping[str, collections.abc.Callable[[dict[str, Any]], dict[str, Any]]], budget_kind: collections.abc.Mapping[str, typing.Literal['forward_passes', 'code_runs', 'tokens', 'dollars']]) -> None",
+  "RunConfig": "(seed: int, editor: str, model: str | None, limits: astro_weights.mcp.budget.Limits, model_dir: pathlib.Path | None = None, kernel_timeout_s: float = 600.0, kernel_mem_gib: int = 16, forward_device: str = 'auto', forward_dtype: str = 'auto', forward_max_new_tokens: int = 4096, export_rank: int = 8, export_max_rel_residual: float = 0.05, export_base_gguf: pathlib.Path | None = None, export_gguf_out_type: str = 'q8_0') -> None",
+  "load_run_config": "(run_dir: pathlib.Path) -> astro_weights.mcp.jobs.RunConfig"
+ },
+ "astro_weights.mcp.kernel": {
+  "EventSink": "(*args, **kwargs)",
+  "Kernel": "(run_dir: pathlib.Path, store: astro_weights.mcp.edit_store.EditStore, *, allow_unsafe: bool = False, timeout_s: float = 600, mem_gib: int = 16, stdout_cap: int = 10000, on_event: collections.abc.Callable[[str, dict[str, Any]], None] | None = None, jobs: astro_weights.mcp.handles.HandleStore | None = None) -> None",
+  "KernelError": null
+ },
+ "astro_weights.mcp.kernel_child": {},
+ "astro_weights.mcp.record": {
+  "RunRecord": "(path: pathlib.Path) -> None"
+ },
+ "astro_weights.mcp.run": {
+  "RunError": null,
+  "RunSpec": "(source: pathlib.Path, run_dir: pathlib.Path, seed: int, model_dir: pathlib.Path | None, limits: astro_weights.mcp.budget.Limits, editor: str, options: collections.abc.Mapping[str, Any], kernel: collections.abc.Mapping[str, Any], forward: collections.abc.Mapping[str, Any], export: collections.abc.Mapping[str, Any] = <factory>, unsafe_kernel: bool = False, text: str = '') -> None",
+  "format_status": "(info: collections.abc.Mapping[str, Any]) -> str",
+  "load_config": "(path: pathlib.Path) -> astro_weights.mcp.run.RunSpec",
+  "start": "(spec: astro_weights.mcp.run.RunSpec, *, resume: bool = False) -> int",
+  "status": "(spec: astro_weights.mcp.run.RunSpec, last: int = 10) -> dict[str, Any]"
+ },
+ "astro_weights.mcp.sandbox": {
+  "Mode": "(*args, **kwargs)",
+  "SandboxUnavailable": null,
+  "bwrap_command": "(argv: collections.abc.Sequence[str], ro: collections.abc.Sequence[pathlib.Path], rw: pathlib.Path, hide: collections.abc.Sequence[pathlib.Path] = (), exe: str = 'bwrap') -> list[str]",
+  "child_env": "(work: pathlib.Path) -> dict[str, str]",
+  "harden_parent": "() -> None",
+  "hidden_site_dirs": "(ro: collections.abc.Sequence[pathlib.Path]) -> list[pathlib.Path]",
+  "probe": "() -> Literal['bwrap', 'seatbelt'] | None",
+  "python_paths": "(packages: collections.abc.Sequence[str] = ('numpy',)) -> list[pathlib.Path]",
+  "seatbelt_command": "(argv: collections.abc.Sequence[str], ro: collections.abc.Sequence[pathlib.Path], rw: pathlib.Path, hide: collections.abc.Sequence[pathlib.Path] = ()) -> list[str]",
+  "wrap": "(argv: collections.abc.Sequence[str], *, ro: collections.abc.Sequence[pathlib.Path], rw: pathlib.Path, allow_unsafe: bool = False) -> list[str]"
+ },
+ "astro_weights.mcp.server": {
+  "build_server": "(run_dir: pathlib.Path, executors: collections.abc.Mapping[str, collections.abc.Callable[[dict[str, Any]], dict[str, Any]]] | None = None, *, allow_unsafe_kernel: bool = False) -> mcp.server.mcpserver.server.MCPServer[Any]",
+  "main": "(argv: list[str] | None = None) -> int"
+ },
  "astro_weights.runners.endpoint": {
   "generate_records_http": "(base_url: str, model: str, items: collections.abc.Sequence[collections.abc.Mapping[str, Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, *, seed: int = 0, api_key: str | None = None, timeout: float = 120.0, extra_body: collections.abc.Mapping[str, Any] | None = None, out: str | pathlib.Path | None = None) -> list[astro_weights.eval.records.Record]",
   "run_header_http": "(base_url: str, model: str, max_new_tokens: int, seed: int, extra_body: collections.abc.Mapping[str, Any] | None = None, *, api_key: str | None = None, timeout: float = 120.0) -> dict[str, Any]"
