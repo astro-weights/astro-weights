@@ -136,3 +136,35 @@ jobs:
         with:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+
+  # Sign-off check as a workflow job (DCO app no longer a required check; ruleset requires ci-ok).
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          bad=0
+          while IFS=$'\t' read -r sha author; do
+            git log -1 --format=%B "$sha" | grep -qiF "Signed-off-by: $author" \
+              || { echo "::error::$sha has no 'Signed-off-by: $author' (git commit -s)"; bad=1; }
+          done < <(git log --no-merges --format='%H%x09%an <%ae>' "$BASE_SHA..HEAD")
+          exit "$bad"
+
+  # Single required check. Skipped jobs pass; failed or cancelled jobs fail it.
+  ci-ok:
+    if: always()
+    needs: [lint, test, test-hf, wheel-smoke, test-lowest, test-os, zizmor, dco]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          case " $RESULTS " in *" failure "*|*" cancelled "*) exit 1 ;; esac
