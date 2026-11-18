@@ -16,7 +16,7 @@ import re
 import secrets
 import stat
 import struct
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +49,10 @@ _MODULE = re.compile(
     r"(?:^|\.)layers\.(\d+)\.("
     r"mlp\.(?:down|gate|up)_proj|self_attn\.[qkvo]_proj)$"
 )
+# Archs whose converter keeps HF q_proj/k_proj rows as they are; llama-family
+# converters reorder them, so an HF q/k delta would be wrong there.
+_QK_PLAIN_ARCHS = ("qwen2", "qwen3", "qwen3moe", "qwen35", "qwen35moe")
+_QK = re.compile(r"^blk\.\d+\.attn_[qk]\.weight$")
 _BLK = re.compile(r"blk\.(\d+)\.")
 _SAMPLE = 20
 _ADAPTER_TYPES = (Q.F32, Q.F16)
@@ -215,6 +219,16 @@ def gguf_tensor_name(module: str) -> str:
     return f"blk.{m.group(1)}.{SUFFIXES[m.group(2)]}.weight"
 
 
+def _check_qk_arch(arch: str, names: Iterable[str]) -> None:
+    """Refuse q/k tensors for an arch whose converter reorders their rows."""
+    if arch not in _QK_PLAIN_ARCHS and any(_QK.match(n) for n in names):
+        raise ValueError(
+            f"architecture {arch!r}: q/k rows are reordered by llama.cpp for this "
+            f"arch, so q_proj/k_proj deltas cannot be exported; supported for "
+            f"q_proj/k_proj: {', '.join(_QK_PLAIN_ARCHS)}"
+        )
+
+
 def save_lora_gguf(
     edit: Edit, path: Path | str, architecture: str, *, overwrite: bool = False
 ) -> None:
@@ -225,6 +239,7 @@ def save_lora_gguf(
     names = {d.module: gguf_tensor_name(d.module) for d in edit.deltas}
     if len(set(names.values())) != len(names):
         raise ValueError("two modules map to the same GGUF tensor")
+    _check_qk_arch(architecture, names.values())
     tmp = _make_tmp(out)
     try:
         writer = gguf.GGUFWriter(tmp, architecture)
@@ -376,6 +391,7 @@ def splice_gguf(
     missing = sorted(set(replace) - {t.name for t in reader.tensors})
     if missing:
         raise ValueError(f"tensors not in base: {missing}")
+    _check_qk_arch(arch, replace)
     _check_not_mtp(reader, arch, list(replace))
     arrays = {n: _as_float_array(n, v) for n, v in replace.items()}
 

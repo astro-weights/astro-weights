@@ -1190,3 +1190,67 @@ def test_compose_then_splice_down_and_up(tmp_path: Path) -> None:
     np.testing.assert_allclose(
         have["blk.1.ffn_up.weight"], want_up, rtol=2e-3, atol=2e-3
     )
+
+
+def test_compose_base_model_override(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = _two_adapters(tmp_path)
+    save_peft(Edit(read_peft(b)[0].deltas, "hub/Model"), b, overwrite=True)
+    out = tmp_path / "out"
+    assert main(["compose", str(a), str(b), "-o", str(out)]) == 2
+    assert "different base models" in capsys.readouterr().err
+    argv = ["compose", str(a), str(b), "-o", str(out), "--base-model", "hub/Model"]
+    assert main(argv) == 0
+    assert read_peft(out)[0].base_model == "hub/Model"
+
+
+def test_export_gguf_qk_needs_plain_arch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pytest.importorskip("gguf")
+    rng = np.random.default_rng(41)
+    q = LowRankDelta(
+        "model.layers.1.self_attn.q_proj",
+        rng.standard_normal((8, 1)),
+        rng.standard_normal((1, 12)),
+    )
+    save_peft(Edit((q,), "org/tiny"), tmp_path / "a")
+    out = tmp_path / "a.gguf"
+    argv = ["export", str(tmp_path / "a"), "--gguf", str(out), "--arch"]
+    assert main([*argv, "llama"]) == 2
+    assert "q/k rows are reordered" in capsys.readouterr().err
+    assert not out.exists()
+    assert main([*argv, "qwen35"]) == 0
+    assert out.exists()
+
+
+def test_splice_qk_refused_on_llama_base(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gguf = pytest.importorskip("gguf")
+    from astro_weights.export import tensor_sha256
+
+    w0 = np.random.default_rng(42).standard_normal((8, 16)).astype(np.float32)
+    model = tmp_path / "hf"
+    model.mkdir()
+    key = "model.layers.1.self_attn.q_proj.weight"
+    save_file({key: w0}, str(model / "model.safetensors"))
+    base = tmp_path / "base.gguf"
+    wr = gguf.GGUFWriter(base, "llama")
+    wr.add_block_count(3)
+    wr.add_tensor("blk.1.attn_q.weight", w0)
+    wr.write_header_to_file()
+    wr.write_kv_data_to_file()
+    wr.write_tensors_to_file(progress=False)
+    wr.close()
+    d = LowRankDelta(key[: -len(".weight")], np.ones((8, 1)), np.ones((1, 16)))
+    hashes = {key: tensor_sha256(model / "model.safetensors", key)}
+    save_peft(Edit((d,), "org/tiny", hashes), tmp_path / "a")
+    merged = tmp_path / "m.gguf"
+    argv = ["export", str(tmp_path / "a"), "--splice", str(base)]
+    argv += ["--base-model", str(model), "--merged", str(merged), "--out-type", "f16"]
+    assert main(argv) == 2
+    assert "q/k rows are reordered" in capsys.readouterr().err
+    assert not merged.exists()
+    assert not list(tmp_path.glob("*.tmp"))

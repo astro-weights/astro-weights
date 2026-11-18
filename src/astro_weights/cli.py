@@ -5,7 +5,7 @@ import json
 import math
 import secrets
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -230,7 +230,9 @@ def _build(
     return 0
 
 
-def _compose(adapters: list[Path], out: Path, force: bool, as_json: bool) -> int:
+def _compose(
+    adapters: list[Path], out: Path, force: bool, as_json: bool, base_model: str | None
+) -> int:
     for a in adapters:
         if out.resolve().is_relative_to(a.resolve()):
             return _error(f"-o {out} is the input adapter {a} or inside it")
@@ -239,9 +241,10 @@ def _compose(adapters: list[Path], out: Path, force: bool, as_json: bool) -> int
     edits = []
     for a in adapters:
         try:
-            edits.append(load_peft(a))
-        except _ERRORS as e:
-            return _fail(a, e)
+            e = load_peft(a)
+        except _ERRORS as err:
+            return _fail(a, err)
+        edits.append(e if base_model is None else replace(e, base_model=base_model))
     try:
         edit = compose(*edits)
         save_peft(edit, out, overwrite=force)
@@ -517,6 +520,12 @@ def main(argv: list[str] | None = None) -> int:
         help="combined adapter directory to write",
     )
     p.add_argument(
+        "--base-model",
+        metavar="NAME",
+        help="base model name to write, replacing each adapter's own "
+        "(for adapters that name one base differently)",
+    )
+    p.add_argument(
         "--force",
         action="store_true",
         help="write into a non-empty OUT_DIR (other files there are kept)",
@@ -579,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "compose":
         if len(args.adapters) < 2:
             parser.error("compose needs at least two adapters")
-        return _compose(args.adapters, args.out, args.force, args.json)
+        return _compose(args.adapters, args.out, args.force, args.json, args.base_model)
     if args.command == "export":
         return _export(
             args.directory,
