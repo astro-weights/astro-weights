@@ -38,7 +38,9 @@ __all__ = [
 
 Mode = Literal["bwrap", "seatbelt"]
 
-UNSAFE_HINT = "pass allow_unsafe=True to run agent code without a sandbox"
+UNSAFE_HINT = (
+    "pass allow_unsafe=True (CLI: --unsafe-kernel) to run agent code without a sandbox"
+)
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 # Every namespace (user, ipc, pid, net, uts, cgroup); no nested user namespaces (the
 # kernel surface behind most unprivileged exploits; needs bwrap >= 0.8, older bwrap
