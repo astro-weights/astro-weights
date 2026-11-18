@@ -59,4 +59,4 @@ Start `claude` and ask it to edit the model, for example "Use the astro-weights 
 - Claude Code also sees the three editor tools `report_usage`, `check_spend` and `report_refusal`. The built-in editors hide them from their model; Claude Code does not.
 - No OS sandbox (Windows, or a blocked bwrap): `exec_python` returns an error. `astro-weights mcp RUN_DIR --unsafe-kernel` runs the code unsandboxed; see [Explanation: agent budgets and sandbox](../explanation/agent-budgets-and-sandbox.md).
 
-Not tested: this page was checked against the server code and the Claude Code docs, not run in Claude Code.
+Tested once: a headless `claude -p` run on a tiny random model (0.2.0a1, macOS) used `exec_python`, `forward_pass`, `status` and `finish`, and the run finished with an exported adapter.

@@ -2,6 +2,9 @@
 
 !!! note "New in 0.2"
 
+!!! warning "Not tested in Codex"
+    This page was checked against the server code and the Codex docs. Nobody has run it in Codex yet.
+
 Add `astro-weights mcp RUN_DIR` to Codex as a stdio MCP server and Codex becomes the editor.
 
 You need the `mcp` extra, plus `hf` for `forward_pass`:

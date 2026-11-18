@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 0.2.0 final: everything in 0.2.0a1 below, plus the editors and the one-command run listed here.
 
-Upgrading from 0.1.5: no public name was removed or changed, so 0.1.x code runs as before. The agent features are opt-in extras: `pip install "astro-weights[mcp,hf]"` for the MCP server and the scripted and local editors, and add `hosted` for the hosted Claude editor. The 0.1.5 model-card fix is included.
+Upgrading from 0.1.5: no public name was removed or changed, so 0.1.x code runs as before. The agent features are opt-in extras: `pip install "astro-weights[mcp,hf]"` for the MCP server and the scripted and local editors, and add `hosted` for the hosted Claude editor. The 0.1.5 model-card fix is included. The MCP server was run from Claude Code; the Codex setup page is not tested.
 
 ### Added
 
