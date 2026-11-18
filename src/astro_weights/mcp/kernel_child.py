@@ -8,7 +8,8 @@ Protocol: one JSON line each way, on private copies of the original stdin and
 stdout. File descriptors 0, 1 and 2 are pointed away before any cell runs, so
 nothing a cell prints can look like a protocol line. Cell output goes to
 ``WORK/stdout.txt``. Edits are requests to the server (``save_edit``,
-``drop_edit``, ``edited``, ``load``, ``load_original``, ``names``); arrays cross as
+``drop_edit``, ``edited``, ``load``, ``load_original``, ``names``,
+``forward_result``); arrays cross as
 ``.npy`` files in ``WORK`` named by a random token.
 """
 
@@ -104,6 +105,17 @@ def namespace(server: Server) -> dict[str, Any]:
         """Names of the editable weights."""
         return server.call("names")
 
+    def forward_result(handle: str, key: str) -> Any:
+        """Result ``key`` of a done forward_pass job: an array, or a list of texts."""
+        got = server.call("forward_result", handle=handle, key=key)
+        if "texts" in got:
+            return got["texts"]
+        path = server.work / f"in_{got['array']}.npy"
+        try:
+            return np.load(path, allow_pickle=False)
+        finally:
+            path.unlink(missing_ok=True)
+
     return {
         "__name__": "__main__",
         "np": np,
@@ -114,6 +126,7 @@ def namespace(server: Server) -> dict[str, Any]:
         "load": load,
         "load_original": load_original,
         "names": names,
+        "forward_result": forward_result,
     }
 
 

@@ -9,7 +9,8 @@ child and says ``restarted: true``. The first cell after a server restart says s
 The child can read the interpreter and numpy, and write only ``run_dir/kernel``.
 It never sees the edits or the model: ``save_edit``, ``drop_edit``, ``edited``,
 ``load``, ``load_original`` and ``names`` are requests the parent checks and
-answers through the ``EditStore``. Arrays cross as ``.npy`` files in the work dir;
+answers through the ``EditStore``; ``forward_result`` reads a finished
+``forward_pass`` job's result, found through the ``HandleStore``. Arrays cross as ``.npy`` files in the work dir;
 the parent builds every path itself from a validated token, and opens files there
 without following links, since the child may have planted one.
 
@@ -42,8 +43,9 @@ from typing import IO, Any
 
 import numpy as np
 
-from astro_weights.mcp import sandbox
+from astro_weights.mcp import forward, sandbox
 from astro_weights.mcp.edit_store import EditStore
+from astro_weights.mcp.handles import HandleStore
 
 __all__ = ["EventSink", "Kernel", "KernelError"]
 
@@ -148,12 +150,12 @@ def _read_header(f: IO[bytes]) -> tuple[tuple[int, ...], bool, np.dtype[Any]]:
     return np.lib.format.read_array_header_2_0(buf, max_header_size=MAX_HEADER)
 
 
-def write_npy(path: Path, arr: np.ndarray) -> None:
-    """Write ``arr`` as float32 ``.npy``: new temp file in the same dir, then rename."""
+def write_npy(path: Path, arr: np.ndarray, dtype: Any = np.float32) -> None:
+    """Write ``arr`` as ``.npy`` (float32; None keeps its dtype): temp file, then rename."""
     tmp = path.with_suffix(".tmp")
     try:
         with os.fdopen(os.open(tmp, _CREATE, 0o600), "wb") as f:
-            a = np.ascontiguousarray(arr, dtype=np.float32)
+            a = np.ascontiguousarray(arr, dtype=dtype)
             np.lib.format.write_array(f, a, allow_pickle=False)
         tmp.replace(path)
     finally:
@@ -242,11 +244,12 @@ class Kernel:
         mem_gib: int = 16,
         stdout_cap: int = 10_000,
         on_event: EventSink | None = None,
+        jobs: HandleStore | None = None,
     ) -> None:
         """Check the sandbox and start the kernel thread; the child starts on first use.
 
         ``SandboxUnavailable`` when there is no OS sandbox and ``allow_unsafe`` is
-        False. ``on_event(event, fields)`` hears ``edit_saved`` (tensor,
+        False. ``jobs`` answers ``forward_result``; without it that request fails. ``on_event(event, fields)`` hears ``edit_saved`` (tensor,
         rel_frobenius), ``edit_rejected`` (tensor, error), ``edit_dropped``
         (tensor) and ``kernel_restarted``.
         """
@@ -258,6 +261,8 @@ class Kernel:
         self._mem_gib = mem_gib
         self._stdout_cap = stdout_cap
         self._on_event = on_event
+        self._jobs_store = jobs
+        self._run_dir = Path(run_dir).resolve()
         site = Path(np.__file__).resolve().parent.parent
         argv = [sys.executable, "-I", "-S", str(CHILD), str(self.work), str(site)]
         sandbox.harden_parent()
@@ -497,6 +502,8 @@ class Kernel:
             return self._put(store.load(name))
         if op == "load_original":
             return self._put(store.original(name))
+        if op == "forward_result":
+            return self._forward_result(req.get("handle"), req.get("key"))
         raise ValueError(f"unknown request {str(op)[:80]!r}")
 
     def _save(self, name: Any, token: Any) -> dict[str, Any]:
@@ -522,10 +529,18 @@ class Kernel:
             with contextlib.suppress(OSError):
                 path.unlink()
 
-    def _put(self, arr: np.ndarray) -> str:
+    def _put(self, arr: np.ndarray, dtype: Any = np.float32) -> str:
         token = secrets.token_hex(16)
-        write_npy(self.work / f"in_{token}.npy", arr)
+        write_npy(self.work / f"in_{token}.npy", arr, dtype)
         return token
+
+    def _forward_result(self, handle: Any, key: Any) -> dict[str, Any]:
+        if self._jobs_store is None:
+            raise ValueError("forward results are not available in this kernel")
+        got = forward.read_result(self._run_dir, self._jobs_store, handle, key)
+        if isinstance(got, list):
+            return {"texts": got}
+        return {"array": self._put(got, None)}
 
     def _emit(self, name: str, fields: dict[str, Any]) -> None:
         if self._on_event is None:
