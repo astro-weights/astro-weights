@@ -335,7 +335,8 @@ def load_config(path: Path) -> RunSpec:
     """Read and check a TOML run config; RunError with a clear message if bad."""
     path = Path(path).resolve()
     try:
-        text = path.read_text(encoding="utf-8")
+        # bytes, not read_text: newline translation would make the copy differ from the file (CRLF)
+        text = path.read_bytes().decode("utf-8")
         raw = tomllib.loads(text)
     except FileNotFoundError:
         raise RunError(f"{path} not found") from None

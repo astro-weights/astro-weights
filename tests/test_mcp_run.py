@@ -367,6 +367,14 @@ def test_start_writes_run_json_and_config_copy(
     assert not list(spec.run_dir.glob(".*.tmp"))
 
 
+def test_config_copy_keeps_crlf_bytes(tmp_path: Path, editor: FakeEditor) -> None:
+    path = write_config(tmp_path)
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    spec = load_config(path)
+    run.start(spec)
+    assert (spec.run_dir / "config.toml").read_bytes() == path.read_bytes()
+
+
 def test_start_in_an_empty_dir(tmp_path: Path, editor: FakeEditor) -> None:
     spec = load_config(write_config(tmp_path))
     spec.run_dir.mkdir(parents=True)
