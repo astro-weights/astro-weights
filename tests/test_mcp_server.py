@@ -794,3 +794,176 @@ async def test_after_finish_only_report_usage_records(tmp_path: Path) -> None:
     finish = next(e for e in events(tmp_path) if e["event"] == "finish")
     assert finish["budget"]["used"]["tokens"] == 0
     assert usage["budget"]["used"]["tokens"] == 7
+
+
+# ---------------------------------------------------------------- finish exports
+
+
+def export_run(run_dir: Path, **export: Any) -> Path:
+    fake_model_dir(run_dir / "model")
+    over = {"export": export} if export else {}
+    return write_run(run_dir, model_dir="model", **over)
+
+
+def save_edit(run_dir: Path, full_rank: bool = False) -> None:
+    import numpy as np
+
+    from astro_weights.mcp.edit_store import EditStore
+
+    store = EditStore(run_dir, run_dir / "model")
+    w = store.original(N0)
+    rng = np.random.default_rng(0)
+    if full_rank:
+        d = rng.standard_normal(w.shape)
+    else:
+        d = np.outer(rng.standard_normal(w.shape[0]), rng.standard_normal(w.shape[1]))
+    store.save(
+        N0, (w + d * (0.3 * np.linalg.norm(w) / np.linalg.norm(d))).astype(np.float32)
+    )
+
+
+NO_KERNEL = {"exec": echo, "forward": echo}
+
+
+@pytest.mark.anyio
+async def test_finish_exports_the_stored_edits(tmp_path: Path) -> None:
+    from astro_weights.export import load_peft
+
+    run = export_run(tmp_path, rank=2)
+    save_edit(run)
+    async with Client(build_server(run, NO_KERNEL)) as client:
+        out = await call(client, "finish", {"summary": "done"})
+    assert out["state"] == "finished"
+    export = out["export"]
+    assert export["adapter"] == str(run / "export" / "adapter")
+    assert export["gguf"] is None
+    assert export["rank"] == 2
+    assert export["residuals"][N0] < 0.05
+    edit = load_peft(export["adapter"])
+    assert [d.module for d in edit.deltas] == [N0.removesuffix(".weight")]
+    assert edit.base_model == str(run / "model")
+    record = RunRecord.open(run / "record.jsonl").read()
+    names = [e["event"] for e in record]
+    assert names[-3:] == ["summary", "export", "finish"]
+    assert record[-2]["adapter"] == export["adapter"]
+
+
+@pytest.mark.anyio
+async def test_export_names_the_base_model_from_its_config(tmp_path: Path) -> None:
+    from astro_weights.export import load_peft
+
+    run = export_run(tmp_path)
+    (run / "model" / "config.json").write_text(
+        json.dumps({"_name_or_path": "org/base"})
+    )
+    save_edit(run)
+    async with Client(build_server(run, NO_KERNEL)) as client:
+        out = await call(client, "finish", {"summary": "done"})
+    assert load_peft(out["export"]["adapter"]).base_model == "org/base"
+
+
+@pytest.mark.anyio
+async def test_export_past_the_residual_cap_still_finishes(tmp_path: Path) -> None:
+    run = export_run(tmp_path, rank=1, max_rel_residual=0.05)
+    save_edit(run, full_rank=True)
+    async with Client(build_server(run, NO_KERNEL)) as client:
+        out = await call(client, "finish", {"summary": "done"})
+        again = await call(client, "finish", {"summary": "again"})
+    assert out["state"] == "finished"
+    assert out["export"] is None
+    assert "exceeds max_rel_residual" in out["export_error"]
+    assert again == {"error": "run already finished"}
+    assert not (run / "export" / "adapter").exists()
+    record = RunRecord.open(run / "record.jsonl").read()
+    assert [e["event"] for e in record][-3:] == ["summary", "export_failed", "finish"]
+    assert "exceeds max_rel_residual" in record[-2]["error"]
+
+
+@pytest.mark.anyio
+async def test_finish_without_edits_exports_nothing(tmp_path: Path) -> None:
+    run = export_run(tmp_path)
+    async with Client(build_server(run, NO_KERNEL)) as client:
+        out = await call(client, "finish", {"summary": "done"})
+    assert out["export"] is None
+    assert out["note"] == "no edits: nothing to export"
+    assert not (run / "export").exists()
+    names = [e["event"] for e in RunRecord.open(run / "record.jsonl").read()]
+    assert names[-3:] == ["summary", "export_skipped", "finish"]
+
+
+@pytest.mark.anyio
+async def test_finish_without_model_dir_has_nothing_to_export(tmp_path: Path) -> None:
+    async with Client(build_server(write_run(tmp_path))) as client:
+        out = await call(client, "finish", {"summary": "done"})
+    assert out["export"] is None
+    assert out["note"] == "no model_dir: nothing to export"
+
+
+@pytest.mark.parametrize(
+    ("export", "match"),
+    [
+        ({"rank": 0}, "export.rank"),
+        ({"rank": True}, "export.rank"),
+        ({"max_rel_residual": -1}, "export.max_rel_residual"),
+        ({"max_rel_residual": "x"}, "export.max_rel_residual"),
+        ({"max_rel_residual": 10**400}, "export.max_rel_residual"),
+        ({"base_gguf": ""}, "export.base_gguf"),
+        ({"gguf_out_type": "q4"}, "export.gguf_out_type"),
+        ({"other": 1}, "export must be an object"),
+    ],
+)
+def test_bad_export_config_is_refused(
+    tmp_path: Path, export: dict[str, Any], match: str
+) -> None:
+    from astro_weights.mcp.jobs import load_run_config
+
+    with pytest.raises(ValueError, match=match):
+        load_run_config(write_run(tmp_path, export=export))
+
+
+def test_export_config_defaults_and_paths(tmp_path: Path) -> None:
+    from astro_weights.mcp.jobs import load_run_config
+
+    cfg = load_run_config(write_run(tmp_path))
+    assert (cfg.export_rank, cfg.export_max_rel_residual) == (8, 0.05)
+    assert (cfg.export_base_gguf, cfg.export_gguf_out_type) == (None, "q8_0")
+    export = {
+        "rank": 4,
+        "max_rel_residual": 1,
+        "base_gguf": "b.gguf",
+        "gguf_out_type": "f16",
+    }
+    cfg = load_run_config(write_run(tmp_path, export=export))
+    assert cfg.export_rank == 4
+    assert cfg.export_max_rel_residual == 1.0
+    assert cfg.export_base_gguf == tmp_path / "b.gguf"
+    assert cfg.export_gguf_out_type == "f16"
+
+
+@pytest.mark.anyio
+async def test_finish_passes_the_gguf_options_to_the_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from astro_weights.mcp import server
+
+    run = export_run(tmp_path, base_gguf="base.gguf", gguf_out_type="bf16", rank=3)
+    save_edit(run)
+    seen: list[dict[str, Any]] = []
+
+    def fake_export(store: Any, out_dir: Path, **kw: Any) -> dict[str, Any]:
+        seen.append({"out_dir": out_dir, **kw})
+        return {
+            "adapter": out_dir / "adapter",
+            "gguf": out_dir / "model.gguf",
+            "residuals": {N0: 0.01},
+            "rank": 3,
+        }
+
+    monkeypatch.setattr(server, "export_edits", fake_export)
+    async with Client(build_server(run, NO_KERNEL)) as client:
+        out = await call(client, "finish", {"summary": "done"})
+    assert out["export"]["gguf"] == str(run / "export" / "model.gguf")
+    assert seen[0]["base_gguf"] == run / "base.gguf"
+    assert seen[0]["gguf_out_type"] == "bf16"
+    assert seen[0]["rank"] == 3
+    assert seen[0]["out_dir"] == run / "export"

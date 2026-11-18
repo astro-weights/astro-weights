@@ -453,6 +453,23 @@ def _mcp(run_dir: Path, unsafe_kernel: bool) -> int:
     return serve([str(run_dir), *(["--unsafe-kernel"] if unsafe_kernel else [])])
 
 
+def _run(config: Path, resume: bool, show_status: bool, as_json: bool) -> int:
+    from astro_weights.mcp import run
+
+    try:
+        spec = run.load_config(config)
+        if not show_status:
+            return run.start(spec, resume=resume)
+        info = run.status(spec)
+    except run.RunError as e:
+        return _error(str(e))
+    if as_json:
+        _emit(info)
+    else:
+        print(run.format_status(info))
+    return 0
+
+
 def _json_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--json", action="store_true", help="print one JSON object instead of text"
@@ -469,7 +486,7 @@ def main(argv: list[str] | None = None) -> int:
         "--version", action="version", version=f"astro-weights {__version__}"
     )
     sub = parser.add_subparsers(
-        dest="command", metavar="{build,compose,eval,export,inspect,mcp}"
+        dest="command", metavar="{build,compose,eval,export,inspect,mcp,run}"
     )
     p = sub.add_parser("inspect", help="summarize and verify a saved PEFT adapter")
     p.add_argument("directory", metavar="DIR", type=Path, help="adapter directory")
@@ -593,6 +610,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run agent code without an OS sandbox when none works (never safe)",
     )
+    p = sub.add_parser(
+        "run", help="start an agent run from a TOML config: server, editor, budget"
+    )
+    p.add_argument("config", metavar="CONFIG.toml", type=Path, help="run config file")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--resume",
+        action="store_true",
+        help="go on with the run in the config's run directory; budget used stays",
+    )
+    mode.add_argument(
+        "--status",
+        action="store_true",
+        help="print the run's budget, last events and finish state; starts nothing",
+    )
+    _json_flag(p)
     args = parser.parse_args(argv)
     if args.command == "inspect":
         return _inspect(args.directory, args.json)
@@ -629,5 +662,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "mcp":
         return _mcp(args.run_dir, args.unsafe_kernel)
+    if args.command == "run":
+        return _run(args.config, args.resume, args.status, args.json)
     parser.print_help()
     return 2
