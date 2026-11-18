@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.1.5] - 2026-11-18
+
+### Fixed
+
+- Model cards for adapters saved with `model.language_model.layers` names now load the base with `AutoModelForImageTextToText`; the old `AutoModelForCausalLM` snippet loaded none of the adapter weights.
+
 ## [0.1.4] - 2026-11-17
 
 ### Added
@@ -154,6 +160,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.1.5]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.5
 [0.1.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.4
 [0.1.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.3
 [0.1.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.2
