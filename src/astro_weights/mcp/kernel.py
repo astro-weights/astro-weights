@@ -54,7 +54,7 @@ MAX_LINE = 1 << 20
 START_TIMEOUT_S = 60.0
 ERROR_MAX = 2000
 OUTPUT = "stdout.txt"
-LOG = "kernel.log"
+LOG = "kernel.log"  # in run_dir: the child never needs it, and cannot plant it
 MARKER = "kernel.started"  # in run_dir, where the child cannot write
 MAX_HEADER = 1 << 16
 QUEUE_LINES = 4  # lines read ahead of the kernel thread; then the child's write blocks
@@ -75,6 +75,7 @@ _CREATE = (
     | getattr(os, "O_NOFOLLOW", 0)
     | getattr(os, "O_BINARY", 0)
 )
+_TRUNCATE = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
 
 # reader-thread queue items: a line, a protocol fault (str), or end of stream (None)
 _Item = bytes | str | None
@@ -268,6 +269,7 @@ class Kernel:
         )
         # a kernel ran here before this process: its variables are gone
         self._marker = Path(run_dir).resolve() / MARKER
+        self._log = Path(run_dir).resolve() / LOG
         self._lost = self._marker.exists()
         self._proc: subprocess.Popen[bytes] | None = None
         self._lines: queue.Queue[_Item] = queue.Queue(QUEUE_LINES)
@@ -360,10 +362,12 @@ class Kernel:
 
     def _start(self) -> "subprocess.Popen[bytes]":
         for p in self.work.iterdir():
-            if p.name in (OUTPUT, LOG) or _SCRATCH.fullmatch(p.name):
+            if p.name == OUTPUT or _SCRATCH.fullmatch(p.name):
                 with contextlib.suppress(OSError):
                     p.unlink()
-        log_fd = os.open(self.work / LOG, _CREATE, 0o600)
+        # truncate, not unlink + create: Windows can keep a just-killed
+        # child's file locked for a moment, and unlink then fails
+        log_fd = os.open(self._log, _TRUNCATE, 0o600)
         try:
             proc = subprocess.Popen(
                 self._argv,
@@ -395,7 +399,7 @@ class Kernel:
                 what = f"failed to start (exit code {rc})"
             else:
                 what = f"failed to start: protocol error: {end}"
-            tail = read_capped(self.work / LOG, 100_000)[-1500:]
+            tail = read_capped(self._log, 100_000)[-1500:]
             raise KernelError(f"kernel {what}: {tail}".strip())
         self._marker.write_text(f"{proc.pid}\n")
         return proc
