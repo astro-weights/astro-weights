@@ -28,7 +28,7 @@ command = "astro-weights"
 args = ["mcp", "/path/to/run"]
 ```
 
-Syntax from the [Codex MCP docs](https://learn.chatgpt.com/docs/extend/mcp?surface=cli). Codex stops a tool call after `tool_timeout_sec`, 60 s by default. `exec_python` and `forward_pass` return a handle at once and the work runs in the background, so a long job does not hit that timeout; Codex polls `status(handle)`.
+Syntax from the [Codex MCP docs](https://learn.chatgpt.com/docs/extend/mcp?surface=cli). Codex stops a tool call after `tool_timeout_sec` (60 s default per those docs). `exec_python` and `forward_pass` return a handle at once and the work runs in the background, so a long job does not hit that timeout; Codex polls `status(handle)`.
 
 ## 3. Run
 
