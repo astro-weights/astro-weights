@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
-- The run record's `start` line now fills `library_commit`: the git commit of a `pip install git+...` install, or of an editable checkout (with `-dirty` when it has uncommitted changes).
+- The run record's `start` line now fills `library_commit`: the git commit of a `pip install git+...` install, or of an editable checkout (with `-dirty` when it has uncommitted changes). A wheel installed from PyPI carries no commit, so there it stays `null`: `library_version` names the release, and the release's `v` tag names the commit.
 
 ## [0.2.0] - 2026-11-18
 

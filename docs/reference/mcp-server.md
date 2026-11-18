@@ -234,7 +234,7 @@ Every refusal is free.
 
 ## Run record
 
-`record.jsonl` starts with a `start` line: `seed`, `config` (the limits), `editor`, `model`, `library_version`, `library_commit` (the git commit of a `pip install git+...` or of an editable checkout, with `-dirty` for uncommitted changes; `null` for a release wheel), `python`, `platform`. Every line has `event` and `time`. Events the server writes:
+`record.jsonl` starts with a `start` line: `seed`, `config` (the limits), `editor`, `model`, `library_version`, `library_commit` (the git commit of a `pip install git+...` or of an editable checkout, with `-dirty` for uncommitted changes; `null` for a release wheel from PyPI, where `library_version` and its `v` tag name the commit), `python`, `platform`. Every line has `event` and `time`. Events the server writes:
 
 | Event | Fields | When |
 |---|---|---|
