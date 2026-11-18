@@ -7,6 +7,7 @@ import pytest
 from fake_endpoint import Reply as Wire
 from fake_endpoint import ok, serve, tool_reply
 
+from astro_weights.mcp.budget import Ledger, Limits
 from astro_weights.mcp.record import RunRecord
 
 LIMITS = {"forward_passes": 3, "code_runs": 3, "tokens": 1000, "dollars": 0}
@@ -406,6 +407,51 @@ async def test_refusal_goes_to_the_record_then_raises() -> None:
 
 
 @pytest.mark.anyio
+async def test_refused_turn_reports_its_usage_first() -> None:
+    fake = FakeSession()
+    with pytest.raises(Refused):
+        await run(fake, scripted_chat(Refused("content_filter", "x", tokens=9)))
+    tail = fake.calls[-2:]
+    assert tail[0] == (
+        "report_usage",
+        {"tokens": 9, "dollars": 0.0, "turn": 1, "model": "m"},
+    )
+    assert tail[1][0] == "report_refusal"
+
+
+@pytest.mark.anyio
+async def test_deeply_nested_arguments_are_a_tool_error() -> None:
+    fake = FakeSession()
+    chat = scripted_chat(
+        turn(call("exec_python", "[" * 200_000)),
+        turn(call("finish", {"summary": "s"})),
+    )
+    out = await run(fake, chat)
+    assert out["outcome"] == "finished"
+    tool = next(m for m in scripted_chat.seen[1][0] if m["role"] == "tool")  # type: ignore[attr-defined]
+    assert "JSON object" in tool["content"]
+    assert "exec_python" not in fake.names()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "start",
+    [
+        {"error": "run already finished"},
+        {"ok": False, "error": "3 failures in a row", "budget": BUDGET},
+    ],
+)
+async def test_run_that_cannot_start_makes_no_model_call(
+    start: dict[str, Any],
+) -> None:
+    def chat(_m: list[loop.Message], _t: list[dict[str, Any]]) -> Reply:
+        raise AssertionError("the model must not be called")
+
+    with pytest.raises(LoopError, match="cannot start"):
+        await run(FakeSession(check_spend=start), chat)
+
+
+@pytest.mark.anyio
 async def test_usage_failure_is_a_loop_error() -> None:
     fake = FakeSession(report_usage={"error": "run already finished"})
     with pytest.raises(LoopError, match="report_usage failed"):
@@ -462,6 +508,27 @@ def test_missing_usage_fails_clean(usage: Any) -> None:
             _,
         ),
         pytest.raises(LoopError, match="usage"),
+    ):
+        chat_once(url)
+
+
+@pytest.mark.parametrize(
+    ("usage", "tokens"),
+    [({"prompt_tokens": 8, "completion_tokens": 7}, 15), ({"x": 1}, 0)],
+)
+def test_refusal_carries_the_turn_s_tokens(usage: dict[str, int], tokens: int) -> None:
+    with (
+        serve(lambda _b: ok("", finish="content_filter", usage=usage)) as (url, _),
+        pytest.raises(Refused) as err,
+    ):
+        chat_once(url)
+    assert err.value.tokens == tokens
+
+
+def test_deeply_nested_response_fails_clean() -> None:
+    with (
+        serve(lambda _b: (200, "[" * 200_000)) as (url, _),
+        pytest.raises(LoopError, match="chat completion"),
     ):
         chat_once(url)
 
@@ -663,7 +730,7 @@ async def test_refusal_is_recorded_by_the_server(tmp_path: Path) -> None:
         with pytest.raises(Refused):
             await run_loop(
                 client,
-                scripted_chat(Refused("content_filter", "stopped")),
+                scripted_chat(Refused("content_filter", "stopped", tokens=40)),
                 max_turns=2,
                 system="s",
                 model="m",
@@ -672,6 +739,32 @@ async def test_refusal_is_recorded_by_the_server(tmp_path: Path) -> None:
     refusal = next(e for e in events if e["event"] == "refusal")
     assert refusal["category"] == "content_filter"
     assert refusal["model"] == "m"
+    names = [e["event"] for e in events]
+    assert names.index("usage") < names.index("refusal")
+    assert Ledger(run_dir / "ledger.jsonl", Limits(**LIMITS)).used()["tokens"] == 40
+
+
+def never_chat(_m: list[loop.Message], _t: list[dict[str, Any]]) -> Reply:
+    raise AssertionError("the model must not be called")
+
+
+@pytest.mark.anyio
+async def test_finished_run_makes_no_model_call(tmp_path: Path) -> None:
+    async with Client(build_server(write_run(tmp_path))) as client:
+        await client.call_tool("finish", {"summary": "done"})
+        with pytest.raises(LoopError, match="already finished"):
+            await run_loop(client, never_chat, max_turns=3, system="s", model="m")
+
+
+@pytest.mark.anyio
+async def test_failure_streak_makes_no_model_call(tmp_path: Path) -> None:
+    run_dir = write_run(tmp_path)
+    ledger = Ledger(run_dir / "ledger.jsonl", Limits(**LIMITS))
+    for i in range(3):
+        ledger.fail("dollars", "x", ref=f"r{i}")
+    async with Client(build_server(run_dir)) as client:
+        with pytest.raises(LoopError, match="cannot start"):
+            await run_loop(client, never_chat, max_turns=3, system="s", model="m")
 
 
 def test_local_editor_end_to_end(
@@ -682,7 +775,6 @@ def test_local_editor_end_to_end(
     from mcp_tiny_hf import save_tiny_model
 
     from astro_weights.mcp import sandbox
-    from astro_weights.mcp.budget import Ledger, Limits
 
     model = save_tiny_model(tmp_path / "model")
     limits = {"forward_passes": 5, "code_runs": 5, "tokens": 1000, "dollars": 0}

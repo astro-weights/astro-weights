@@ -8,6 +8,7 @@ reply's tool calls. It needs the ``mcp`` extra and never imports the server's in
 """
 
 import json
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from importlib import resources
@@ -52,12 +53,16 @@ class LoopError(RuntimeError):
 
 
 class Refused(Exception):
-    """The model refused the request; ``category`` and ``detail`` go to the record."""
+    """The model refused the request; ``category`` and ``detail`` go to the record.
 
-    def __init__(self, category: str, detail: str = "") -> None:
+    ``tokens`` is what the refused turn cost; it is reported before the refusal.
+    """
+
+    def __init__(self, category: str, detail: str = "", tokens: int = 0) -> None:
         super().__init__(f"{category}: {detail}" if detail else category)
         self.category = category
         self.detail = detail
+        self.tokens = tokens
 
 
 @dataclass(frozen=True)
@@ -151,7 +156,7 @@ class ToolBox:
         handle = out.get("handle")
         if name not in _JOB_TOOLS or not isinstance(handle, str):
             return out
-        deadline = anyio.current_time() + self.timeout_s
+        deadline = time.monotonic() + self.timeout_s
         done = await _poll(self.session, handle, self.poll_s, deadline)
         if done is None:
             return {"error": "job did not end in time", "handle": handle}
@@ -196,7 +201,7 @@ def _parse_calls(message: Message, turn: int) -> list[_Call]:
         text = args if isinstance(args, str) else json.dumps(args or {})
         try:
             parsed: object = json.loads(text or "{}")
-        except ValueError:
+        except (ValueError, RecursionError):  # deeply nested arguments
             parsed = None
         calls.append(_Call(call_id, fn["name"], text, parsed))
     return calls
@@ -267,6 +272,8 @@ async def run_loop(
     """
     box = await ToolBox.open(session, poll_s=poll_s, timeout_s=timeout_s)
     start = await _call(session, "check_spend", {"estimate": 0.0})
+    if start.get("ok") is not True:
+        raise LoopError(f"run cannot start: {json.dumps(start, default=str)[:500]}")
     messages: list[Message] = [
         {"role": "system", "content": system},
         {"role": "user", "content": _first_message(box, start.get("budget"))},
@@ -283,6 +290,8 @@ async def run_loop(
         try:
             reply = await anyio.to_thread.run_sync(chat_fn, messages, box.tools)
         except Refused as refusal:
+            if refusal.tokens > 0:  # the refused turn was billed all the same
+                await _report(box, refusal.tokens, turn, model)
             await _call(
                 session,
                 "report_refusal",

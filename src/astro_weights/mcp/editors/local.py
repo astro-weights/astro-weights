@@ -74,6 +74,13 @@ def _tokens(usage: object, seen: str) -> int:
     raise LoopError(f"response lacks usage token counts: {seen}")
 
 
+def _tokens_or_zero(usage: object) -> int:
+    try:
+        return _tokens(usage, "")
+    except LoopError:
+        return 0
+
+
 def make_chat(
     base_url: str, model: str, api_key: str | None, temperature: float
 ) -> ChatFn:
@@ -101,12 +108,12 @@ def make_chat(
             obj = json.loads(text)
             choice = obj["choices"][0]
             message = choice["message"]
-        except (ValueError, KeyError, IndexError, TypeError):
+        except (ValueError, RecursionError, KeyError, IndexError, TypeError):
             raise LoopError(f"response is not a chat completion: {seen}") from None
         if not isinstance(message, dict):
             raise LoopError(f"response has no message: {seen}")
         if choice.get("finish_reason") == "content_filter":
-            raise Refused("content_filter", seen)
+            raise Refused("content_filter", seen, _tokens_or_zero(obj.get("usage")))
         return Reply(message, _tokens(obj.get("usage"), seen))
 
     return chat
