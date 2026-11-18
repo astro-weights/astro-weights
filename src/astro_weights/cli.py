@@ -5,14 +5,14 @@ import json
 import math
 import secrets
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
 from safetensors import SafetensorError
 
 from astro_weights import __version__
-from astro_weights.edits import Edit, LowRankDelta, build_edit, load_recipe
+from astro_weights.edits import Edit, LowRankDelta, build_edit, compose, load_recipe
 from astro_weights.eval import (
     Record,
     check_headers,
@@ -24,6 +24,7 @@ from astro_weights.eval import (
     read_jsonl,
 )
 from astro_weights.export import (
+    load_peft,
     model_card,
     read_base_weight,
     read_peft,
@@ -229,6 +230,43 @@ def _build(
     return 0
 
 
+def _compose(
+    adapters: list[Path], out: Path, force: bool, as_json: bool, base_model: str | None
+) -> int:
+    for a in adapters:
+        if out.resolve().is_relative_to(a.resolve()):
+            return _error(f"-o {out} is the input adapter {a} or inside it")
+    if out.exists() and (not out.is_dir() or any(out.iterdir())) and not force:
+        return _error(f"{out} exists and is not empty; pass --force to overwrite")
+    edits = []
+    for a in adapters:
+        try:
+            e = load_peft(a)
+        except _ERRORS as err:
+            return _fail(a, err)
+        edits.append(e if base_model is None else replace(e, base_model=base_model))
+    try:
+        edit = compose(*edits)
+        save_peft(edit, out, overwrite=force)
+    except _ERRORS as e:
+        return _fail(out, e)
+    if as_json:
+        _emit(
+            {
+                "written": str(out),
+                "rank": edit.rank,
+                "modules": sorted(d.module for d in edit.deltas),
+                "sources": [str(a) for a in adapters],
+            }
+        )
+        return 0
+    print(
+        f"composed {len(adapters)} adapters: {len(edit.deltas)} modules, rank {edit.rank}"
+    )
+    print(f"wrote {out}")
+    return 0
+
+
 def _splice_merged(
     edit: Edit, base_model: Path, splice: Path, merged: Path, out_type: str
 ) -> tuple[str, list[str]]:
@@ -365,6 +403,18 @@ def _export(
     kind = out_type or "q8_0"
     try:
         text = model_card(edit, "adapter", card) if card is not None else None
+        if gguf is not None and arch is not None:
+            try:
+                from astro_weights.export.gguf import (
+                    _lora_tensor_names,
+                    save_lora_gguf,
+                )
+            except ImportError:
+                return _error("GGUF export needs: pip install 'astro-weights[gguf]'")
+            try:
+                _lora_tensor_names(edit, arch)  # refuse before anything is written
+            except ValueError as e:
+                return _error(str(e))
         if splice is not None and base_model is not None and merged is not None:
             try:
                 path, replaced = _splice_merged(edit, base_model, splice, merged, kind)
@@ -372,10 +422,6 @@ def _export(
                 return _error(str(e))
             written.append(path)
         if gguf is not None and arch is not None:
-            try:
-                from astro_weights.export.gguf import save_lora_gguf
-            except ImportError:
-                return _error("GGUF export needs: pip install 'astro-weights[gguf]'")
             save_lora_gguf(edit, gguf, arch, overwrite=force)
             written.append(str(gguf))
         if text is not None:
@@ -423,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
         "--version", action="version", version=f"astro-weights {__version__}"
     )
     sub = parser.add_subparsers(
-        dest="command", metavar="{build,eval,export,inspect,mcp}"
+        dest="command", metavar="{build,compose,eval,export,inspect,mcp}"
     )
     p = sub.add_parser("inspect", help="summarize and verify a saved PEFT adapter")
     p.add_argument("directory", metavar="DIR", type=Path, help="adapter directory")
@@ -475,6 +521,32 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="write into a non-empty DIR (other files, e.g. an old README.md, are kept)",
     )
+    p = sub.add_parser(
+        "compose", help="combine PEFT adapters on one base into one exact adapter"
+    )
+    p.add_argument(
+        "adapters", metavar="ADAPTER", type=Path, nargs="+", help="adapter directory"
+    )
+    p.add_argument(
+        "-o",
+        "--out",
+        metavar="OUT_DIR",
+        type=Path,
+        required=True,
+        help="combined adapter directory to write",
+    )
+    p.add_argument(
+        "--base-model",
+        metavar="NAME",
+        help="base model name to write, replacing each adapter's own "
+        "(for adapters that name one base differently)",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="write into a non-empty OUT_DIR (other files there are kept)",
+    )
+    _json_flag(p)
     p = sub.add_parser(
         "export",
         help="write a GGUF LoRA, a merged GGUF and/or model card for an adapter",
@@ -538,6 +610,10 @@ def main(argv: list[str] | None = None) -> int:
         return _build(
             args.recipe, args.base, args.out, args.card, args.force, args.json
         )
+    if args.command == "compose":
+        if len(args.adapters) < 2:
+            parser.error("compose needs at least two adapters")
+        return _compose(args.adapters, args.out, args.force, args.json, args.base_model)
     if args.command == "export":
         return _export(
             args.directory,

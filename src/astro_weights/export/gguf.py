@@ -16,7 +16,7 @@ import re
 import secrets
 import stat
 import struct
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -35,12 +35,24 @@ except ModuleNotFoundError as e:
 
 SUFFIXES = {
     "mlp.down_proj": "ffn_down",
+    "mlp.gate_proj": "ffn_gate",
+    "mlp.up_proj": "ffn_up",
+    "self_attn.k_proj": "attn_k",
     "self_attn.o_proj": "attn_output",
+    "self_attn.q_proj": "attn_q",
+    "self_attn.v_proj": "attn_v",
 }
 SUFFIX_A = ".lora_a"
 SUFFIX_B = ".lora_b"
 OUT_TYPES = {"q8_0": Q.Q8_0, "f16": Q.F16, "bf16": Q.BF16}
-_MODULE = re.compile(r"(?:^|\.)layers\.(\d+)\.(mlp\.down_proj|self_attn\.o_proj)$")
+_MODULE = re.compile(
+    r"(?:^|\.)layers\.(\d+)\.("
+    r"mlp\.(?:down|gate|up)_proj|self_attn\.[qkvo]_proj)$"
+)
+# Archs whose converter keeps HF q_proj/k_proj rows as they are; llama-family
+# converters reorder them, so an HF q/k delta would be wrong there.
+_QK_PLAIN_ARCHS = ("qwen2", "qwen3", "qwen3moe", "qwen35", "qwen35moe")
+_QK = re.compile(r"^blk\.\d+\.attn_[qk]\.weight$")
 _BLK = re.compile(r"blk\.(\d+)\.")
 _SAMPLE = 20
 _ADAPTER_TYPES = (Q.F32, Q.F16)
@@ -207,6 +219,25 @@ def gguf_tensor_name(module: str) -> str:
     return f"blk.{m.group(1)}.{SUFFIXES[m.group(2)]}.weight"
 
 
+def _check_qk_arch(arch: str, names: Iterable[str]) -> None:
+    """Refuse q/k tensors for an arch whose converter reorders their rows."""
+    if arch not in _QK_PLAIN_ARCHS and any(_QK.match(n) for n in names):
+        raise ValueError(
+            f"architecture {arch!r}: q/k rows are reordered by llama.cpp for this "
+            f"arch, so q_proj/k_proj deltas cannot be exported; supported for "
+            f"q_proj/k_proj: {', '.join(_QK_PLAIN_ARCHS)}"
+        )
+
+
+def _lora_tensor_names(edit: Edit, architecture: str) -> dict[str, str]:
+    """GGUF tensor name per module; ValueError if `save_lora_gguf` would refuse it."""
+    names = {d.module: gguf_tensor_name(d.module) for d in edit.deltas}
+    if len(set(names.values())) != len(names):
+        raise ValueError("two modules map to the same GGUF tensor")
+    _check_qk_arch(architecture, names.values())
+    return names
+
+
 def save_lora_gguf(
     edit: Edit, path: Path | str, architecture: str, *, overwrite: bool = False
 ) -> None:
@@ -214,9 +245,7 @@ def save_lora_gguf(
     out = Path(path)
     if out.exists() and not overwrite:
         raise FileExistsError(f"{out} exists; pass overwrite=True to replace it")
-    names = {d.module: gguf_tensor_name(d.module) for d in edit.deltas}
-    if len(set(names.values())) != len(names):
-        raise ValueError("two modules map to the same GGUF tensor")
+    names = _lora_tensor_names(edit, architecture)
     tmp = _make_tmp(out)
     try:
         writer = gguf.GGUFWriter(tmp, architecture)
@@ -368,6 +397,7 @@ def splice_gguf(
     missing = sorted(set(replace) - {t.name for t in reader.tensors})
     if missing:
         raise ValueError(f"tensors not in base: {missing}")
+    _check_qk_arch(arch, replace)
     _check_not_mtp(reader, arch, list(replace))
     arrays = {n: _as_float_array(n, v) for n, v in replace.items()}
 

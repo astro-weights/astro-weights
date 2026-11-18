@@ -91,10 +91,39 @@ def test_tensor_name_mapping() -> None:
     )
 
 
+@pytest.mark.parametrize("prefix", ["model.layers.3", "model.language_model.layers.3"])
+@pytest.mark.parametrize(
+    ("suffix", "name"),
+    [
+        ("self_attn.q_proj", "attn_q"),
+        ("self_attn.k_proj", "attn_k"),
+        ("self_attn.v_proj", "attn_v"),
+        ("self_attn.o_proj", "attn_output"),
+        ("mlp.gate_proj", "ffn_gate"),
+        ("mlp.up_proj", "ffn_up"),
+        ("mlp.down_proj", "ffn_down"),
+    ],
+)
+def test_all_projection_names(prefix: str, suffix: str, name: str) -> None:
+    assert gguf_tensor_name(f"{prefix}.{suffix}") == f"blk.3.{name}.weight"
+
+
+def test_projection_names_exist_in_gguf_py() -> None:
+    from gguf import MODEL_ARCH, MODEL_TENSOR, MODEL_TENSORS, TENSOR_NAMES
+
+    from astro_weights.export.gguf import SUFFIXES
+
+    want = {f"blk.{{bid}}.{v}" for v in SUFFIXES.values()}
+    have = {TENSOR_NAMES[t] for t in MODEL_TENSORS[MODEL_ARCH.QWEN35]}
+    assert want <= have
+    assert MODEL_TENSOR.ATTN_Q in MODEL_TENSORS[MODEL_ARCH.LLAMA]
+
+
 @pytest.mark.parametrize(
     "module",
     [
-        "model.layers.0.mlp.up_proj",
+        "model.layers.0.mlp.shared_expert",
+        "model.layers.0.self_attn.qkv_proj",
         "model.mlp.down_proj",
         "model.layers.x.mlp.down_proj",
     ],
@@ -130,7 +159,11 @@ def test_adapter_round_trip(tmp_path: Path) -> None:
 
 def test_adapter_unsupported_module_writes_nothing(tmp_path: Path) -> None:
     edit = Edit(
-        (LowRankDelta("model.layers.0.mlp.up_proj", np.ones((2, 1)), np.ones((1, 2))),),
+        (
+            LowRankDelta(
+                "model.layers.0.mlp.shared_expert", np.ones((2, 1)), np.ones((1, 2))
+            ),
+        ),
         "m",
     )
     with pytest.raises(ValueError, match="unsupported module"):
@@ -277,7 +310,11 @@ def test_save_tmp_file_not_deleted(tmp_path: Path) -> None:
     precious = tmp_path / "a.gguf.tmp"
     precious.write_bytes(b"precious")
     bad = Edit(
-        (LowRankDelta("model.layers.0.mlp.up_proj", np.ones((2, 1)), np.ones((1, 2))),),
+        (
+            LowRankDelta(
+                "model.layers.0.mlp.shared_expert", np.ones((2, 1)), np.ones((1, 2))
+            ),
+        ),
         "m",
     )
     with pytest.raises(ValueError, match="unsupported module"):
@@ -764,3 +801,99 @@ def test_big_endian_file_still_opens(tmp_path: Path) -> None:
     p.write_bytes(bytes(bad))
     with pytest.raises(ValueError, match="cannot fit"):
         _open(p)
+
+
+def test_adapter_round_trip_all_projections(tmp_path: Path) -> None:
+    rng = np.random.default_rng(5)
+    mods = {
+        "self_attn.q_proj": "attn_q",
+        "self_attn.k_proj": "attn_k",
+        "self_attn.v_proj": "attn_v",
+        "mlp.gate_proj": "ffn_gate",
+        "mlp.up_proj": "ffn_up",
+    }
+    deltas = tuple(
+        LowRankDelta(
+            f"model.layers.2.{m}",
+            rng.standard_normal((6, 2)),
+            rng.standard_normal((2, 4)),
+        )
+        for m in mods
+    )
+    save_lora_gguf(Edit(deltas, "m"), tmp_path / "a.gguf", "qwen35")
+    tensors, meta = read_lora_gguf(tmp_path / "a.gguf")
+    assert meta["alpha"] == 2.0
+    assert sorted(tensors) == sorted(f"blk.2.{n}.weight" for n in mods.values())
+    for d, n in zip(deltas, mods.values(), strict=True):
+        b, a = tensors[f"blk.2.{n}.weight"]
+        assert np.array_equal(b, d.B)
+        assert np.array_equal(a, d.A)
+
+
+@pytest.mark.parametrize("arch", ["qwen2", "qwen3", "qwen3moe", "qwen35", "qwen35moe"])
+@pytest.mark.parametrize("proj", ["q_proj", "k_proj"])
+def test_qk_allowed_for_plain_archs(tmp_path: Path, arch: str, proj: str) -> None:
+    edit = Edit(
+        (
+            LowRankDelta(
+                f"model.layers.0.self_attn.{proj}", np.ones((2, 1)), np.ones((1, 2))
+            ),
+        ),
+        "m",
+    )
+    save_lora_gguf(edit, tmp_path / "a.gguf", arch)
+    assert (tmp_path / "a.gguf").exists()
+
+
+@pytest.mark.parametrize("proj", ["q_proj", "k_proj"])
+def test_qk_refused_for_llama_lora(tmp_path: Path, proj: str) -> None:
+    edit = Edit(
+        (
+            LowRankDelta(
+                f"model.layers.0.self_attn.{proj}", np.ones((2, 1)), np.ones((1, 2))
+            ),
+        ),
+        "m",
+    )
+    with pytest.raises(
+        ValueError, match=r"'llama'.*q/k rows are reordered by llama\.cpp"
+    ):
+        save_lora_gguf(edit, tmp_path / "a.gguf", "llama")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_non_qk_allowed_for_llama(tmp_path: Path) -> None:
+    mods = [
+        "self_attn.v_proj",
+        "self_attn.o_proj",
+        "mlp.gate_proj",
+        "mlp.up_proj",
+        "mlp.down_proj",
+    ]
+    deltas = tuple(
+        LowRankDelta(f"model.layers.0.{m}", np.ones((2, 1)), np.ones((1, 2)))
+        for m in mods
+    )
+    save_lora_gguf(Edit(deltas, "m"), tmp_path / "a.gguf", "llama")
+    assert (tmp_path / "a.gguf").exists()
+
+
+@pytest.mark.parametrize("arch", ["llama", "qwen35"])
+def test_splice_qk_depends_on_base_arch(tmp_path: Path, arch: str) -> None:
+    base = tmp_path / "b.gguf"
+    w = GGUFWriter(base, arch)
+    w.add_block_count(2)
+    w.add_tensor("blk.0.attn_q.weight", np.zeros((8, 4), np.float32))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file(progress=False)
+    w.close()
+    new = np.ones((8, 4), np.float32)
+    out = tmp_path / "o.gguf"
+    if arch == "llama":
+        with pytest.raises(ValueError, match="q/k rows are reordered"):
+            splice_gguf(base, out, {"blk.0.attn_q.weight": new}, "f16")
+        assert not out.exists()
+    else:
+        splice_gguf(base, out, {"blk.0.attn_q.weight": new}, "f16")
+        assert out.exists()
