@@ -22,22 +22,25 @@ except ModuleNotFoundError as e:
 
 Want = Literal["hidden", "mlp", "attn", "logprobs"]
 _WANTS = ("hidden", "mlp", "attn", "logprobs")
-_LAYER = re.compile(r"(.*)\blayers\.(\d+)$")
+_LAYER = re.compile(r"model\.(?:language_model\.)?layers\.(\d+)")
 _TOP = 5
 
 
 def _layers(model: nn.Module) -> list[nn.Module]:
-    """The decoder layers in order, whether named `model.layers.N` or
-    `model.language_model.layers.N` (the largest `layers` group wins)."""
-    groups: dict[str, dict[int, nn.Module]] = defaultdict(dict)
+    """The decoder layers in order: `model.layers.N` or
+    `model.language_model.layers.N`, as the edit store names them. A vision
+    tower's layers are not decoder layers and are ignored."""
+    found: dict[int, nn.Module] = {}
     for name, module in model.named_modules():
         m = _LAYER.fullmatch(name)
         if m:
-            groups[m.group(1)][int(m.group(2))] = module
-    if not groups:
-        raise ValueError("no decoder layers (`layers.<int>`) found in the model")
-    best = max(groups.values(), key=len)
-    return [best[i] for i in sorted(best)]
+            found[int(m.group(1))] = module
+    if not found:
+        raise ValueError(
+            "no decoder layers found: expected `model.layers.N` or "
+            "`model.language_model.layers.N`"
+        )
+    return [found[i] for i in sorted(found)]
 
 
 def layer_count(model: nn.Module) -> int:
@@ -55,7 +58,10 @@ def _check(
     input_ids: Sequence[Sequence[int]],
     want: Collection[str],
     layers: Sequence[int],
+    last_tokens: int,
 ) -> None:
+    if last_tokens < 1:
+        raise ValueError(f"last_tokens must be at least 1, got {last_tokens}")
     if not input_ids or any(len(t) == 0 for t in input_ids):
         raise ValueError("input_ids must hold at least one non-empty text")
     unknown = sorted(set(want) - set(_WANTS))
@@ -79,34 +85,18 @@ def _mean_last(x: Any, last: int) -> np.ndarray:
     return out
 
 
-def capture(
-    model: nn.Module,
-    input_ids: Sequence[Sequence[int]],
-    *,
-    want: Collection[Want],
-    layers: Sequence[int] = (),
-    last_tokens: int = 36,
-) -> dict[str, np.ndarray]:
-    """Run each text through `model` and return what `want` asks for.
-
-    Keys: `hidden_L{l}` and `mlp_L{l}` (layer output; input of `down_proj`):
-    float32 `[n_texts, d]`, the mean over the last `last_tokens` positions.
-    `attn_L{l}_t{i}`: float32 `[heads, q, k]` for text `i` (full attention
-    layers only; the model runs with eager attention meanwhile).
-    `logprobs_top_ids` int64 `[n, last, 5]`, `logprobs_top` float32
-    `[n, last, 5]` and `logprobs_target` float32 `[n, last]`, aligned to the
-    start; positions a short text lacks hold -1 or NaN, and so does the final
-    position's target (it has no next token).
-    """
-    _check(model, input_ids, want, layers)
-    wanted = set(want)
-    blocks: list[Any] = _layers(model)
-    last = last_tokens
-    store: dict[str, list[np.ndarray]] = defaultdict(list)
-    attn: dict[str, np.ndarray] = {}
-    cur = {"i": 0}
-
-    hooks = []
+def _register(
+    blocks: list[Any],
+    layers: Sequence[int],
+    wanted: Collection[str],
+    last: int,
+    store: dict[str, list[np.ndarray]],
+    attn: dict[str, np.ndarray],
+    cur: dict[str, int],
+    hooks: list[Any],
+) -> None:
+    """Add the hooks `wanted` asks for to `hooks` as they are registered, so a
+    failure part way leaves the caller a list to remove."""
     for li in layers:
         layer = blocks[li]
         if "hidden" in wanted:
@@ -132,6 +122,35 @@ def capture(
 
             hooks.append(layer.self_attn.register_forward_hook(on_attn))
 
+
+def capture(
+    model: nn.Module,
+    input_ids: Sequence[Sequence[int]],
+    *,
+    want: Collection[Want],
+    layers: Sequence[int] = (),
+    last_tokens: int = 36,
+) -> dict[str, np.ndarray]:
+    """Run each text through `model` and return what `want` asks for.
+
+    Keys: `hidden_L{l}` and `mlp_L{l}` (layer output; input of `down_proj`):
+    float32 `[n_texts, d]`, the mean over the last `last_tokens` positions.
+    `attn_L{l}_t{i}`: float32 `[heads, q, k]` for text `i` (full attention
+    layers only; the model runs with eager attention meanwhile).
+    `logprobs_top_ids` int64 `[n, last, 5]`, `logprobs_top` float32
+    `[n, last, 5]` and `logprobs_target` float32 `[n, last]`, aligned to the
+    start; positions a short text lacks hold -1 or NaN, and so does the final
+    position's target (it has no next token).
+    """
+    _check(model, input_ids, want, layers, last_tokens)
+    wanted: set[str] = set(want)
+    blocks: list[Any] = _layers(model)
+    last = last_tokens
+    store: dict[str, list[np.ndarray]] = defaultdict(list)
+    attn: dict[str, np.ndarray] = {}
+    cur = {"i": 0}
+
+    hooks: list[Any] = []
     n = len(input_ids)
     top_ids = np.full((n, last, _TOP), -1, np.int64)
     top_vals = np.full((n, last, _TOP), np.nan, np.float32)
@@ -143,6 +162,7 @@ def capture(
     try:
         if swap:
             api.set_attn_implementation("eager")
+        _register(blocks, layers, wanted, last, store, attn, cur, hooks)
         with torch.no_grad():
             for i, text in enumerate(input_ids):
                 cur["i"] = i
@@ -156,8 +176,8 @@ def capture(
                     top_ids[i, :m] = t.cpu().numpy()
                     top_vals[i, :m] = v.cpu().numpy()
                     if m > 1:  # the last position has no next token
-                        rows = torch.arange(m - 1, device=device)
-                        target[i, : m - 1] = lp[rows, ids[0, -m + 1 :]].cpu().numpy()
+                        nxt = ids[0, -m + 1 :].to(lp.device)[:, None]
+                        target[i, : m - 1] = lp[:-1].gather(-1, nxt)[:, 0].cpu().numpy()
     finally:
         for h in hooks:
             h.remove()

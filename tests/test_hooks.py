@@ -68,14 +68,24 @@ def test_hidden_matches_manual_forward(
     for li in (0, 1):
         a = out[f"hidden_L{li}"]
         check(a, np.float32, (2, 32))
-    with torch.no_grad():
-        for i, text in enumerate(IDS):
-            hs = model(
-                input_ids=torch.tensor([text]), output_hidden_states=True
-            ).hidden_states
-            # hidden_states[l + 1] is layer l's output; the last entry is post-norm
-            ref = hs[1][0, -LAST:].float().mean(0).numpy()
-            np.testing.assert_allclose(out["hidden_L0"][i], ref, atol=1e-5)
+    modules = dict(model.named_modules())
+    for li in (0, 1):
+        name = next(
+            n
+            for n in modules
+            if n in (f"model.layers.{li}", f"model.language_model.layers.{li}")
+        )
+        got: list[Any] = []
+        h = modules[name].register_forward_hook(
+            lambda _m, _a, o, got=got: got.append(
+                (o[0] if isinstance(o, tuple) else o)[0, -LAST:].float().mean(0).numpy()
+            )
+        )
+        with torch.no_grad():
+            for text in IDS:
+                model(input_ids=torch.tensor([text]))
+        h.remove()
+        np.testing.assert_allclose(out[f"hidden_L{li}"], np.stack(got), atol=1e-5)
 
 
 def test_mlp_matches_manual_hook(tiny_qwen_text: Any) -> None:
@@ -116,7 +126,8 @@ def test_logprobs(tiny_llama: Any) -> None:
 
 
 def test_short_text_padding(tiny_llama: Any) -> None:
-    out = capture(tiny_llama, [[3, 4, 5]], want=["logprobs"], last_tokens=6)
+    text = [3, 4, 5]
+    out = capture(tiny_llama, [text], want=["logprobs"], last_tokens=6)
     ids, top, tgt = (
         out["logprobs_top_ids"][0],
         out["logprobs_top"][0],
@@ -124,10 +135,18 @@ def test_short_text_padding(tiny_llama: Any) -> None:
     )
     assert (ids[:3] >= 0).all()
     assert (ids[3:] == -1).all()
-    assert np.isfinite(top[:3]).all()
     assert np.isnan(top[3:]).all()
-    assert np.isfinite(tgt[:2]).all()
     assert np.isnan(tgt[2:]).all()
+    with torch.no_grad():
+        full = torch.log_softmax(
+            tiny_llama(input_ids=torch.tensor([text])).logits[0].float(), -1
+        )
+    ref = full.topk(5, -1)
+    np.testing.assert_allclose(top[:3], ref.values.numpy(), atol=1e-5)
+    assert (ids[:3] == ref.indices.numpy()).all()
+    np.testing.assert_allclose(
+        tgt[:2], [full[0, 4].item(), full[1, 5].item()], atol=1e-5
+    )
 
 
 def test_single_token_text(tiny_llama: Any) -> None:
@@ -158,6 +177,8 @@ def test_attn_linear_layer_raises(tiny_qwen_text: Any) -> None:
         ({"input_ids": IDS, "want": ["hidden"], "layers": [2]}, "out of range"),
         ({"input_ids": IDS, "want": ["hidden"], "layers": [-1]}, "out of range"),
         ({"input_ids": IDS, "want": ["bogus"], "layers": [0]}, "unknown want"),
+        ({"input_ids": IDS, "want": ["hidden"], "last_tokens": 0}, "at least 1"),
+        ({"input_ids": IDS, "want": ["logprobs"], "last_tokens": -2}, "at least 1"),
     ],
 )
 def test_value_errors(tiny_llama: Any, kwargs: dict[str, Any], match: str) -> None:
@@ -210,3 +231,29 @@ def test_save_tiny_model_round_trip(tmp_path: Path) -> None:
     store = EditStore(tmp_path / "run", d)
     assert store.names
     assert all(n.endswith(".weight") for n in store.names)
+
+
+def test_registration_failure_leaves_no_hooks(tiny_llama: Any) -> None:
+    tiny_llama.model.layers[1].mlp = torch.nn.Identity()  # no down_proj
+    before = count_hooks(tiny_llama)
+    with pytest.raises(AttributeError):
+        capture(tiny_llama, IDS, want=["hidden", "mlp"], layers=[0, 1])
+    assert count_hooks(tiny_llama) == before
+
+
+def test_vision_tower_layers_are_not_decoder_layers(tiny_llama: Any) -> None:
+    vision = torch.nn.Module()
+    vision.layers = torch.nn.ModuleList([torch.nn.Linear(2, 2) for _ in range(4)])
+    tiny_llama.model.vision = vision  # `model.vision.layers.N`, more than the LM has
+    assert layer_count(tiny_llama) == 2
+    with pytest.raises(ValueError, match="out of range"):
+        capture(tiny_llama, IDS, want=["hidden"], layers=[3])
+
+
+@pytest.mark.skipif(not HAS_TORCH, reason="needs the hf extra")
+def test_no_decoder_layers_in_a_renamed_model() -> None:
+    holder = torch.nn.Module()
+    holder.decoder = torch.nn.Module()
+    holder.decoder.layers = torch.nn.ModuleList([torch.nn.Linear(2, 2)])
+    with pytest.raises(ValueError, match="no decoder layers"):
+        layer_count(holder)
