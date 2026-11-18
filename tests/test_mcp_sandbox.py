@@ -891,10 +891,12 @@ def test_linux_old_bwrap_compat_still_sandboxes(
     # real bwrap, the strict probe forced to fail as on bwrap < 0.8
     monkeypatch.setattr(sandbox, "_detect", lambda: (None, OLD_BWRAP))
     sandbox._detect_nested_userns.cache_clear()
+    secret = work.parent / "secret.txt"
+    secret.write_text("x", encoding="utf-8")
     code = (
         "import ctypes, os\n"
         "libc = ctypes.CDLL(None, use_errno=True)\n"
-        "print('home', os.path.exists('/home'))\n"
+        f"print('secret', os.path.exists({str(secret)!r}))\n"
         "print('nested', libc.unshare(0x10000000) == 0)"
     )
     argv = [sys.executable, "-I", "-S", "-c", code]
@@ -903,4 +905,6 @@ def test_linux_old_bwrap_compat_still_sandboxes(
     assert "--unshare-all" in cmd
     r = _run(cmd, work)
     # the protection given up: the child can create a user namespace
-    assert r.stdout.split() == ["home", "False", "nested", "True"], r.stdout + r.stderr
+    assert r.stdout.split() == ["secret", "False", "nested", "True"], (
+        r.stdout + r.stderr
+    )
