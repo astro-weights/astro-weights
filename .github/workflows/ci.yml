@@ -196,6 +196,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv run pytest -m "not gpu" -n auto
+      # 0.2.0 exit criterion: scripted editor run on tiny model passes on macOS (core run above skips these: no mcp).
+      - if: runner.os == 'macOS'
+        run: uv run --extra hf --extra mcp pytest -m "not gpu" -n auto tests/test_mcp_scripted.py tests/test_mcp_run.py tests/test_mcp_sandbox.py
 
   zizmor:
     runs-on: ubuntu-latest
