@@ -203,9 +203,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"error": str(exc), "step": exc.index, "result": exc.result}))
         return 1
     except Exception as exc:  # noqa: BLE001 - the server did not start or died
-        while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-            exc = exc.exceptions[0]
-        print(f"error: could not run the server: {exc!r}", file=sys.stderr)
+        err: BaseException = exc
+        while isinstance(err, BaseExceptionGroup) and err.exceptions:
+            err = err.exceptions[0]
+        print(f"error: could not run the server: {err!r}", file=sys.stderr)
         return 2
     handles = list(dict.fromkeys(r["handle"] for r in results if r.get("handle")))
     outputs = [
