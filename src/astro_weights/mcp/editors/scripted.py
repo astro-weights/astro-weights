@@ -66,8 +66,15 @@ _TEXT = "The quick brown fox jumps over the lazy dog."
 
 
 def _forward(arm: str) -> dict[str, Any]:
-    request = {"kind": "teacher_forced", "arm": arm, "texts": [_TEXT]}
-    return {"request": {**request, "return": ["hidden_L0"]}}
+    request = {
+        "kind": "teacher_forced",
+        "texts": [_TEXT],
+        "return": ["hidden"],
+        "layers": [0],
+        "last_tokens": 4,
+        "arm": arm,
+    }
+    return {"request": request}
 
 
 def _compare(handles: Sequence[str]) -> dict[str, Any]:
