@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write  # Sigstore signing for the provenance attestation
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -21,10 +23,26 @@ jobs:
       - name: Check tag matches version
         run: test "v$(uv version --short)" = "$GITHUB_REF_NAME"
       - run: uv build
+      # SLSA build provenance for wheel and sdist: `gh attestation verify <file> -R astro-weights/astro-weights`.
+      - id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      # Same bundle as a release asset (Scorecard Signed-Releases looks for *.intoto.jsonl). Kept out of dist/: PyPI takes only wheel and sdist.
+      - name: Provenance bundle
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          mkdir provenance
+          jq -c . "$BUNDLE" > "provenance/astro_weights-${GITHUB_REF_NAME#v}.intoto.jsonl"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: provenance
+          path: provenance/
 
   testpypi:
     needs: build
@@ -71,6 +89,10 @@ jobs:
         with:
           name: dist
           path: dist/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: provenance
+          path: provenance/
       - name: Notes from CHANGELOG.md
         run: |
           v="${GITHUB_REF_NAME#v}"
@@ -87,5 +109,5 @@ jobs:
         run: |
           pre=()  # PEP 440 pre-release (a/b/rc): mark prerelease, never Latest
           [[ "${GITHUB_REF_NAME#v}" =~ [0-9](a|b|rc)[0-9]+ ]] && pre=(--prerelease --latest=false)
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md "${pre[@]}"
+          gh release create "$GITHUB_REF_NAME" dist/* provenance/* --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md "${pre[@]}"
           gh release edit "$GITHUB_REF_NAME" --draft=false
