@@ -1,4 +1,4 @@
-"""Stdio MCP server: four tools over the handle store, budget ledger and run record.
+"""Stdio MCP server: seven tools over the handle store, budget ledger and run record.
 
 Needs the ``mcp`` extra. All state lives under the run directory (``run.json``,
 ``jobs/``, ``ledger.jsonl``, ``record.jsonl``, ``edits/``, ``kernel/``); one store,
@@ -8,9 +8,16 @@ numpy kernel (one per server process) that saves edits through the edit store, a
 ``forward_pass`` runs the model in this process (``hf`` extra) on base or edited
 weights. A forward request is checked in the tool call; a bad one is refused for
 free, with no job. Its arrays are read from the kernel with ``forward_result``.
+
+Three tools are for editors, not the model: ``report_usage`` (tokens and dollars
+spent, always recorded), ``check_spend`` (free, no write) and ``report_refusal``.
+The ledger (or the sum of the ``usage`` events) is the source of truth for spend: a
+``report_usage`` after ``finish`` is still recorded, so ``finish.budget`` can leave
+out that last turn.
 """
 
 import argparse
+import math
 import secrets
 import sys
 import threading
@@ -28,7 +35,13 @@ except ModuleNotFoundError as e:
     ) from e
 
 from astro_weights.mcp import forward
-from astro_weights.mcp.budget import BudgetExceeded, Kind, Ledger, TooManyFailures
+from astro_weights.mcp.budget import (
+    MAX_FAILURES,
+    BudgetExceeded,
+    Kind,
+    Ledger,
+    TooManyFailures,
+)
 from astro_weights.mcp.edit_store import EditStore
 from astro_weights.mcp.handles import HandleStore, UnknownHandle
 from astro_weights.mcp.jobs import Executor, JobRunner, RunConfig, load_run_config
@@ -40,6 +53,24 @@ __all__ = ["build_server", "main"]
 
 _BUDGET_KIND: dict[str, Kind] = {"exec": "code_runs", "forward": "forward_passes"}
 _SUMMARY_MAX = 2000
+_MODEL_MAX = 200
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _money(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:  # an int too large for a float
+        return False
+
+
+def _model(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() != "" and len(value) <= _MODEL_MAX
 
 
 def _open_record(run_dir: Path, cfg: RunConfig) -> RunRecord:
@@ -240,6 +271,73 @@ def build_server(
             record.finish(budget=budget, outcome="finished")
             finished = True
         return {"state": "finished", "budget": budget}
+
+    @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
+    def report_usage(
+        tokens: Any, dollars: Any, turn: Any, model: Any
+    ) -> dict[str, Any]:
+        """Record one model turn's usage; for editors, not meant for the model.
+
+        ``tokens`` and ``turn`` are ints >= 0, ``dollars`` a finite number >= 0,
+        ``model`` a non-empty string of at most 200 characters (checked here, not
+        coerced). Always recorded, even past a limit and after finish; a usage
+        recorded after finish is not in ``finish.budget``, so read spend from the
+        ledger. ``over`` lists the kinds now past their limit.
+        """
+        if not (_count(tokens) and _money(dollars) and _count(turn) and _model(model)):
+            return {"error": "bad usage report"}
+        with finish_lock:
+            if tokens > 0:
+                ledger.charge("tokens", tokens, ref=f"turn {turn}")
+            if dollars > 0:
+                ledger.charge("dollars", dollars, ref=f"turn {turn}")
+            record.event(
+                "usage", turn=turn, model=model, tokens=tokens, dollars=dollars
+            )
+            budget = ledger.to_json()
+        over = [k for k, used in budget["used"].items() if used > budget["limits"][k]]
+        return {"budget": budget, "over": over}
+
+    @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
+    def check_spend(estimate: Any) -> dict[str, Any]:
+        """Check that an estimated dollar cost fits the budget; for editors, not meant for the model.
+
+        Free: writes nothing. An estimate of 0 is ok even when dollars are already
+        past the limit (a local fallback turn costs nothing), but not while the
+        dollars failure streak blocks work.
+        """
+        if not _money(estimate):
+            return {"error": "estimate must be a finite number >= 0"}
+        with finish_lock:
+            if finished:
+                return {"error": "run already finished"}
+            budget = ledger.to_json()
+            try:
+                if estimate > 0:  # check() takes amounts > 0
+                    ledger.check("dollars", estimate)
+                elif budget["streaks"]["dollars"] >= MAX_FAILURES:
+                    raise TooManyFailures("dollars", budget["streaks"]["dollars"])
+            except (BudgetExceeded, TooManyFailures) as exc:
+                return {"ok": False, "error": str(exc), "budget": budget}
+        return {"ok": True, "budget": budget}
+
+    @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
+    def report_refusal(category: Any, model: Any, detail: Any = "") -> dict[str, Any]:
+        """Record that a model refused; for editors, not meant for the model."""
+        if not (
+            isinstance(category, str) and _model(model) and isinstance(detail, str)
+        ):
+            return {"error": "bad refusal report"}
+        with finish_lock:
+            if finished:
+                return {"error": "run already finished"}
+            try:
+                record.refusal(
+                    category=category, editor=cfg.editor, model=model, detail=detail
+                )
+            except ValueError as exc:
+                return {"error": str(exc)}
+        return {"recorded": True}
 
     return server
 
