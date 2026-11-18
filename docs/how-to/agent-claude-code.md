@@ -12,7 +12,7 @@ pip install --pre "astro-weights[mcp,hf]"
 
 ## 1. Make a run directory
 
-The server reads `RUN_DIR/run.json`. `model_dir` is read relative to `RUN_DIR`. Every key is listed in [Reference: CLI](../reference/cli.md#mcp).
+The server reads `RUN_DIR/run.json`. `model_dir` is read relative to `RUN_DIR`. Every key is listed in [Reference: CLI](../reference/cli.md#mcp). Tools, result keys and refusals: [Reference: MCP server](../reference/mcp-server.md).
 
 ```json
 {

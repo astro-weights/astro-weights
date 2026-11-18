@@ -20,7 +20,7 @@ This page is built from the docstrings on every docs build.
 
 ## Agent over MCP
 
-New in 0.2 (pre-release). Server modules need the `mcp` extra.
+New in 0.2 (pre-release). Server modules need the `mcp` extra. Tools, `run.json` and result keys: [MCP server](mcp-server.md).
 
 ::: astro_weights.mcp.server
 

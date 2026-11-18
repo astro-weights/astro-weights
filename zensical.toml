@@ -30,7 +30,7 @@ nav = [
     "how-to/agent-codex.md",
     "how-to/agent-sdk.md",
   ] },
-  { "Reference" = ["reference/index.md", "reference/cli.md"] },
+  { "Reference" = ["reference/index.md", "reference/cli.md", "reference/mcp-server.md"] },
   { "Explanation" = ["explanation/why-lora.md", "explanation/agent-budgets-and-sandbox.md"] },
   { "Blog" = "https://astro-weights.dev/blog/" },
 ]
