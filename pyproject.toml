@@ -1,6 +1,6 @@
 [project]
 name = "astro-weights"
-version = "0.1.3"
+version = "0.1.4"
 description = "Agent-driven weight edits. Democratizing AI for all."
 readme = "README.md"
 license = "Apache-2.0"

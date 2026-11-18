@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.1.4] - 2026-11-17
+
+### Added
+
+- Added `astro_weights.edits.compose` and `astro-weights compose`, which combine several LoRA adapters on the same base model into one exact adapter; GGUF export now also maps `v_proj`, `gate_proj` and `up_proj` for every architecture, and `q_proj` and `k_proj` for the Qwen architectures whose llama.cpp conversion leaves them as they are.
+
 ## [0.1.3] - 2026-11-17
 
 ### Added
@@ -148,6 +154,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.1.4]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.4
 [0.1.3]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.3
 [0.1.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.2
 [0.1.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.1.1
