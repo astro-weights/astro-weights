@@ -89,12 +89,16 @@ def _edit_table(edit: Edit) -> list[str]:
 def _how_to_load(edit: Edit, kind: str) -> list[str]:
     if kind == "gguf":
         return ["```bash", 'llama-cli -m model.gguf -p "Hello"', "```"]
+    # PEFT matches keys by full module name: `language_model.layers` adapters come
+    # from the multimodal class, and a CausalLM load would match none (silent no-op)
+    multimodal = any(".language_model." in d.module for d in edit.deltas)
+    cls = "AutoModelForImageTextToText" if multimodal else "AutoModelForCausalLM"
     return [
         "```python",
         "from peft import PeftModel",
-        "from transformers import AutoModelForCausalLM",
+        f"from transformers import {cls}",
         "",
-        f"base = AutoModelForCausalLM.from_pretrained({_q(edit.base_model)})",
+        f"base = {cls}.from_pretrained({_q(edit.base_model)})",
         'model = PeftModel.from_pretrained(base, "path/to/this/adapter")',
         "```",
     ]
