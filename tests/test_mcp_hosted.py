@@ -5,7 +5,7 @@ import math
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import pytest
 
@@ -211,7 +211,7 @@ def refusal(category: str | None = "cyber") -> Message:
 
 
 class FakeStream:
-    def __init__(self, message: Message) -> None:
+    def __init__(self, message: "Message | MidStream") -> None:
         self.message = message
 
     def __enter__(self) -> Self:
@@ -221,11 +221,22 @@ class FakeStream:
         return None
 
     def get_final_message(self) -> Message:
+        if isinstance(self.message, MidStream):
+            raise self.message.error
         return self.message
 
 
+class MidStream:
+    """A stream that breaks off after the request went out."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+
 class FakeMessages:
-    def __init__(self, replies: list[Message | Exception], count: int) -> None:
+    def __init__(
+        self, replies: list[Message | MidStream | Exception], count: int
+    ) -> None:
         self.replies = replies
         self.count = count
         self.counted: list[dict[str, Any]] = []
@@ -247,7 +258,9 @@ class FakeMessages:
 
 
 class FakeClient:
-    def __init__(self, *replies: Message | Exception, count: int = 1000) -> None:
+    def __init__(
+        self, *replies: Message | MidStream | Exception, count: int = 1000
+    ) -> None:
         self.messages = FakeMessages(list(replies), count)
 
 
@@ -399,9 +412,9 @@ async def test_each_turn_is_capped_counted_and_charged(tmp_path: Path) -> None:
     assert ledger["dollars"] == pytest.approx(cost)
     assert ledger["tokens"] == 2110
     usage = [e for e in events(run_dir) if e["event"] == "usage"]
-    charged = [(e["turn"], e["model"], e["tokens"]) for e in usage if e["tokens"]]
+    charged = [(e["turn"], e["model"], e["tokens"]) for e in usage]
     assert charged == [(1, MODEL, 1040), (2, MODEL, 1070)]
-    assert [e["dollars"] for e in usage if e["tokens"]] == pytest.approx(
+    assert [e["dollars"] for e in usage] == pytest.approx(
         [turn_cost(MODEL, usage1), turn_cost(MODEL, usage2)]
     )
     # each request: the four model tools, streamed, auto-cached, capped output
@@ -469,10 +482,9 @@ async def test_refusal_hands_the_run_to_the_local_model(tmp_path: Path) -> None:
     assert [(e["category"], e["model"], e["detail"]) for e in refused] == [
         ("cyber", MODEL, "declined")
     ]
+    # one usage event per model call, each with the model that made it
     charged = [
-        (e["turn"], e["model"], e["tokens"])
-        for e in record
-        if e["event"] == "usage" and e["tokens"]
+        (e["turn"], e["model"], e["tokens"]) for e in record if e["event"] == "usage"
     ]
     assert charged == [(1, MODEL, 110), (2, MODEL, 305), (2, "local-m", 30)]
     names = [e["event"] for e in record]
@@ -558,6 +570,9 @@ async def test_text_only_turn_and_local_turns_after_handoff(tmp_path: Path) -> N
     out = await drive(run_dir, client, local)
     assert out["outcome"] == "finished"
     assert out["turns"] == 3
+    assert out["tokens"] == 110 + 305 + 8 + 30
+    usage = [(e["turn"], e["model"]) for e in events(run_dir) if e["event"] == "usage"]
+    assert usage == [(1, MODEL), (2, MODEL), (2, "local-m"), (3, "local-m")]
     # the nudge after the text-only turn reached Claude in the same user turn
     assert client.messages.sent[1]["messages"][-1]["role"] == "user"
     assert len(local.seen) == 2
@@ -576,6 +591,22 @@ async def test_api_errors_fail_without_the_key(tmp_path: Path) -> None:
         await drive(write_run(tmp_path / "two"), client)
     assert "token count failed" in str(info.value)
     assert KEY not in str(info.value)
+
+
+@pytest.mark.anyio
+async def test_stream_that_breaks_off_is_charged_the_bound(tmp_path: Path) -> None:
+    run_dir = write_run(tmp_path)
+    broken = MidStream(httpx2.ReadError(f"reset while reading {KEY}"))
+    with pytest.raises(LoopError) as info:
+        await drive(run_dir, FakeClient(broken, count=2000), max_output=500)
+    assert "broke off: ReadError" in str(info.value)
+    assert KEY not in str(info.value)
+    prompt = math.ceil(2000 * 1.05)
+    ledger = used(run_dir)
+    assert ledger["dollars"] == pytest.approx(max_cost(MODEL, prompt, 500))
+    assert ledger["tokens"] == prompt + 500
+    (usage,) = [e for e in events(run_dir) if e["event"] == "usage"]
+    assert usage["model"] == MODEL
 
 
 @pytest.mark.anyio
@@ -639,6 +670,15 @@ def test_server_child_gets_no_api_key(
     assert KEY not in json.dumps(env)
     assert params.args[-1] == str(tmp_path)
     assert _server_params(tmp_path, unsafe=True).args[-1] == "--unsafe-kernel"
+
+
+def test_key_and_client_stay_out_of_repr() -> None:
+    client = FakeClient()
+    spec = _EditorSpec(_Hosted(client, MODEL, 10, KEY), None, "")
+    for obj in (spec, spec.hosted, spec.build(cast("Any", SimpleNamespace()))):
+        assert KEY not in repr(obj)
+        assert "FakeClient" not in repr(obj)
+    assert MODEL in repr(spec)
 
 
 def test_client_gets_the_key_explicitly(monkeypatch: pytest.MonkeyPatch) -> None:

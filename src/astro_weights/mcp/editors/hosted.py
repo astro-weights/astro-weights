@@ -72,6 +72,10 @@ _DETAIL_CHARS = 500
 Raw = dict[int, tuple[tuple[str, ...], list[dict[str, Any]]]]
 
 
+class _Sent(LoopError):
+    """The call failed after the request went out: it may have been billed."""
+
+
 class _Stop(Exception):
     """End the run now; the editor calls ``finish`` with ``summary``."""
 
@@ -170,15 +174,18 @@ def _tokens(usage: dict[str, Any]) -> int:
 class _Hosted:
     """One Claude model behind the Messages API."""
 
-    client: Any
+    client: Any = field(repr=False)
     model: str
     max_output: int
-    key: str
-    raw: Raw = field(default_factory=dict)
+    key: str = field(repr=False)
+    raw: Raw = field(default_factory=dict, repr=False)
+
+    def _text(self, what: str, exc: BaseException) -> str:
+        text = _scrub(f"{what}: {type(exc).__name__}: {exc}", self.key)
+        return text[:_DETAIL_CHARS]
 
     def _fail(self, what: str, exc: BaseException) -> LoopError:
-        text = _scrub(f"{what}: {type(exc).__name__}: {exc}", self.key)
-        return LoopError(text[:_DETAIL_CHARS])
+        return LoopError(self._text(what, exc))
 
     def request(
         self, messages: list[Message], tools: list[dict[str, Any]]
@@ -191,14 +198,15 @@ class _Hosted:
             "tools": _tools(tools),
         }
 
-    def bound(self, req: dict[str, Any]) -> float:
-        """Upper bound on the dollars of sending ``req``, from a token count."""
+    def bound(self, req: dict[str, Any]) -> tuple[int, float]:
+        """Upper bounds on the tokens and dollars of sending ``req``, from a token count."""
         try:
             counted = int(self.client.messages.count_tokens(**req).input_tokens)
         except anthropic.AnthropicError as exc:
             raise self._fail("token count failed", exc) from None
         prompt = math.ceil(counted * _COUNT_MARGIN)
-        return prices.max_cost(self.model, prompt, self.max_output)
+        dollars = prices.max_cost(self.model, prompt, self.max_output)
+        return prompt + self.max_output, dollars
 
     def call(self, req: dict[str, Any]) -> Any:
         """Send ``req`` (streamed, so a large ``max_tokens`` cannot time out)."""
@@ -211,6 +219,8 @@ class _Hosted:
                 return stream.get_final_message()
         except anthropic.AnthropicError as exc:
             raise self._fail("Messages API call failed", exc) from None
+        except Exception as exc:  # noqa: BLE001 - transport error mid-stream
+            raise _Sent(self._text("Messages API call broke off", exc)) from None
 
 
 @dataclass
@@ -218,7 +228,7 @@ class _Editor:
     """The loop's chat function: Claude first, the local model after a refusal.
 
     It reports every turn's usage to the ledger itself, with the model that made
-    it, and returns ``Reply.tokens`` 0, so ``run_loop`` adds a zero usage event.
+    it and its dollars, and hands ``run_loop`` that report in ``Reply.usage``.
     """
 
     hosted: _Hosted
@@ -233,7 +243,7 @@ class _Editor:
     def _tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         return anyio.from_thread.run(_call, self.session, name, args)
 
-    def _report(self, tokens: int, dollars: float, model: str) -> None:
+    def _report(self, tokens: int, dollars: float, model: str) -> dict[str, Any]:
         self.tokens += tokens
         self.dollars += dollars
         out = self._tool(
@@ -246,6 +256,7 @@ class _Editor:
             f"turn {self.turns}: {model} {tokens} tokens ${dollars:.4f}",
             file=sys.stderr,
         )
+        return out
 
     def _refusal(self, refusal: Refused, model: str) -> None:
         args = {"category": refusal.category, "model": model, "detail": refusal.detail}
@@ -275,19 +286,24 @@ class _Editor:
     ) -> Reply:
         hosted = self.hosted
         req = hosted.request(messages, tools)
-        estimate = hosted.bound(req)
+        most_tokens, estimate = hosted.bound(req)
         spend = self._tool("check_spend", {"estimate": estimate})
         if spend.get("ok") is False:
             raise _Stop("dollar_cap", "dollar cap")
         if spend.get("ok") is not True:
             raise LoopError(f"check_spend failed: {json.dumps(spend, default=str)}")
-        reply = hosted.call(req)
+        try:
+            reply = hosted.call(req)
+        except _Sent:  # usage unknown: charge the bound, never less than was spent
+            self._report(most_tokens, estimate, hosted.model)
+            raise
         usage = reply.usage.to_dict(mode="json")
         try:
             cost = prices.turn_cost(hosted.model, usage)
         except ValueError as exc:
             raise LoopError(f"cannot price the reply: {exc}") from None
-        self._report(_tokens(usage), cost, hosted.model)
+        tokens = _tokens(usage)
+        report = self._report(tokens, cost, hosted.model)
         if reply.stop_reason == "refusal":  # dropped: nothing goes to the messages
             details = reply.stop_details
             category = getattr(details, "category", None) or "refusal"
@@ -299,7 +315,7 @@ class _Editor:
         message = _as_openai(content)
         ids = tuple(c["id"] for c in message.get("tool_calls", []))
         hosted.raw[len(messages)] = (ids, content)  # where run_loop appends it
-        return Reply(message, 0)
+        return Reply(message, tokens, report)
 
     def _local_turn(
         self, messages: list[Message], tools: list[dict[str, Any]]
@@ -312,8 +328,8 @@ class _Editor:
                 self._report(refusal.tokens, 0.0, self.fallback_model)
             self._refusal(refusal, self.fallback_model)
             raise _Stop("refused", "refused") from None
-        self._report(reply.tokens, 0.0, self.fallback_model)
-        return Reply(reply.message, 0)
+        report = self._report(reply.tokens, 0.0, self.fallback_model)
+        return Reply(reply.message, reply.tokens, report)
 
 
 @dataclass(frozen=True)
