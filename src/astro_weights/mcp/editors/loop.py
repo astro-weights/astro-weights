@@ -67,10 +67,15 @@ class Refused(Exception):
 
 @dataclass(frozen=True)
 class Reply:
-    """One assistant turn: its message and the tokens it used (prompt plus output)."""
+    """One assistant turn: its message and the tokens it used (prompt plus output).
+
+    ``usage`` is the ``report_usage`` result when the chat function already reported
+    the turn itself (with its dollars and model); ``run_loop`` then does not.
+    """
 
     message: Message
     tokens: int
+    usage: dict[str, Any] | None = None
 
 
 ChatFn = Callable[[list[Message], list[dict[str, Any]]], Reply]
@@ -264,7 +269,8 @@ async def run_loop(
     """Drive the server with a model until it calls ``finish`` or a stop rule fires.
 
     Each turn ``chat_fn(messages, tools)`` makes one model call; its tokens go to the
-    ledger (dollars 0) before its tool calls run, in order. Stops when the model calls
+    ledger (dollars 0) before its tool calls run, in order, unless the reply carries
+    its own ``usage`` report. Stops when the model calls
     ``finish``, when ``max_turns`` is reached or the budget is spent (the loop calls
     ``finish`` itself), or when the model twice in a row replies without a tool call
     (one nudge first). A ``Refused`` from ``chat_fn`` is sent to the record, then
@@ -304,7 +310,9 @@ async def run_loop(
             raise
         state["turns"] = turn
         state["tokens"] += reply.tokens
-        usage = await _report(box, reply.tokens, turn, model)
+        usage = reply.usage
+        if usage is None:
+            usage = await _report(box, reply.tokens, turn, model)
         state["budget"] = usage.get("budget")
         if on_turn is not None:
             on_turn(turn, reply)
