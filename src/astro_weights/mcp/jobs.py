@@ -30,6 +30,8 @@ _LIMIT_KEYS = ("forward_passes", "code_runs", "tokens", "dollars")
 _DEVICES = ("auto", "cpu", "cuda")
 _DTYPES = ("auto", "float32", "bfloat16", "float16")
 _FORWARD_KEYS = ("device", "dtype", "max_new_tokens")
+_EXPORT_KEYS = ("rank", "max_rel_residual", "base_gguf", "gguf_out_type")
+_GGUF_OUT_TYPES = ("q8_0", "f16", "bf16")
 MAX_NEW_TOKENS = 32768
 
 
@@ -47,6 +49,10 @@ class RunConfig:
     forward_device: str = "auto"
     forward_dtype: str = "auto"
     forward_max_new_tokens: int = 4096
+    export_rank: int = 8
+    export_max_rel_residual: float = 0.05
+    export_base_gguf: Path | None = None
+    export_gguf_out_type: str = "q8_0"
 
 
 def load_run_config(run_dir: Path) -> RunConfig:
@@ -82,6 +88,7 @@ def load_run_config(run_dir: Path) -> RunConfig:
         raise ValueError(f"{path}: model_dir must be a non-empty string or absent")
     timeout_s, mem_gib = _kernel_config(path, raw.get("kernel", {}))
     device, dtype, max_new = _forward_config(path, raw.get("forward", {}))
+    rank, residual, base_gguf, out_type = _export_config(path, raw.get("export", {}))
     return RunConfig(
         seed,
         editor,
@@ -93,6 +100,10 @@ def load_run_config(run_dir: Path) -> RunConfig:
         device,
         dtype,
         max_new,
+        rank,
+        residual,
+        None if base_gguf is None else Path(run_dir) / base_gguf,
+        out_type,
     )
 
 
@@ -131,6 +142,38 @@ def _forward_config(path: Path, forward: Any) -> tuple[str, str, int]:
             f"{path}: forward.max_new_tokens must be an int from 1 to {MAX_NEW_TOKENS}"
         )
     return str(device), str(dtype), max_new
+
+
+def _export_config(path: Path, export: Any) -> tuple[int, float, str | None, str]:
+    """(rank, max_rel_residual, base_gguf, gguf_out_type) from the optional ``export`` object."""
+    if not isinstance(export, dict) or not set(export) <= set(_EXPORT_KEYS):
+        raise ValueError(
+            f"{path}: export must be an object with keys from {list(_EXPORT_KEYS)}"
+        )
+    rank = export.get("rank", 8)
+    residual = export.get("max_rel_residual", 0.05)
+    base_gguf = export.get("base_gguf")
+    out_type = export.get("gguf_out_type", "q8_0")
+    if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
+        raise ValueError(f"{path}: export.rank must be an int >= 1")
+    number = isinstance(residual, int | float) and not isinstance(residual, bool)
+    try:
+        finite = number and math.isfinite(residual)
+    except OverflowError:  # an int too large for a float
+        finite = False
+    if not finite or residual < 0:
+        raise ValueError(
+            f"{path}: export.max_rel_residual must be a finite number >= 0"
+        )
+    if not (base_gguf is None or (isinstance(base_gguf, str) and base_gguf)):
+        raise ValueError(
+            f"{path}: export.base_gguf must be a non-empty string or absent"
+        )
+    if out_type not in _GGUF_OUT_TYPES:
+        raise ValueError(
+            f"{path}: export.gguf_out_type must be one of {list(_GGUF_OUT_TYPES)}"
+        )
+    return rank, float(residual), base_gguf, str(out_type)
 
 
 class JobRunner:

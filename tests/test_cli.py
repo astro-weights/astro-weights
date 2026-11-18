@@ -701,6 +701,76 @@ def test_mcp_forwards_unsafe_kernel_flag(
     assert seen == [[str(tmp_path), *forwarded]]
 
 
+# run
+
+RUN_TOML = """\
+[run]
+dir = "run"
+seed = 1
+
+[limits]
+forward_passes = 1
+code_runs = 1
+tokens = 10
+
+[editor]
+kind = "scripted"
+"""
+
+
+def _run_config(tmp_path: Path, text: str = RUN_TOML) -> Path:
+    path = tmp_path / "run.toml"
+    path.write_text(text)
+    return path
+
+
+def test_run_without_extra_exits_2_with_hint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, "mcp", None)
+    for name in list(sys.modules):
+        if name.startswith("astro_weights.mcp.editors."):
+            monkeypatch.delitem(sys.modules, name)
+    assert main(["run", str(_run_config(tmp_path))]) == 2
+    assert "pip install 'astro-weights[mcp]'" in capsys.readouterr().err
+    assert not (tmp_path / "run").exists()
+
+
+def test_run_status_needs_no_extra(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, "mcp", None)
+    path = _run_config(tmp_path)
+    assert main(["run", str(path), "--status", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "not_started"
+    assert main(["run", str(path), "--status"]) == 0
+    assert "state: not_started" in capsys.readouterr().out
+
+
+def test_run_bad_config_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _run_config(tmp_path, RUN_TOML.replace("seed = 1", "seed = 'x'"))
+    assert main(["run", str(path)]) == 2
+    out = capsys.readouterr()
+    assert "[run] seed must be an int" in out.err
+    assert out.out == ""
+    assert main(["run", str(tmp_path / "missing.toml"), "--status", "--json"]) == 2
+    out = capsys.readouterr()
+    assert "not found" in out.err
+    assert out.out == ""
+
+
+def test_run_refuses_an_existing_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _run_config(tmp_path)
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / "ledger.jsonl").write_text("")
+    assert main(["run", str(path)]) == 2
+    assert "pass --resume" in capsys.readouterr().err
+
+
 # export --splice
 
 SPLICE_MODULE = "model.layers.1.mlp.down_proj"
