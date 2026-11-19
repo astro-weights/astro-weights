@@ -34,7 +34,8 @@ blk.3.ffn_down.weight
 (32, 1) (1, 96) 1.0
 ```
 
-- Only `mlp.down_proj` (`ffn_down`) and `self_attn.o_proj` (`attn_output`) map to GGUF names; other modules raise `ValueError`. The last `layers.<N>` in the name gives the block number.
+- Seven module types map to GGUF names: `mlp.down_proj` (`ffn_down`), `mlp.gate_proj` (`ffn_gate`), `mlp.up_proj` (`ffn_up`), `self_attn.q_proj` (`attn_q`), `self_attn.k_proj` (`attn_k`), `self_attn.v_proj` (`attn_v`) and `self_attn.o_proj` (`attn_output`). Other modules raise `ValueError`. The last `layers.<N>` in the name gives the block number.
+- `q_proj` and `k_proj` deltas export only for architectures whose converter keeps their rows in Hugging Face order: `qwen2`, `qwen3`, `qwen3moe`, `qwen35` and `qwen35moe`. For any other architecture, for example `llama`, llama.cpp reorders those rows, so the export raises `ValueError`.
 - `architecture` (the third argument) is written to `general.architecture`.
 - Alpha equals the edit rank, so the LoRA scale is 1. `read_lora_gguf` returns the raw factors without the scale applied: delta = `(alpha / rank) * B @ A`.
 - An existing file raises `FileExistsError` unless `overwrite=True`. The writer writes a temp file next to the target, then renames it.
