@@ -179,6 +179,7 @@ class _Hosted:
     max_output: int
     key: str = field(repr=False)
     raw: Raw = field(default_factory=dict, repr=False)
+    price: prices.Price | None = None  # set by --price; else the table
 
     def _text(self, what: str, exc: BaseException) -> str:
         text = _scrub(f"{what}: {type(exc).__name__}: {exc}", self.key)
@@ -205,7 +206,7 @@ class _Hosted:
         except anthropic.AnthropicError as exc:
             raise self._fail("token count failed", exc) from None
         prompt = math.ceil(counted * _COUNT_MARGIN)
-        dollars = prices.max_cost(self.model, prompt, self.max_output)
+        dollars = prices.max_cost(self.model, prompt, self.max_output, self.price)
         return prompt + self.max_output, dollars
 
     def call(self, req: dict[str, Any]) -> Any:
@@ -300,7 +301,7 @@ class _Editor:
             raise
         usage = reply.usage.to_dict(mode="json")
         try:
-            cost = prices.turn_cost(hosted.model, usage)
+            cost = prices.turn_cost(hosted.model, usage, hosted.price)
         except ValueError as exc:
             raise LoopError(f"cannot price the reply: {exc}") from None
         tokens = _tokens(usage)
@@ -411,6 +412,13 @@ def _dollars(text: str) -> float:
     return x
 
 
+def _price(text: str) -> prices.Price:
+    try:
+        return prices.parse_price(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m astro_weights.mcp.editors.hosted")
     p.add_argument("run_dir", metavar="RUN_DIR", type=Path, help="run directory")
@@ -422,6 +430,12 @@ def _parser() -> argparse.ArgumentParser:
         type=_dollars,
         default=20.0,
         help="refuse a run.json whose dollar limit is above this (default 20)",
+    )
+    p.add_argument(
+        "--price",
+        type=_price,
+        help=f"{prices.PRICE_FORMAT}, dollars per million tokens, for a model the "
+        "built-in table does not know (overrides the table)",
     )
     p.add_argument("--max-turns", type=_positive_int, default=40)
     p.add_argument("--max-output-tokens", type=_positive_int, default=16_000)
@@ -458,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("give --fallback-base-url and --fallback-model, or --no-fallback")
     try:
         cfg = load_run_config(args.run_dir)
-        prices.price(args.model)
+        prices.price(args.model, given=args.price)
     except ValueError as exc:
         return _fail(str(exc))
     limit = cfg.limits.dollars
@@ -478,7 +492,9 @@ def main(argv: list[str] | None = None) -> int:
             fallback = make_chat(args.fallback_base_url, args.fallback_model, None, 0.0)
         except ValueError as exc:
             return _fail(str(exc))
-    hosted = _Hosted(_client(key), args.model, args.max_output_tokens, key)
+    hosted = _Hosted(
+        _client(key), args.model, args.max_output_tokens, key, price=args.price
+    )
     spec = _EditorSpec(hosted, fallback, args.fallback_model or "")
     try:
         summary = anyio.run(

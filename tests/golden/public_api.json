@@ -104,11 +104,13 @@
  },
  "astro_weights.mcp.editors.prices": {
   "PRICES": null,
+  "PRICE_FORMAT": null,
   "Price": "(input: float, cache_write_5m: float, cache_write_1h: float, cache_read: float, output: float) -> None",
   "US_GEO": null,
-  "max_cost": "(model: str, prompt_tokens: int, max_output_tokens: int) -> float",
-  "price": "(model: str, prompt_tokens: int = 0) -> astro_weights.mcp.editors.prices.Price",
-  "turn_cost": "(model: str, usage: collections.abc.Mapping[str, Any]) -> float"
+  "max_cost": "(model: str, prompt_tokens: int, max_output_tokens: int, given: astro_weights.mcp.editors.prices.Price | None = None) -> float",
+  "parse_price": "(text: str) -> astro_weights.mcp.editors.prices.Price",
+  "price": "(model: str, prompt_tokens: int = 0, given: astro_weights.mcp.editors.prices.Price | None = None) -> astro_weights.mcp.editors.prices.Price",
+  "turn_cost": "(model: str, usage: collections.abc.Mapping[str, Any], given: astro_weights.mcp.editors.prices.Price | None = None) -> float"
  },
  "astro_weights.mcp.editors.scripted": {
   "DEFAULT_SCRIPT": null,

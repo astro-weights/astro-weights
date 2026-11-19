@@ -97,7 +97,8 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 | | `api_key_env` | the name of an environment variable | no key |
 | | `max_turns` | int >= 1 | 40 |
 | | `temperature` | number >= 0 | 0.0 |
-| `hosted` | `model` | a model id in `astro_weights.mcp.editors.prices.PRICES` | required |
+| `hosted` | `model` | a model id in `astro_weights.mcp.editors.prices.PRICES`, or any id with `price` | required |
+| | `price` | `"input,cache_write_5m,cache_write_1h,cache_read,output"`, dollars per million tokens; overrides the table | the table's price |
 | | `max_output_tokens` | int >= 1 | 16000 |
 | | `max_turns` | int >= 1 | 40 |
 | | `fallback_base_url`, `fallback_model` | non-empty string | give both, or `no_fallback = true` |
