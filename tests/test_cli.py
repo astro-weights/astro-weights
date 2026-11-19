@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -309,7 +310,9 @@ def test_export_gguf_needs_arch(
     assert "--arch" in capsys.readouterr().err
 
 
-def test_export_gguf_roundtrip(adapter: Path, tmp_path: Path) -> None:
+def test_export_gguf_roundtrip(
+    adapter: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     pytest.importorskip("gguf")
     from astro_weights.export.gguf import read_lora_gguf
 
@@ -322,7 +325,12 @@ def test_export_gguf_roundtrip(adapter: Path, tmp_path: Path) -> None:
     b, a = tensors["blk.1.ffn_down.weight"]
     np.testing.assert_allclose(b @ a, edit.deltas[0].dense(), atol=1e-6)
     assert main(argv) == 2  # exists
+    capsys.readouterr()
+    assert main([*argv, "--force", "--json"]) == 0
+    sha = hashlib.sha256(out.read_bytes()).hexdigest()
+    assert json.loads(capsys.readouterr().out)["sha256"] == {str(out): sha}
     assert main([*argv, "--force"]) == 0
+    assert capsys.readouterr().out.strip() == f"wrote {out}  sha256 {sha}"
 
 
 def test_export_gguf_missing_package(
@@ -881,6 +889,7 @@ def test_splice_round_trip(
     got = json.loads(capsys.readouterr().out)
     assert got == {
         "written": [str(sp.out)],
+        "sha256": {str(sp.out): hashlib.sha256(sp.out.read_bytes()).hexdigest()},
         "replaced": [SPLICE_NAME],
         "out_type": out_type,
     }
