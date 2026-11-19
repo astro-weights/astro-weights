@@ -830,7 +830,9 @@ def test_adapter_round_trip_all_projections(tmp_path: Path) -> None:
         assert np.array_equal(a, d.A)
 
 
-@pytest.mark.parametrize("arch", ["qwen2", "qwen3", "qwen3moe", "qwen35", "qwen35moe"])
+@pytest.mark.parametrize(
+    "arch", ["gemma3", "gemma4", "qwen2", "qwen3", "qwen3moe", "qwen35", "qwen35moe"]
+)
 @pytest.mark.parametrize("proj", ["q_proj", "k_proj"])
 def test_qk_allowed_for_plain_archs(tmp_path: Path, arch: str, proj: str) -> None:
     edit = Edit(
@@ -845,8 +847,9 @@ def test_qk_allowed_for_plain_archs(tmp_path: Path, arch: str, proj: str) -> Non
     assert (tmp_path / "a.gguf").exists()
 
 
+@pytest.mark.parametrize("arch", ["llama", "granite"])
 @pytest.mark.parametrize("proj", ["q_proj", "k_proj"])
-def test_qk_refused_for_llama_lora(tmp_path: Path, proj: str) -> None:
+def test_qk_refused_for_llama_lora(tmp_path: Path, proj: str, arch: str) -> None:
     edit = Edit(
         (
             LowRankDelta(
@@ -856,9 +859,9 @@ def test_qk_refused_for_llama_lora(tmp_path: Path, proj: str) -> None:
         "m",
     )
     with pytest.raises(
-        ValueError, match=r"'llama'.*q/k rows are reordered by llama\.cpp"
+        ValueError, match=rf"'{arch}'.*q/k rows are reordered by llama\.cpp"
     ):
-        save_lora_gguf(edit, tmp_path / "a.gguf", "llama")
+        save_lora_gguf(edit, tmp_path / "a.gguf", arch)
     assert list(tmp_path.iterdir()) == []
 
 

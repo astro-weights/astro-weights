@@ -35,7 +35,8 @@ blk.3.ffn_down.weight
 ```
 
 - Seven module types map to GGUF names: `mlp.down_proj` (`ffn_down`), `mlp.gate_proj` (`ffn_gate`), `mlp.up_proj` (`ffn_up`), `self_attn.q_proj` (`attn_q`), `self_attn.k_proj` (`attn_k`), `self_attn.v_proj` (`attn_v`) and `self_attn.o_proj` (`attn_output`). Other modules raise `ValueError`. The last `layers.<N>` in the name gives the block number.
-- `q_proj` and `k_proj` deltas export only for architectures whose converter keeps their rows in Hugging Face order: `qwen2`, `qwen3`, `qwen3moe`, `qwen35` and `qwen35moe`. For any other architecture, for example `llama`, llama.cpp reorders those rows, so the export raises `ValueError`.
+- `q_proj` and `k_proj` deltas export only for architectures whose converter keeps their rows in Hugging Face order: `gemma3`, `gemma4`, `qwen2`, `qwen3`, `qwen3moe`, `qwen35` and `qwen35moe`. For any other architecture, for example `llama`, llama.cpp reorders those rows, so the export raises `ValueError`.
+- Gemma 4 models with `num_kv_shared_layers` in their config (the E2B and E4B models, for example) reuse keys and values from earlier layers in their last layers. In transformers those layers have no `k_proj` or `v_proj`, so an edit to them has no module to apply to; edit `q_proj`, `o_proj` or the MLP there instead.
 - `architecture` (the third argument) is written to `general.architecture`.
 - Alpha equals the edit rank, so the LoRA scale is 1. `read_lora_gguf` returns the raw factors without the scale applied: delta = `(alpha / rank) * B @ A`.
 - An existing file raises `FileExistsError` unless `overwrite=True`. The writer writes a temp file next to the target, then renames it.

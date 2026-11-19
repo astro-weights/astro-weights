@@ -50,8 +50,17 @@ _MODULE = re.compile(
     r"mlp\.(?:down|gate|up)_proj|self_attn\.[qkvo]_proj)$"
 )
 # Archs whose converter keeps HF q_proj/k_proj rows as they are; llama-family
-# converters reorder them, so an HF q/k delta would be wrong there.
-_QK_PLAIN_ARCHS = ("qwen2", "qwen3", "qwen3moe", "qwen35", "qwen35moe")
+# converters (LlamaModel.permute, e.g. llama, granite) reorder them, so an HF q/k
+# delta would be wrong there. Gemma 3/4 converters (Gemma3Model) do not permute.
+_QK_PLAIN_ARCHS = (
+    "gemma3",
+    "gemma4",
+    "qwen2",
+    "qwen3",
+    "qwen3moe",
+    "qwen35",
+    "qwen35moe",
+)
 _QK = re.compile(r"^blk\.\d+\.attn_[qk]\.weight$")
 _BLK = re.compile(r"blk\.(\d+)\.")
 _SAMPLE = 20
