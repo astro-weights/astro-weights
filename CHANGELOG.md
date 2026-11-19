@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [0.2.1] - 2026-11-18
 
+### Added
+
+- `forward_pass` runs on Apple GPUs: `forward.device` accepts `mps`, and `auto` now picks `mps` on a Mac without CUDA, where it used to pick the CPU. (Merged just before the `v0.2.1` tag, so it shipped in 0.2.1 but was missing from these notes at release.)
+
 ### Fixed
 
 - The run record's `start` line now fills `library_commit`: the git commit of a `pip install git+...` install, or of an editable checkout (with `-dirty` when it has uncommitted changes). A wheel installed from PyPI carries no commit, so there it stays `null`: `library_version` names the release, and the release's `v` tag names the commit.
