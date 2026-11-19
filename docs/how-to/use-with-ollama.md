@@ -24,7 +24,7 @@ wrote OUT.gguf
 
 - Each edited tensor is the base weight read from `HF_DIR` plus the adapter's delta, stored as `--out-type`: `q8_0` (default), `f16` or `bf16`. Every other tensor is copied as raw bytes from `BASE.gguf` and keeps its type, so a quantized base stays quantized. Metadata is copied too.
 - `q8_0` needs a tensor whose row length is a multiple of 32. Any other length is an error (exit 2) and writes no file; use `--out-type f16` there.
-- Only `mlp.down_proj` and `self_attn.o_proj` modules map to GGUF tensors; see [How-to: export GGUF and a model card](export-gguf.md).
+- Only the `mlp` (`down_proj`, `gate_proj`, `up_proj`) and `self_attn` (`q_proj`, `k_proj`, `v_proj`, `o_proj`) modules map to GGUF tensors, and `q_proj`/`k_proj` only for Qwen architectures; see [How-to: export GGUF and a model card](export-gguf.md).
 - When the adapter records base weight hashes, a weight in `HF_DIR` that does not match is an error (`wrong base model?`), and nothing is written.
 - An existing `OUT.gguf` is refused unless `--force` is given. `OUT.gguf` cannot be `BASE.gguf`, cannot sit inside `ADAPTER`, and its directory must exist.
 - The merged file is verified against `BASE.gguf` before it is moved into place. A failed check leaves no file.
