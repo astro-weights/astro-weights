@@ -1,4 +1,5 @@
 import builtins
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -52,6 +53,16 @@ def test_grade_math() -> None:
     assert not grade_math("3", r"\boxed{4}")
     assert not grade_math("3", "no box")
     assert grade_math("1,000", r"\boxed{1000}", strip_commas=True)
+
+
+def test_grade_math_in_worker_threads() -> None:
+    # math_verify's signal timeouts raise off the main thread; that once read as wrong
+    pytest.importorskip("math_verify")
+    with ThreadPoolExecutor(2) as pool:
+        ok = pool.submit(grade_math, "1/2", r"\boxed{\frac{1}{2}}")
+        bad = pool.submit(grade_math, "3", r"\boxed{4}")
+        assert ok.result()
+        assert not bad.result()
 
 
 def test_grade_math_missing_dep(monkeypatch: pytest.MonkeyPatch) -> None:
