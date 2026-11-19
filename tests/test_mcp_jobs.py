@@ -187,6 +187,8 @@ def test_run_config_forward(tmp_path: Path) -> None:
         "auto",
         4096,
     )
+    mps = load_run_config(write_run(tmp_path, forward={"device": "mps"}))
+    assert mps.forward_device == "mps"
     forward = {"device": "cuda", "dtype": "bfloat16", "max_new_tokens": 32768}
     cfg = load_run_config(write_run(tmp_path, forward=forward))
     assert (cfg.forward_device, cfg.forward_dtype, cfg.forward_max_new_tokens) == (

@@ -320,6 +320,13 @@ def _import_hf() -> tuple[Any, Any]:
     return torch, transformers
 
 
+def _auto_device(torch: Any) -> str:
+    """cuda if present, else Apple mps, else cpu."""
+    if torch.cuda.is_available():
+        return "cuda"
+    return "mps" if torch.backends.mps.is_available() else "cpu"
+
+
 class ForwardBackend:
     """The HF model behind ``forward_pass``; one per server, jobs run one at a time."""
 
@@ -413,7 +420,7 @@ class ForwardBackend:
         torch, transformers = _import_hf()
         device = self._device
         if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = _auto_device(torch)
         dtype = self._dtype if self._dtype == "auto" else getattr(torch, self._dtype)
         tok = transformers.AutoTokenizer.from_pretrained(
             self.model_dir, local_files_only=True

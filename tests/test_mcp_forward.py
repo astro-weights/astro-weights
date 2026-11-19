@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -999,3 +1000,48 @@ async def test_check_failure_is_a_free_refusal(tmp_path: Path) -> None:
     events = RunRecord.open(run_dir / "record.jsonl").read()
     assert events[-1]["category"] == "forward_check"
     assert not list((run_dir / "jobs").iterdir())
+
+
+@pytest.mark.parametrize(
+    ("cuda", "mps", "want"),
+    [(True, True, "cuda"), (False, True, "mps"), (False, False, "cpu")],
+)
+def test_auto_device_prefers_cuda_then_mps(cuda: bool, mps: bool, want: str) -> None:
+    fake = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: cuda),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps)),
+    )
+    assert forward._auto_device(fake) == want
+
+
+@needs_hf
+def test_mps_matches_cpu(tiny: Path, tmp_path: Path) -> None:
+    """Same tiny model and edit on cpu and mps: arrays close, greedy texts equal."""
+    import torch
+
+    if not torch.backends.mps.is_available():
+        pytest.skip("needs an Apple GPU (mps)")
+    got = {}
+    for device in ("cpu", "mps"):
+        store = EditStore(tmp_path / device, tiny)
+        save_edit(store, T0, 0.2)
+        b = ForwardBackend(tiny, store, device=device)
+        res = {
+            arm: arrays(run(b, {**TF, "arm": arm}, tmp_path)[1])
+            for arm in ("base", "edited")
+        }
+        res["generate"] = run(b, GEN, tmp_path)[0]["arms"]
+        assert next(b._model.parameters()).device.type == device
+        got[device] = res
+    cpu, mps = got["cpu"], got["mps"]
+    assert mps["generate"] == cpu["generate"]
+    assert not np.array_equal(cpu["edited"]["hidden_l0"], cpu["base"]["hidden_l0"])
+    for arm in ("base", "edited"):
+        assert sorted(mps[arm]) == sorted(cpu[arm])
+        for key, want in cpu[arm].items():
+            if want.dtype == np.int64:
+                np.testing.assert_array_equal(mps[arm][key], want, err_msg=key)
+            else:
+                np.testing.assert_allclose(
+                    mps[arm][key], want, rtol=1e-4, atol=1e-4, err_msg=key
+                )

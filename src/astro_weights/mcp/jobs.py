@@ -27,7 +27,7 @@ __all__ = ["JobRunner", "RunConfig", "load_run_config"]
 
 Executor = Callable[[dict[str, Any]], dict[str, Any]]
 _LIMIT_KEYS = ("forward_passes", "code_runs", "tokens", "dollars")
-_DEVICES = ("auto", "cpu", "cuda")
+_DEVICES = ("auto", "cpu", "cuda", "mps")
 _DTYPES = ("auto", "float32", "bfloat16", "float16")
 _FORWARD_KEYS = ("device", "dtype", "max_new_tokens")
 _EXPORT_KEYS = ("rank", "max_rel_residual", "base_gguf", "gguf_out_type")
