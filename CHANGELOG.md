@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.2.2] - 2026-11-19
+
+### Added
+
+- GGUF export and splice accept `q_proj` and `k_proj` deltas for Gemma 3 and Gemma 4 models (`gemma3`, `gemma4`), whose llama.cpp converter keeps those rows in Hugging Face order.
+- The hosted editor knows the prices of Claude Fable 5.2, 5.1 and 5, Claude Mythos 5.2, 5.1 and 5, Claude Opus 4.5 and Claude Sonnet 4.5, and takes a price for any other model id from `[editor] price` in the run config (or `--price`), so a new model works without waiting for a release.
+
+### Fixed
+
+- `grade_math` called from a worker thread now grades the answer; before, `math_verify`'s signal-based timeout raised there and every answer was marked wrong.
+
 ## [0.2.1] - 2026-11-18
 
 ### Added
@@ -210,6 +221,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.2.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.2
 [0.2.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.1
 [0.2.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.0
 [0.2.0a1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.0a1
