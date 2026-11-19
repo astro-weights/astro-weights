@@ -37,7 +37,8 @@ fallback_model = "MODEL"
 ```
 
 - `dollars`: the run's dollar cap. Default 20.0 for the hosted editor. Set your own; it must be above 0, since a hosted run needs a dollar budget.
-- `model`: a Claude model id with a price in `astro_weights.mcp.editors.prices.PRICES` ([Reference](../reference/index.md)). Any other id is refused before the run starts.
+- `model`: a Claude model id. The built-in table `astro_weights.mcp.editors.prices.PRICES` ([Reference](../reference/index.md)) prices every current model on the Claude API. For an id it does not know, add `price` (next item); without one, the run is refused before it starts.
+- `price` (optional): the model's prices as one string, `"input,cache_write_5m,cache_write_1h,cache_read,output"`, in US dollars per million tokens, for example `price = "4,5,8,0.2,20"`. It replaces the table's price for every prompt length. On the editor's own command line it is `--price`.
 - `max_output_tokens` (default 16000) and `max_turns` (default 40).
 - `fallback_base_url` and `fallback_model`: the OpenAI-compatible server and model that take over after a refusal; set it up as in [How-to: run the agent on a local model](agent-local-model.md#1-start-a-model-server-with-tool-calls-on). Or `no_fallback = true` to end the run on a refusal. One of the two is required.
 
@@ -53,7 +54,7 @@ astro-weights run hosted.toml
 
 - Before each call the editor counts the prompt's tokens, adds 5%, and prices that prompt plus `max_output_tokens` at the model's price. If that bound could take the run past `dollars`, the call is not made and the run finishes with outcome `dollar_cap`.
 - After each call its tokens and dollars go to the ledger. A stream that breaks off mid-call is charged the full bound, since tokens may have been billed.
-- Prices come from the [Claude pricing page](https://platform.claude.com/docs/en/about-claude/pricing); the read date is in the `prices` module docstring. Check your own bill; the ledger is an estimate from that table.
+- The built-in prices come from the [Claude pricing page](https://platform.claude.com/docs/en/about-claude/pricing), read 2026-11-19: first-party Claude API, standard speed, global inference. Batch, fast mode and cloud-platform prices are not covered. A `price` you give is used as is. Check your own bill; the ledger is an estimate.
 
 ## Refusals
 

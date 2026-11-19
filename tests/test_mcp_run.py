@@ -226,6 +226,20 @@ def test_local_options_become_flags(tmp_path: Path) -> None:
     assert spec.editor_argv()[1:] == ["--base-url", "http://x", "--model", "m"]
 
 
+def test_hosted_price_for_an_unknown_model_becomes_a_flag(tmp_path: Path) -> None:
+    editor = {**HOSTED, "model": "claude-new", "price": "1,2,3,0.1,5"}
+    spec = load_config(write_config(tmp_path, editor=editor))
+    assert spec.editor_argv()[1:] == [
+        "--model",
+        "claude-new",
+        "--price",
+        "1,2,3,0.1,5",
+        "--no-fallback",
+        "--max-dollars",
+        "20.0",
+    ]
+
+
 def test_hosted_dollars_default_to_20_and_cap_the_editor(tmp_path: Path) -> None:
     editor = {
         "kind": "hosted",
@@ -302,6 +316,8 @@ BAD: list[tuple[dict[str, Any], str]] = [
     ({"editor": {**HOSTED, "fallback_model": "m"}}, r"no_fallback takes no"),
     ({"editor": {**HOSTED, "no_fallback": "yes"}}, r"no_fallback must be true or"),
     ({"editor": {**HOSTED, "model": "gpt-9"}}, r"no price for model 'gpt-9'"),
+    ({"editor": {**HOSTED, "price": "1,2,3"}}, r"\[editor\] price must be"),
+    ({"editor": {**HOSTED, "price": 4}}, r"\[editor\] price must be a non-empty"),
     ({"editor": HOSTED, "limits": {"dollars": 0}}, r"dollars must be > 0"),
     ({"editor": {**HOSTED, "max_output_tokens": 0}}, r"max_output_tokens must be"),
     ({"kernel": {"timeout_s": 0}}, r"kernel.timeout_s must be a positive number"),

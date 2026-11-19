@@ -3,15 +3,26 @@
 Prices are US dollars per million tokens on the first-party Claude API at standard
 speed, global inference. Source: https://platform.claude.com/docs/en/about-claude/pricing
 (model pricing, prompt caching, long context and data residency sections), read
-2026-11-17. A model not listed here has no price, and the hosted editor refuses to
-start with it. Standard library only.
+2026-11-19. A model not listed here has no price: give one with ``parse_price`` (the
+hosted editor's ``--price``, the run config's ``[editor] price``), or the hosted
+editor refuses to start with it. Standard library only.
 """
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["PRICES", "US_GEO", "Price", "max_cost", "price", "turn_cost"]
+__all__ = [
+    "PRICES",
+    "PRICE_FORMAT",
+    "US_GEO",
+    "Price",
+    "max_cost",
+    "parse_price",
+    "price",
+    "turn_cost",
+]
 
 
 @dataclass(frozen=True)
@@ -27,14 +38,22 @@ class Price:
 
 
 PRICES: dict[str, Price] = {
+    "claude-fable-5-2": Price(8, 10, 16, 0.20, 40),
+    "claude-mythos-5-2": Price(8, 10, 16, 0.20, 40),
+    "claude-fable-5-1": Price(10, 12.50, 20, 0.25, 50),
+    "claude-mythos-5-1": Price(10, 12.50, 20, 0.25, 50),
+    "claude-fable-5": Price(10, 12.50, 20, 1, 50),
+    "claude-mythos-5": Price(10, 12.50, 20, 1, 50),
     "claude-opus-5-5": Price(4, 5, 8, 0.20, 20),
     "claude-opus-5": Price(5, 6.25, 10, 0.50, 25),
     "claude-opus-4-8": Price(5, 6.25, 10, 0.50, 25),
     "claude-opus-4-7": Price(5, 6.25, 10, 0.50, 25),
     "claude-opus-4-6": Price(5, 6.25, 10, 0.50, 25),
+    "claude-opus-4-5": Price(5, 6.25, 10, 0.50, 25),
     "claude-sonnet-5-5": Price(2, 2.50, 4, 0.10, 10),
     "claude-sonnet-5": Price(2, 2.50, 4, 0.20, 10),
     "claude-sonnet-4-6": Price(3, 3.75, 6, 0.30, 15),
+    "claude-sonnet-4-5": Price(3, 3.75, 6, 0.30, 15),
     "claude-haiku-5-5": Price(0.10, 0.125, 0.20, 0.01, 0.50),
     "claude-haiku-4-5": Price(1, 1.25, 2, 0.10, 5),
 }
@@ -49,11 +68,34 @@ US_GEO = 1.1  # multiplier on every token price when inference runs US-only
 _MILLION = 1_000_000
 
 
-def price(model: str, prompt_tokens: int = 0) -> Price:
-    """The price for ``model`` at this prompt length; ValueError for an unknown model."""
+PRICE_FORMAT = "input,cache_write_5m,cache_write_1h,cache_read,output"
+
+
+def parse_price(text: str) -> Price:
+    """A ``Price`` from five comma-separated dollars per million tokens, in the order
+    of ``PRICE_FORMAT``; ValueError for anything else."""
+    parts = text.split(",")
+    try:
+        values = [float(p) for p in parts]
+    except ValueError:
+        values = []
+    if len(values) != len(parts) or len(values) != 5:
+        raise ValueError(f"price must be {PRICE_FORMAT!r}, got {text!r}")
+    if not all(math.isfinite(v) and v >= 0 for v in values):
+        raise ValueError(f"price values must be finite and >= 0, got {text!r}")
+    return Price(*values)
+
+
+def price(model: str, prompt_tokens: int = 0, given: Price | None = None) -> Price:
+    """The price for ``model`` at this prompt length: ``given`` when set (it holds at
+    every prompt length), else the table; ValueError for a model with neither."""
+    if given is not None:
+        return given
     if model not in PRICES:
         raise ValueError(
-            f"no price for model {model!r}; known: {', '.join(sorted(PRICES))}"
+            f"no price for model {model!r}; give one as {PRICE_FORMAT!r} in dollars "
+            f"per million tokens (run config: [editor] price; hosted editor: "
+            f"--price), or use a known model: {', '.join(sorted(PRICES))}"
         )
     long = _LONG.get(model)
     if long is not None and prompt_tokens > long[0]:
@@ -70,7 +112,9 @@ def _count(usage: Mapping[str, Any], key: str, *, required: bool = False) -> int
     return value
 
 
-def turn_cost(model: str, usage: Mapping[str, Any]) -> float:
+def turn_cost(
+    model: str, usage: Mapping[str, Any], given: Price | None = None
+) -> float:
     """Dollars one Messages API response cost, from its ``usage`` as a dict.
 
     Cache writes use the 5-minute and 1-hour split in ``cache_creation`` when given;
@@ -88,7 +132,7 @@ def turn_cost(model: str, usage: Mapping[str, Any]) -> float:
         raise ValueError(f"usage cache_creation must be an object, got {split!r}")  # noqa: TRY004
     w1h = _count(split, "ephemeral_1h_input_tokens")
     w5m = max(written - w1h, _count(split, "ephemeral_5m_input_tokens"))
-    p = price(model, fresh + read + w5m + w1h)
+    p = price(model, fresh + read + w5m + w1h, given)
     total = (
         fresh * p.input
         + w5m * p.cache_write_5m
@@ -100,7 +144,9 @@ def turn_cost(model: str, usage: Mapping[str, Any]) -> float:
     return total * US_GEO if geo not in (None, "", "global") else total
 
 
-def max_cost(model: str, prompt_tokens: int, max_output_tokens: int) -> float:
+def max_cost(
+    model: str, prompt_tokens: int, max_output_tokens: int, given: Price | None = None
+) -> float:
     """An upper bound on one call's dollars before it is made.
 
     Every prompt token at the higher of the base input and 5-minute cache write
@@ -109,7 +155,7 @@ def max_cost(model: str, prompt_tokens: int, max_output_tokens: int) -> float:
     """
     if prompt_tokens < 0 or max_output_tokens < 0:
         raise ValueError("token counts must be >= 0")
-    p = price(model, prompt_tokens)
+    p = price(model, prompt_tokens, given)
     per_prompt = max(p.input, p.cache_write_5m)
     total = (prompt_tokens * per_prompt + max_output_tokens * p.output) / _MILLION
     return total * US_GEO

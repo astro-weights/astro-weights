@@ -109,6 +109,7 @@ _EDITORS: dict[str, _Fields] = {
     },
     "hosted": {
         "model": ("str", _REQUIRED),
+        "price": ("str", None),
         "max_output_tokens": ("positive", None),
         "max_turns": ("positive", None),
         "fallback_base_url": ("str", None),
@@ -318,7 +319,9 @@ def _check_hosted(where: str, options: dict[str, Any], dollars: float) -> None:
     if dollars <= 0:
         raise RunError(f"{where}: [limits] dollars must be > 0 for the hosted editor")
     try:
-        prices.price(options["model"])
+        text = options["price"]
+        own = None if text is None else prices.parse_price(text)
+        prices.price(options["model"], given=own)
     except ValueError as exc:
         raise RunError(f"{where}: [editor] {exc}") from None
     given = [options["fallback_base_url"], options["fallback_model"]]

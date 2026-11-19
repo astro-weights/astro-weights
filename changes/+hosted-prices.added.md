@@ -1,0 +1,1 @@
+The hosted editor knows the prices of Claude Fable 5.2, 5.1 and 5, Claude Mythos 5.2, 5.1 and 5, Claude Opus 4.5 and Claude Sonnet 4.5, and takes a price for any other model id from `[editor] price` in the run config (or `--price`), so a new model works without waiting for a release.

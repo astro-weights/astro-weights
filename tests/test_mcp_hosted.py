@@ -112,6 +112,35 @@ def test_max_cost_bounds_any_turn_with_that_prompt() -> None:
         max_cost(MODEL, -1, 1)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1,2,3,0.1",
+        "1,2,3,0.1,5,6",
+        "1,2,x,0.1,5",
+        "1,2,3,-0.1,5",
+        "1,2,inf,0,5",
+        "nan,1,2,0,5",
+        "",
+    ],
+)
+def test_bad_price_text_is_refused(text: str) -> None:
+    with pytest.raises(ValueError, match="price"):
+        prices.parse_price(text)
+
+
+def test_given_price_overrides_the_table() -> None:
+    given = prices.parse_price("1, 2,3,0.5,10")
+    assert given == Price(1, 2, 3, 0.5, 10)
+    assert price("claude-x", given=given) is given
+    assert price("claude-haiku-5-5", 200_000, given) is given  # no long tier
+    usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+    assert turn_cost("claude-x", usage, given) == pytest.approx(11)
+    assert max_cost("claude-x", 1_000_000, 0, given) == pytest.approx(2 * prices.US_GEO)
+    with pytest.raises(ValueError, match=r"\[editor\] price; hosted editor: --price"):
+        price("claude-x")
+
+
 def test_every_price_is_sane() -> None:
     for model, p in prices.PRICES.items():
         assert model.startswith("claude-")
@@ -729,6 +758,9 @@ def test_main_refuses_to_start(
 
     assert "not found" in err(str(tmp_path / "none"), "--model", MODEL, "--no-fallback")
     assert "no price for model" in err(str(run), "--model", "claude-x", "--no-fallback")
+    # a given price passes that check; then the missing key stops it
+    priced = ["--model", "claude-x", "--price", "1,2,3,0.1,5", "--no-fallback"]
+    assert KEY_ENV in err(str(run), *priced)
     high = write_run(tmp_path / "high", limits={**LIMITS, "dollars": 25})
     assert "above --max-dollars 20.0" in err(*argv(high, "--no-fallback"))
     # raising the flag passes that check; then the missing key stops it
