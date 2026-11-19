@@ -248,4 +248,4 @@ All graders take `(gold, answer)` and return a `bool`.
 |---|---|
 | `grade_exact` | the stripped strings are equal |
 | `grade_choice` | the last `\boxed{}` holds the gold letter (A-J) |
-| `grade_math` | the last boxed value equals the gold answer, checked by `math_verify`; `strip_commas=True` drops commas from the gold answer |
+| `grade_math` | the last boxed value equals the gold answer, checked by `math_verify`; `strip_commas=True` drops commas from the gold answer. In the main thread each check has `math_verify`'s 5 s timeouts; in other threads those timeouts (built on `signal.alarm`) are off, so put your own time limit on a worker pool |

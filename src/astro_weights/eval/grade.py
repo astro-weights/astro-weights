@@ -1,6 +1,7 @@
 """Answer graders. Standard library only at import time."""
 
 import re
+import threading
 
 _BOXED = "\\boxed{"
 _CHOICE = re.compile(r"\(?([A-J])[).:]*(?:$|(?<=[).:])\s)")
@@ -36,7 +37,11 @@ def grade_choice(gold: str, answer: str) -> bool:
 
 
 def grade_math(gold: str, answer: str, strip_commas: bool = False) -> bool:
-    """True if the answer's last boxed value equals gold, checked by math_verify."""
+    """True if the answer's last boxed value equals gold, checked by math_verify.
+
+    math_verify's 5 s timeouts use signal.alarm, which works only in the main
+    thread; elsewhere they are turned off, so a pathological answer can run long.
+    """
     try:
         from math_verify import LatexExtractionConfig, parse, verify
     except ImportError as e:
@@ -44,10 +49,12 @@ def grade_math(gold: str, answer: str, strip_commas: bool = False) -> bool:
     if strip_commas:
         gold = gold.replace(",", "")
     try:
+        # ponytail: off the main thread no timeout; a caller pool needs its own
+        t = 5 if threading.current_thread() is threading.main_thread() else None
         cfg = [LatexExtractionConfig(boxed_match_priority=0)]
-        return bool(
-            verify(parse(f"\\boxed{{{gold}}}"), parse(answer, extraction_config=cfg))
-        )
+        g = parse(f"\\boxed{{{gold}}}", parsing_timeout=t)
+        a = parse(answer, extraction_config=cfg, parsing_timeout=t)
+        return bool(verify(g, a, timeout_seconds=t))
     except Exception:  # noqa: BLE001  math_verify can time out or choke on odd latex
         return False
 
