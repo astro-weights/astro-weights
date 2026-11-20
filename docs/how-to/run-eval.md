@@ -296,11 +296,11 @@ All graders take `(gold, answer)` and return a `bool`.
 
 ## Splits and the sealed test
 
-Split a dataset's items into dev, confirm and test once, by seeded item id, and keep the manifest with the results. An item's split depends only on the seed and its id, so adding or removing items never moves another item. The default fractions are 20 / 30 / 50.
+Split a dataset's items into dev, confirm and test once, by seeded item id, and keep the manifest with the results. An item's split depends only on the seed and its id, so adding or removing items never moves another item. The default fractions are 20 / 30 / 50, and `k` (default 4) is the number of seeds each test item is run with.
 
 ```python
 from astro_weights.eval import Record
-from astro_weights.eval.seal import read_seal, record_scoring, seal_key
+from astro_weights.eval.seal import read_seal, record_scoring, scoring_of
 from astro_weights.eval.splits import SplitManifest, assign_splits
 
 ids = [f"gsm8k-{i}" for i in range(1319)]  # ids of the pinned dataset file
@@ -312,45 +312,52 @@ manifest = SplitManifest.build(
     seed=0,
 )
 manifest.save("gsm8k.splits.json")
-print(len(manifest.dev), len(manifest.confirm), len(manifest.test))
+print(len(manifest.dev), len(manifest.confirm), len(manifest.test), manifest.k)
 # fewer items: the remaining ones keep their split
 assert assign_splits(ids[:10], seed=0) == {
     i: assign_splits(ids, 0)[i] for i in ids[:10]
 }
 
 test_records = [
-    Record(i, 0, "edit", "h", "out", 1.0, 5, False) for i in sorted(manifest.test)
+    Record(i, seed, "edit", f"h-{i}", "out", 1.0, 5, False)
+    for i in sorted(manifest.test)
+    for seed in range(manifest.k)
 ]
 manifest.check_records(test_records, "test", complete=True)
+print(manifest.check_seeds(test_records))
 
-key = seal_key(Edit((delta,), "tiny-llama"))  # the edit from "Generate both arms"
-record_scoring("seal", key, manifest.manifest_sha256, note="first test score")
-print(read_seal("seal")[0]["scoring"])
+edit = Edit((delta,), "tiny-llama")  # the edit from "Generate both arms"
+record_scoring("seal", scoring_of(edit, manifest, test_records), note="first")
+print(read_seal("seal")[0]["k"])
 ```
 
 Output:
 
 ```text
-250 428 641
-1
+250 428 641 4
+(0, 1, 2, 3)
+4
 ```
 
-`SplitManifest.load` refuses unknown or missing keys, a `manifest_sha256` that does not match the contents, and an id listed under a split it does not hash to. Score dev and confirm with `--split` and the manifest; `eval` refuses records whose ids are outside that split:
+`SplitManifest.load` refuses unknown or missing keys, a `manifest_sha256` that does not match the contents, and an id listed under a split it does not hash to. Score dev and confirm with `--split` and the manifest; `eval` refuses records, `--floor` arms included, whose ids are outside that split:
 
 ```bash
 astro-weights eval base.jsonl edit.jsonl --split confirm --manifest gsm8k.splits.json
 ```
 
-The test split is sealed: each edit is scored once per test manifest.
+The test split is sealed: each edit is scored on it once.
 
 ```bash
 astro-weights eval base.jsonl edit.jsonl --split test --manifest gsm8k.splits.json \
   --seal-dir seal --adapter ADAPTER_DIR
 ```
 
-- On `--split test` both arms must hold a record for every test id and no other id; anything else exits 1.
-- The seal key is `seal_key(load_peft(ADAPTER_DIR))`: a sha256 of the adapter's factors (scaling folded in) and its base (`base_sha256` when the adapter has one, else the base model name). Renaming or copying the adapter directory, a new run id or new `meta` keep the key. Reordering modules or rank terms and zero-padding the rank keep it too. Any changed factor value gives a new key, also a rescale `B*c, A/c`.
-- `eval` writes one line to `SEAL_DIR/seal.jsonl` (fsynced) before it prints the result. A second scoring of the same key on the same manifest exits 1 and prints no result. `--unseal` scores it again, warns on stderr, and the line says `"unseal": true`.
-- Two `eval` processes racing on one key: one prints its result, the other exits 1. The ledger is locked with `flock` (`msvcrt.locking` on Windows), so keep the seal dir on a local disk, and use one seal dir for every scoring of a dataset.
-- Each line holds the sha256 of the line before it, so an edited or deleted earlier line makes reads fail. A last line cut short by a crash is dropped; that scoring never printed a result. Deleting the whole file is not detected.
+- The seal guards only runs with `--split test`. `astro-weights eval` without `--split` still compares any two record files, test records included, and records nothing.
+- On `--split test` every arm (base, edit and any `--floor` arms) must hold every test id, no other id, and the same `k` seeds for every item; anything else exits 1.
+- `eval` writes one line to `SEAL_DIR/seal.jsonl` (fsynced) before it prints the result. The line holds the adapter's exact key (`seal_key`, a sha256 of its factors, without the base model), its fingerprint, the hash of the sorted test ids, the sorted prompt hashes scored, `k`, and `records_sha256`, a hash of the edit arm's sorted item id, seed, prompt hash and output. The base model goes in `note`.
+- A scoring is refused (exit 1, no result printed) when an earlier line has the same `records_sha256`, whatever adapter is named, or is the same edit and has the same test ids or shares any prompt. The same edit means the same key, or a fingerprint within 1e-3 relative distance.
+- The fingerprint is `U.T @ (B @ A) @ V` per module, with 4 Gaussian probe vectors on each side seeded by the module name and shape; a module missing on one side counts as zero. It depends on `B @ A` only: a rescale `B*c, A/c`, a rotation of the factors, a renamed or copied adapter directory, a new run id, new `meta` or another base model name all count as the same edit. An edit counts as new only when it moves more than 1e-3 relative to every earlier one.
+- `--unseal` scores it again, warns on stderr, and the line says `"unseal": true`.
+- Two `eval` processes racing on one edit: one prints its result, the other exits 1. The ledger is locked with `flock` (`msvcrt.locking` on Windows), so keep the seal dir on a local disk, and use one seal dir for every scoring of a dataset.
+- Each line holds the sha256 of the line before it, so an edited or deleted earlier line makes reads fail. A last line cut short by a crash is dropped; that scoring never printed a result. Deleting the whole file, or pointing `--seal-dir` somewhere new, is not detected.
 - Keep manifests and the seal dir outside an agent run's `RUN_DIR`: the MCP server never reads them, and the kernel sandbox cannot open them.

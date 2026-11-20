@@ -1006,20 +1006,42 @@ def test_start_event_records_library_commit(
 
 @pytest.mark.anyio
 async def test_split_manifests_and_ids_never_reach_the_agent(
-    tmp_path: Path, unsafe: bool
+    tmp_path: Path, request: pytest.FixtureRequest
 ) -> None:
     """Confirm/test ids, split manifests and the seal ledger stay outside the agent.
 
-    No module under ``astro_weights.mcp`` imports the splits or seal code, the tool
-    list names none of it, and after a kernel session neither the run dir nor the
-    kernel work dir holds a manifest, a probe id or a manifest hash. With a real
-    sandbox the kernel cannot open the manifest by absolute path either.
+    No module under ``astro_weights.mcp`` imports the splits or seal code; no
+    RunConfig field is about splits, and none holds an absolute path outside the
+    run dir; the tool list names none of it; after a kernel session neither the run
+    dir nor the kernel work dir holds a manifest, a probe id or a manifest hash; and
+    the sandboxed kernel cannot open the manifest by absolute path. On Linux CI
+    (bwrap installed) the sandbox is required, so that check is never skipped there.
     """
     import ast
+    import dataclasses
+    import os
+    import re
+
+    import numpy as np
 
     import astro_weights.mcp as mcp_pkg
-    from astro_weights.eval.seal import record_scoring
+    from astro_weights.edits import Edit, rank1
+    from astro_weights.eval import Record
+    from astro_weights.eval.seal import record_scoring, scoring_of
     from astro_weights.eval.splits import SplitManifest
+    from astro_weights.mcp.jobs import RunConfig, load_run_config
+
+    on_ci_linux = os.environ.get("GITHUB_ACTIONS") == "true" and sys.platform == "linux"
+    if sandbox.probe() is None:
+        assert not on_ci_linux, "CI installs bwrap: the sandboxed branch must run"
+        request.getfixturevalue("no_sandbox")
+        unsafe = True
+    else:
+        unsafe = False
+
+    about = re.compile(r"split|manifest|dataset|seal|item|test_ids", re.IGNORECASE)
+    fields = [f.name for f in dataclasses.fields(RunConfig)]
+    assert not [f for f in fields if about.search(f)], fields
 
     banned = {"astro_weights.eval.splits", "astro_weights.eval.seal"}
     for py in Path(mcp_pkg.__file__).parent.rglob("*.py"):
@@ -1043,7 +1065,16 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
         seed=0,
     )
     manifest.save(secret / "splits.json")
-    record_scoring(secret / "seal", "a" * 64, manifest.manifest_sha256)
+    rng = np.random.default_rng(0)
+    probe_edit = Edit(
+        (rank1("m", rng.standard_normal(4), rng.standard_normal(3)),), "b"
+    )
+    test_records = [
+        Record(i, s, "edit", "h-" + i, "o", 1.0, 1, False)
+        for i in manifest.test
+        for s in range(manifest.k)
+    ]
+    record_scoring(secret / "seal", scoring_of(probe_edit, manifest, test_records))
     probes = [
         *manifest.confirm,
         *manifest.test,
@@ -1062,6 +1093,26 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
                 assert not leaked, f"{path} holds {leaked[:3]}"
 
     run = kernel_run(tmp_path / "run")
+    root = run.resolve()
+
+    def inside(value: object, where: str) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                inside(v, f"{where}.{k}")
+        elif isinstance(value, list | tuple):
+            for i, v in enumerate(value):
+                inside(v, f"{where}[{i}]")
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            inside(dataclasses.asdict(value), where)
+        elif isinstance(value, str | Path) and Path(value).is_absolute():
+            assert Path(value).resolve().is_relative_to(root), f"{where}={value}"
+
+    inside(json.loads((run / "run.json").read_text(encoding="utf-8")), "run.json")
+    cfg = load_run_config(run)
+    inside({f: getattr(cfg, f) for f in fields}, "RunConfig")
+    assert cfg.model_dir is not None
+    assert cfg.model_dir.resolve().is_relative_to(root)
+
     async with Client(build_server(run, allow_unsafe_kernel=unsafe)) as client:
         tools = await client.list_tools()
         text = json.dumps([t.model_dump(mode="json") for t in tools.tools])

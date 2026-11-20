@@ -2,7 +2,8 @@
 
 An item's split is decided by ``sha256(f"{seed}:{item_id}")`` alone, so adding or
 removing other items never moves it. The manifest pins the dataset (name, revision,
-file sha256), the seed, the fractions and the ids of each split; its
+file sha256), the seed, the fractions, the ids of each split and ``k``, the number of
+seeds each test item is generated with; its
 ``manifest_sha256`` is the sha256 of its canonical JSON and names the split set in a
 seal ledger (``astro_weights.eval.seal``).
 """
@@ -33,6 +34,7 @@ _KEYS = frozenset(
         "seed",
         "fractions",
         "splits",
+        "k",
         "manifest_sha256",
     }
 )
@@ -122,7 +124,7 @@ class SplitManifest:
     ``file_sha256`` is the sha256 of the dataset file the ids index into. Ids are
     kept sorted. Construction checks that every id sits in the split that
     ``assign_splits`` gives it under ``seed`` and ``fractions``, so a hand-moved id
-    is refused.
+    is refused. ``k`` is the number of seeds every test item is generated with.
     """
 
     dataset: str
@@ -133,8 +135,11 @@ class SplitManifest:
     dev: tuple[str, ...]
     confirm: tuple[str, ...]
     test: tuple[str, ...]
+    k: int = 4
 
     def __post_init__(self) -> None:
+        if isinstance(self.k, bool) or not isinstance(self.k, int) or self.k < 1:
+            raise ValueError(f"k must be an int >= 1, got {self.k!r}")
         _text(self.dataset, "dataset")
         _text(self.revision, "revision")
         if not isinstance(self.file_sha256, str) or not _SHA.fullmatch(
@@ -172,6 +177,7 @@ class SplitManifest:
         file_sha256: str,
         seed: int,
         fractions: tuple[float, float, float] = (0.2, 0.3, 0.5),
+        k: int = 4,
     ) -> "SplitManifest":
         """Assign ``item_ids`` with ``assign_splits`` and pin the dataset file."""
         assigned = assign_splits(item_ids, seed, fractions)
@@ -185,6 +191,7 @@ class SplitManifest:
             parts["dev"],
             parts["confirm"],
             parts["test"],
+            k,
         )
 
     def _body(self) -> dict[str, Any]:
@@ -196,12 +203,20 @@ class SplitManifest:
             "seed": self.seed,
             "fractions": list(self.fractions),
             "splits": {s: list(getattr(self, s)) for s in SPLITS},
+            "k": self.k,
         }
 
     @property
     def manifest_sha256(self) -> str:
         """sha256 of the canonical JSON (sorted keys, no spaces, UTF-8)."""
         return hashlib.sha256(_canonical(self._body())).hexdigest()
+
+    @property
+    def test_ids_sha256(self) -> str:
+        """sha256 of the sorted test ids as canonical JSON; names the test set."""
+        return hashlib.sha256(
+            json.dumps(list(self.test), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
 
     def ids(self, split: Split) -> frozenset[str]:
         """The item ids in ``split``; ValueError on an unknown split name."""
@@ -230,6 +245,32 @@ class SplitManifest:
                 f"{len(missing)} of {len(allowed)} {split} item id(s) have no "
                 f"record: {missing[:_SHOW]}"
             )
+
+    def check_seeds(self, records: Iterable[Record]) -> tuple[int, ...]:
+        """The seeds every item was run with; ValueError unless there are ``k``.
+
+        Every item must have the same seed set, of ``k`` seeds, each seed once.
+        """
+        seeds: dict[str, list[int]] = {}
+        for r in records:
+            seeds.setdefault(r.item_id, []).append(r.seed)
+        if not seeds:
+            raise ValueError("no records")
+        sets = {tuple(sorted(v)) for v in seeds.values()}
+        repeated = sorted(i for i, v in seeds.items() if len(set(v)) != len(v))
+        if repeated:
+            raise ValueError(f"item(s) with a repeated seed: {repeated[:_SHOW]}")
+        if len(sets) != 1:
+            raise ValueError(
+                f"items were run with different seed sets: {sorted(sets)[:_SHOW]}"
+            )
+        (common,) = sets
+        if len(common) != self.k:
+            raise ValueError(
+                f"each item has {len(common)} seed(s) {list(common)[:_SHOW]}; "
+                f"the manifest asks for k={self.k}"
+            )
+        return common
 
     def save(self, path: str | Path) -> None:
         """Write the manifest as JSON, with its ``manifest_sha256``."""
@@ -267,6 +308,7 @@ class SplitManifest:
                 splits["dev"],
                 splits["confirm"],
                 splits["test"],
+                raw["k"],
             )
         except ValueError as e:
             raise ValueError(f"{path}: {e}") from None

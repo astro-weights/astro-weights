@@ -26,10 +26,11 @@ from astro_weights.eval import (
     read_jsonl,
 )
 from astro_weights.eval.seal import (
+    Scoring,
     SealedError,
     check_unsealed,
     record_scoring,
-    seal_key,
+    scoring_of,
 )
 from astro_weights.eval.splits import Split, SplitManifest
 from astro_weights.export import (
@@ -172,10 +173,10 @@ class _SplitArgs:
 @dataclass(frozen=True)
 class _Seal:
     directory: Path
-    key: str
-    manifest_sha256: str
+    scoring: Scoring
     unseal: bool
     adapter: Path
+    base: str
 
 
 def _split_args(args: argparse.Namespace) -> _SplitArgs | str | None:
@@ -207,30 +208,47 @@ def _split_args(args: argparse.Namespace) -> _SplitArgs | str | None:
 def _check_split(
     sp: _SplitArgs, arms: list[tuple[Path, list[Record]]]
 ) -> int | _Seal | None:
-    """Refuse records outside the split; for test, check the seal. Exit code on error."""
+    """Refuse records outside the split; for test, check K and the seal.
+
+    ``arms`` is base, edit, then any floor arms. Exit code on error.
+    """
     try:
         manifest = SplitManifest.load(sp.manifest)
     except (ValueError, OSError) as e:
         return _error(str(e))
     test = sp.split == "test"
+    seeds: set[tuple[int, ...]] = set()
     for path, records in arms:
         try:
             manifest.check_records(records, sp.split, complete=test)
+            if test:
+                seeds.add(manifest.check_seeds(records))
         except ValueError as e:
             print(f"error: {path}: {e}", file=sys.stderr)
             return 1
     if not test:
         return None
+    if len(seeds) > 1:
+        print(
+            f"error: arms were run with different seeds: {sorted(seeds)}",
+            file=sys.stderr,
+        )
+        return 1
     assert sp.seal_dir is not None
     assert sp.adapter is not None
     try:
-        key = seal_key(load_peft(sp.adapter))
+        edit = load_peft(sp.adapter)
+        scoring = scoring_of(edit, manifest, arms[1][1])
     except _ERRORS as e:
         return _fail(sp.adapter, e)
-    seal = _Seal(sp.seal_dir, key, manifest.manifest_sha256, sp.unseal, sp.adapter)
+    base_sha = hashlib.sha256(
+        json.dumps(edit.base_sha256, sort_keys=True).encode()
+    ).hexdigest()
+    base = f"base_model={edit.base_model!r} base_sha256_digest={base_sha[:16]}"
+    seal = _Seal(sp.seal_dir, scoring, sp.unseal, sp.adapter, base)
     if not seal.unseal:
         try:
-            check_unsealed(seal.directory, key, seal.manifest_sha256)
+            check_unsealed(seal.directory, scoring)
         except SealedError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
@@ -242,13 +260,11 @@ def _check_split(
 def _record_seal(seal: _Seal, base: Path, edit: Path, result: PairedResult) -> int:
     """Write the ledger line before the result is shown; exit code on refusal."""
     note = (
-        f"eval base={base} edit={edit} adapter={seal.adapter} n={result.n_items} "
-        f"diff={result.diff:+.6f}"
+        f"eval base={base} edit={edit} adapter={seal.adapter} {seal.base} "
+        f"n={result.n_items} diff={result.diff:+.6f}"
     )
     try:
-        record_scoring(
-            seal.directory, seal.key, seal.manifest_sha256, seal.unseal, note
-        )
+        record_scoring(seal.directory, seal.scoring, seal.unseal, note)
     except SealedError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -256,8 +272,8 @@ def _record_seal(seal: _Seal, base: Path, edit: Path, result: PairedResult) -> i
         return _error(str(e))
     if seal.unseal:
         print(
-            f"warning: --unseal: test split scored again for edit {seal.key[:12]}; "
-            f"recorded in {seal.directory}",
+            f"warning: --unseal: test split scored again for edit "
+            f"{seal.scoring.key[:12]}; recorded in {seal.directory}",
             file=sys.stderr,
         )
     return 0
@@ -281,7 +297,8 @@ def _eval(
         return 2
     seal = None
     if split is not None:
-        checked = _check_split(split, [(base, arms[0] or []), (edit, arms[1] or [])])
+        named = zip((base, edit, *(floor or ())), arms, strict=True)
+        checked = _check_split(split, [(p, a or []) for p, a in named])
         if isinstance(checked, int):
             return checked
         seal = checked

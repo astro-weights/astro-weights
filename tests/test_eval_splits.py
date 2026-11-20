@@ -1,5 +1,6 @@
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -168,6 +169,7 @@ def test_real_dataset_manifest_format(tmp_path: Path) -> None:
                 "file_sha256",
                 "format",
                 "fractions",
+                "k",
                 "manifest_sha256",
                 "revision",
                 "seed",
@@ -264,3 +266,62 @@ def test_check_records() -> None:
         m.check_records([_rec(i) for i in test_ids[1:]], "test", complete=True)
     with pytest.raises(ValueError, match="unknown split"):
         m.ids("train")  # type: ignore[arg-type]
+
+
+def test_k_in_manifest(tmp_path: Path) -> None:
+    m = _manifest()
+    assert m.k == 4
+    m1 = SplitManifest.build(
+        _ids(200), dataset="synthetic", revision="r1", file_sha256=SHA, seed=3, k=1
+    )
+    assert m1.manifest_sha256 != m.manifest_sha256
+    m1.save(tmp_path / "m.json")
+    assert SplitManifest.load(tmp_path / "m.json").k == 1
+    bad: object
+    for bad in (0, True, 2.0):
+        with pytest.raises(ValueError, match="k must be an int"):
+            replace(m, k=bad)  # type: ignore[arg-type]
+
+
+def test_test_ids_sha_ignores_everything_but_test_ids() -> None:
+    m = _manifest()
+    same = [
+        SplitManifest.build(
+            _ids(200),
+            dataset="other",
+            revision="full-rev",
+            file_sha256="cd" * 32,
+            seed=3,
+        ),
+        SplitManifest.build(
+            [i for i in _ids(200) if i not in m.dev[:5]],
+            dataset="synthetic",
+            revision="r1",
+            file_sha256=SHA,
+            seed=3,
+            k=2,
+        ),
+    ]
+    assert {o.test_ids_sha256 for o in same} == {m.test_ids_sha256}
+    assert {o.manifest_sha256 for o in same}.isdisjoint({m.manifest_sha256})
+    assert _manifest(seed=4).test_ids_sha256 != m.test_ids_sha256
+
+
+def _seeded(ids: list[str], seeds: list[int]) -> list[Record]:
+    return [Record(i, s, "edit", "h", "o", 1.0, 3, False) for i in ids for s in seeds]
+
+
+def test_check_seeds() -> None:
+    m = _manifest()
+    ids = sorted(m.test)
+    assert m.check_seeds(_seeded(ids, [0, 1, 2, 3])) == (0, 1, 2, 3)
+    with pytest.raises(ValueError, match="k=4"):
+        m.check_seeds(_seeded(ids, [0]))
+    with pytest.raises(ValueError, match="different seed sets"):
+        m.check_seeds(
+            [*_seeded(ids[:1], [0, 1, 2, 3]), *_seeded(ids[1:], [4, 5, 6, 7])]
+        )
+    with pytest.raises(ValueError, match="repeated seed"):
+        m.check_seeds(_seeded(ids, [0, 1, 2, 3, 3]))
+    with pytest.raises(ValueError, match="no records"):
+        m.check_seeds([])
