@@ -1,5 +1,6 @@
 """Paired eval statistics from per-item records. Never runs a model."""
 
+from astro_weights.eval.controls import ControlVerdict, control_rule, min_controls
 from astro_weights.eval.floor import (
     FloorResult,
     floor_from_records,
@@ -37,6 +38,7 @@ from astro_weights.eval.verdict import Verdict
 __all__ = [
     "CONFIG_KEYS",
     "PROVENANCE_KEYS",
+    "ControlVerdict",
     "FloorResult",
     "PairedResult",
     "Record",
@@ -46,6 +48,7 @@ __all__ = [
     "check_headers",
     "compare",
     "config_hash",
+    "control_rule",
     "exceeds_floor",
     "floor_from_records",
     "format_report",
@@ -56,6 +59,7 @@ __all__ = [
     "is_loop",
     "last_boxed",
     "load_floor",
+    "min_controls",
     "pair",
     "prompt_hash",
     "read_header",

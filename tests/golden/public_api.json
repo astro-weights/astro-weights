@@ -34,6 +34,7 @@
  },
  "astro_weights.eval": {
   "CONFIG_KEYS": null,
+  "ControlVerdict": "(passed: bool, target_beats_quantile: bool, target_rank: int, target_quantile: float, q: float, n_controls: int, side_effects: collections.abc.Mapping[str, bool], outside: tuple[str, ...]) -> None",
   "FloorResult": "(config_hash: str, n_items: int, k: int, accuracy_delta: float, accuracy_se: float, flip_rate: float, tokens_delta: float, tokens_se: float, created: str, library_version: str | None) -> None",
   "PROVENANCE_KEYS": null,
   "PairedResult": "(n_items: int, mean_base: float, mean_edit: float, diff: float, se: float, ci95: tuple[float, float], correlation: float, mcnemar_p: float | None, n_base_only: int, n_edit_only: int, tokens_base: float, tokens_edit: float, tokens_diff: float, tokens_diff_pct: float, tokens_ci95: tuple[float, float], cap_hit_base: float, cap_hit_edit: float, small_n: bool, score_mde: float, tokens_se: float, tokens_mde: float, n_clusters: int | None = None, cap_hit_p: float = 1.0, n_uncapped: int = 0, uncapped_diff: float | None = None, uncapped_tokens_diff: float | None = None, loops_base: int = 0, loops_edit: int = 0, k: int = 1, score_ci95_boot: tuple[float, float] = (nan, nan), sign_test_p: float | None = None, base_ci95_wilson: tuple[float, float] | None = None, edit_ci95_wilson: tuple[float, float] | None = None, newcombe_ci95: tuple[float, float] | None = None, strata: tuple['StratumResult', ...] = (), ci95_normal: tuple[float, float] | None = None, ci95_method: str = 'normal') -> None",
@@ -44,6 +45,7 @@
   "check_headers": "(base: dict[str, Any], edit: dict[str, Any], ignore: collections.abc.Collection[str] = (), arm_keys: collections.abc.Collection[str] = ()) -> None",
   "compare": "(base: collections.abc.Sequence[astro_weights.eval.records.Record], edit: collections.abc.Sequence[astro_weights.eval.records.Record], n_boot: int = 10000, seed: int = 0, strata: collections.abc.Mapping[str, str] | None = None) -> astro_weights.eval.paired.PairedResult",
   "config_hash": "(header: collections.abc.Mapping[str, Any], arm_keys: collections.abc.Collection[str] = ()) -> str",
+  "control_rule": "(edit: astro_weights.eval.paired.PairedResult, controls: collections.abc.Sequence[astro_weights.eval.paired.PairedResult], *, target: str, direction: Literal['higher', 'lower'], side_effects: collections.abc.Mapping[str, tuple[astro_weights.eval.paired.PairedResult, collections.abc.Sequence[astro_weights.eval.paired.PairedResult]]] | None = None, q: float = 0.95) -> astro_weights.eval.controls.ControlVerdict",
   "exceeds_floor": "(result: astro_weights.eval.paired.PairedResult, floor: astro_weights.eval.paired.PairedResult) -> dict[str, bool]",
   "floor_from_records": "(run1: collections.abc.Sequence[astro_weights.eval.records.Record], run2: collections.abc.Sequence[astro_weights.eval.records.Record], header: collections.abc.Mapping[str, Any]) -> astro_weights.eval.floor.FloorResult",
   "format_report": "(r: astro_weights.eval.paired.PairedResult, floor: astro_weights.eval.paired.PairedResult | None = None) -> str",
@@ -54,6 +56,7 @@
   "is_loop": "(output: str) -> bool",
   "last_boxed": "(s: str) -> str | None",
   "load_floor": "(directory: str | pathlib.Path, config_hash: str) -> astro_weights.eval.floor.FloorResult | None",
+  "min_controls": "(q: float) -> int",
   "pair": "(base: collections.abc.Sequence[astro_weights.eval.records.Record], edit: collections.abc.Sequence[astro_weights.eval.records.Record]) -> list[tuple[astro_weights.eval.records.Record, astro_weights.eval.records.Record]]",
   "prompt_hash": "(text: str) -> str",
   "read_header": "(path: str | pathlib.Path) -> dict[str, Any]",

@@ -1,0 +1,1 @@
+`control_rule` judges an edit against random controls: the target effect must strictly beat their q-quantile (at least 20 controls for q=0.95) and every side effect must stay inside the controls' range.
