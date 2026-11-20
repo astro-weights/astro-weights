@@ -63,6 +63,7 @@ PROVENANCE_KEYS = frozenset(
         "served_model",
         "server_model",
         "system_fingerprint",
+        "infra_errors",  # HTTP: retries and items out of attempts
     }
 )
 # A CONFIG key that older headers lack counts as its default, not as a difference.

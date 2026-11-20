@@ -1,0 +1,1 @@
+`generate_records_http` takes `concurrency`, `resume` and `header`: requests run in parallel while records stay in item order, a crashed run resumes without gaps or duplicates (refused under another config), and connection errors, timeouts, 429 and 5xx are retried and counted in the header's `infra_errors`.
