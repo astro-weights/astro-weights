@@ -1,5 +1,6 @@
 """Paired eval statistics from per-item records. Never runs a model."""
 
+from astro_weights.eval.arms import ArmsResult, arms_dict, compare_arms, format_arms
 from astro_weights.eval.grade import (
     answer_part,
     grade_choice,
@@ -31,15 +32,19 @@ from astro_weights.eval.verdict import Verdict
 __all__ = [
     "CONFIG_KEYS",
     "PROVENANCE_KEYS",
+    "ArmsResult",
     "PairedResult",
     "Record",
     "StratumResult",
     "Verdict",
     "answer_part",
+    "arms_dict",
     "check_headers",
     "compare",
+    "compare_arms",
     "config_hash",
     "exceeds_floor",
+    "format_arms",
     "format_report",
     "grade_choice",
     "grade_exact",
