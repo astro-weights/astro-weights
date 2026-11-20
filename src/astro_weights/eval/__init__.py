@@ -18,6 +18,7 @@ from astro_weights.eval.header import (
 )
 from astro_weights.eval.paired import (
     PairedResult,
+    StratumResult,
     compare,
     exceeds_floor,
     format_report,
@@ -32,6 +33,7 @@ __all__ = [
     "PROVENANCE_KEYS",
     "PairedResult",
     "Record",
+    "StratumResult",
     "Verdict",
     "answer_part",
     "check_headers",

@@ -525,6 +525,14 @@ def test_unclustered_results_bit_identical_to_before(binary: bool) -> None:
             "uncapped_tokens_diff",
             "loops_base",
             "loops_edit",
+            # added with the 0.3 statistics; checked in tests/test_paired_stats.py
+            "k",
+            "score_ci95_boot",
+            "sign_test_p",
+            "base_ci95_wilson",
+            "edit_ci95_wilson",
+            "newcombe_ci95",
+            "strata",
         )
     }
     assert dataclasses.replace(r, correlation=want.correlation, **cap) == want
