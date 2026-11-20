@@ -1,6 +1,7 @@
 """Command-line entry point."""
 
 import argparse
+import hashlib
 import json
 import math
 import secrets
@@ -424,6 +425,7 @@ def _export(
         if gguf is not None and arch is not None:
             save_lora_gguf(edit, gguf, arch, overwrite=force)
             written.append(str(gguf))
+        hashes = {w: _file_sha256(Path(w)) for w in written if w.endswith(".gguf")}
         if text is not None:
             written.append(str(write_card(directory, text)))
     except _ERRORS as e:
@@ -432,11 +434,17 @@ def _export(
         extra: dict[str, object] = (
             {"replaced": replaced, "out_type": kind} if splice is not None else {}
         )
-        _emit({"written": written, **extra})
+        _emit({"written": written, "sha256": hashes, **extra})
     else:
         for w in written:
-            print(f"wrote {w}")
+            print(f"wrote {w}" + (f"  sha256 {hashes[w]}" if w in hashes else ""))
     return 0
+
+
+def _file_sha256(path: Path) -> str:
+    """sha256 of a written GGUF, so the file can be pinned."""
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
 def _inside_adapter(gguf: Path, directory: Path) -> bool:

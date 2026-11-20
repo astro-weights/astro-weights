@@ -37,6 +37,10 @@ SKIP: dict[tuple[str, int], str] = {
         "docs/how-to/run-eval.md",
         4,
     ): "needs an OpenAI-compatible server (llama-server, vLLM)",
+    (
+        "docs/how-to/run-eval.md",
+        5,
+    ): "needs a llama-server with a base GGUF and a LoRA GGUF",
 }
 
 FENCE = re.compile(r"^```python\n(.*?)^```", re.DOTALL | re.MULTILINE)

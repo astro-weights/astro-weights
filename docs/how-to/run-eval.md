@@ -230,6 +230,41 @@ for arm, name in [("base", "base-model"), ("edit", "edit-model")]:
 - `out` must be empty or absent; there is no resume. `api_key` is sent as a bearer token and is never recorded or shown in errors. Redirects are refused.
 - `run_header_http` records `base_url`, `model`, `max_new_tokens`, `seed` and `extra_body`, plus the server's `/v1/models` entry and `system_fingerprint` when the server gives them. Two served names give headers that differ on `model` (and `server_model`), so `astro-weights eval` needs `--ignore-header` for HTTP arms.
 
+### Base and edit on one llama-server
+
+One server process can run both arms: load the base GGUF and the adapter GGUF, and pick the arm per request with the `lora` field (scale 0 = base, scale 1 = edit). Both arms then share the binary, the backend and the weights file.
+
+```bash
+astro-weights export ADAPTER_DIR --gguf adapter.gguf --arch qwen35   # prints the file's sha256
+llama-server -m base.gguf --lora adapter.gguf -np 1 --no-cache-prompt --cache-reuse 0 --cache-ram 0 --no-cache-idle-slots -nocb --port 8080
+```
+
+```python
+from astro_weights.eval import check_headers, grade_exact, header_path, write_header
+from astro_weights.runners.endpoint import generate_records_http, run_header_http
+
+URL, NAME = "http://127.0.0.1:8080", "base.gguf"
+items = [{"item_id": "i0", "prompt": "Say w5.", "gold": "w5"}]
+headers = {}
+for arm, scale in [("base", 0), ("edit", 1)]:
+    # always explicit, also for the base arm
+    lora = {"lora": [{"id": 0, "scale": scale}]}
+    headers[arm] = run_header_http(URL, NAME, 64, 0, lora)
+    write_header(header_path(f"{arm}-http.jsonl"), headers[arm])
+    generate_records_http(
+        URL, NAME, items, arm, grade_exact, 64, extra_body=lora, out=f"{arm}-http.jsonl"
+    )
+check_headers(headers["base"], headers["edit"], ignore=("device", "extra_body"))
+```
+
+Then `astro-weights eval base-http.jsonl edit-http.jsonl --ignore-header`. The headers differ only in `extra_body`, which `check_headers` above already allowed for.
+
+- Send `lora` with an explicit scale on every request, base arm included. A request without `lora` runs every adapter at the server's global scale, which is 1 after loading. `--lora-init-without-apply` does not change that in upstream llama-server: the scales stay 1.0 (upstream issue [#28674](https://github.com/ggml-org/llama.cpp/issues/28674)).
+- One slot (`-np 1`): in a test on llama.cpp b12359, 4 slots changed 17 of 20 outputs compared with 1 slot, while 1 slot gave the same outputs run after run.
+- Prompt caches off (`--no-cache-prompt`, `--cache-reuse 0`, `--cache-ram 0`, `--no-cache-idle-slots`): llama.cpp builds before mid-November 2026 can reuse a cached prompt computed under the other adapter setting.
+- Pin the files you compare: record the sha256 that `export` prints, and the base GGUF's sha256 (`shasum -a 256 base.gguf`), with the results.
+- The verdict holds for that backend and build. Compare arms only from the same server process.
+
 ## What `generate_records` does
 
 - Every item needs `item_id`, `prompt` and `gold` keys. A missing key or a repeated `item_id` raises `ValueError` before anything is generated.
