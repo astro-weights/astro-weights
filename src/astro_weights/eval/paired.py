@@ -1,8 +1,8 @@
 """Paired comparison of two eval arms (numpy only)."""
 
 import math
-from collections import defaultdict
-from collections.abc import Sequence
+from collections import Counter, defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -29,6 +29,11 @@ class PairedResult:
     `n_clusters` is the number of distinct `cluster_id`s, or None when records carry none.
     When set, `se`, `ci95`, `tokens_se`, both MDEs and `tokens_ci95` account for clustering,
     and `small_n` also flags fewer than 100 clusters. McNemar always treats items as independent.
+
+    `ci95` is `diff +- 1.96 SE` (`ci95_method` "normal") except for binary scores on
+    fewer than 100 independent items with K = 1, where it is Newcombe's interval
+    (`ci95_method` "newcombe": no normal approximation, PDR 0.3 section 4.2); `exceeds_floor`
+    uses it. `ci95_normal` always holds the `diff +- 1.96 SE` value (None on old constructors).
 
     The cap fields come last. `cap_hit_p` is the exact McNemar p-value on `hit_cap` between the
     arms (1.0 when no record differs). `n_uncapped`, `uncapped_diff` and `uncapped_tokens_diff`
@@ -67,6 +72,43 @@ class PairedResult:
     uncapped_tokens_diff: float | None = None
     loops_base: int = 0
     loops_edit: int = 0
+    k: int = 1
+    score_ci95_boot: tuple[float, float] = (math.nan, math.nan)
+    sign_test_p: float | None = None
+    base_ci95_wilson: tuple[float, float] | None = None
+    edit_ci95_wilson: tuple[float, float] | None = None
+    newcombe_ci95: tuple[float, float] | None = None
+    strata: tuple["StratumResult", ...] = ()
+    ci95_normal: tuple[float, float] | None = None
+    ci95_method: str = "normal"
+
+
+@dataclass(frozen=True)
+class StratumResult:
+    """Paired score statistics on the items of one stratum (see `compare(strata=...)`).
+
+    `ci95_method` says how `ci95` was made: "newcombe" (binary scores, independent items,
+    under 100 items: Newcombe's hybrid-score interval for the paired difference, built from
+    Wilson intervals), "normal" (the same items at 100 or more: paired SE), or "bootstrap"
+    (graded scores, K > 1 or `cluster_id`: percentile bootstrap over items or clusters).
+    The Wilson intervals for each arm's score are set only with "newcombe" or "normal".
+    `score_mde` is (1.96 + 0.84) * SE, as on `PairedResult`.
+    """
+
+    stratum: str
+    n_items: int
+    mean_base: float
+    mean_edit: float
+    diff: float
+    ci95: tuple[float, float]
+    ci95_method: str
+    se: float
+    score_mde: float
+    small_n: bool
+    n_base_only: int = 0
+    n_edit_only: int = 0
+    base_ci95_wilson: tuple[float, float] | None = None
+    edit_ci95_wilson: tuple[float, float] | None = None
 
 
 def _index(records: Sequence[Record], arm: str) -> dict[_Key, Record]:
@@ -216,6 +258,138 @@ def _mcnemar_exact(b: int, c: int) -> float:
     return float(min(1.0, 2 * tail))
 
 
+def _sign_counts(d: npt.NDArray[np.float64]) -> tuple[int, int]:
+    """(items where base is higher, items where edit is higher) for d = edit - base."""
+    return int((d < 0).sum()), int((d > 0).sum())
+
+
+def _wilson(k: float, n: int) -> tuple[float, float]:
+    """Wilson score interval (95%) for k successes in n trials."""
+    p = k / n
+    z2 = _Z * _Z
+    centre = (p + z2 / (2 * n)) / (1 + z2 / n)
+    half = _Z * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / (1 + z2 / n)
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def _newcombe(
+    sb: npt.NDArray[np.float64], se_: npt.NDArray[np.float64]
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """Wilson CIs for base and edit, and Newcombe's method 10 CI for edit - base.
+
+    Newcombe (1998, Stat. Med. 17:2635) "Improved confidence intervals for the difference
+    between binomial proportions based on paired data": hybrid score interval from the two
+    Wilson intervals and the correlation phi of the paired binary scores (0 if either
+    marginal is 0 or 1). Scores must be 0/1 per item. No normal approximation.
+    """
+    n = sb.size
+    p_b, p_e = float(sb.mean()), float(se_.mean())
+    lb, ub = _wilson(float(sb.sum()), n)
+    le, ue = _wilson(float(se_.sum()), n)
+    phi = _pearson(sb, se_)
+    phi = 0.0 if math.isnan(phi) else phi
+    lo_a, lo_b = p_e - le, ub - p_b
+    hi_a, hi_b = ue - p_e, p_b - lb
+    diff = p_e - p_b
+    lo = diff - math.sqrt(max(0.0, lo_a**2 + lo_b**2 - 2 * phi * lo_a * lo_b))
+    hi = diff + math.sqrt(max(0.0, hi_a**2 + hi_b**2 - 2 * phi * hi_a * hi_b))
+    return (lb, ub), (le, ue), (lo, hi)
+
+
+def _boot_ci(
+    x: npt.NDArray[np.float64],
+    g: npt.NDArray[np.intp] | None,
+    n_g: int,
+    n_boot: int,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """Percentile bootstrap 95% CI of mean(x); NaN for a single cluster."""
+    if g is not None and n_g < 2:
+        return math.nan, math.nan
+    lo, hi = np.percentile(_boot_means(x, g, n_g, n_boot, rng), [2.5, 97.5])
+    return float(lo), float(hi)
+
+
+def _stratum(
+    name: str,
+    sb: npt.NDArray[np.float64],
+    se_: npt.NDArray[np.float64],
+    labels: list[str] | None,
+    binary_items: bool,
+    n_boot: int,
+    rng: np.random.Generator,
+) -> StratumResult:
+    n = sb.size
+    d = se_ - sb
+    g: npt.NDArray[np.intp] | None = None
+    n_g = n
+    if labels is not None:
+        uniq, g = np.unique(np.array(labels), return_inverse=True)
+        n_g = uniq.size
+    se = _paired_se(d) if g is None else _clustered_se(d, g, n_g)
+    diff = float(d.mean())
+    wilson: tuple[tuple[float, float], tuple[float, float]] | None = None
+    if binary_items and g is None:
+        wb, we, nc = _newcombe(sb, se_)
+        wilson = (wb, we)
+    if wilson is not None and n < _SMALL_N:
+        method, ci = "newcombe", nc
+    elif wilson is not None:
+        method, ci = "normal", (diff - _Z * se, diff + _Z * se)
+    else:
+        method, ci = "bootstrap", _boot_ci(d, g, n_g, n_boot, rng)
+    base_only, edit_only = _sign_counts(d) if binary_items else (0, 0)
+    return StratumResult(
+        stratum=name,
+        n_items=n,
+        mean_base=float(sb.mean()),
+        mean_edit=float(se_.mean()),
+        diff=diff,
+        ci95=ci,
+        ci95_method=method,
+        se=se,
+        score_mde=(_Z + _Z_POWER) * se,
+        small_n=min(n, n_g) < _SMALL_N,
+        n_base_only=base_only,
+        n_edit_only=edit_only,
+        base_ci95_wilson=None if wilson is None else wilson[0],
+        edit_ci95_wilson=None if wilson is None else wilson[1],
+    )
+
+
+def _strata_rows(
+    strata: Mapping[str, str],
+    items: list[str],
+    sb: npt.NDArray[np.float64],
+    se_: npt.NDArray[np.float64],
+    labels: list[str] | None,
+    binary_items: bool,
+    n_boot: int,
+    seed: int,
+) -> tuple[StratumResult, ...]:
+    missing = [i for i in items if i not in strata]
+    if missing:
+        raise ValueError(
+            f"strata has no entry for {len(missing)} item_id(s), e.g. {missing[0]!r}"
+        )
+    names = sorted({strata[i] for i in items})
+    rows = []
+    for idx, name in enumerate(names):
+        pick = [j for j, i in enumerate(items) if strata[i] == name]
+        rows.append(
+            _stratum(
+                name,
+                sb[pick],
+                se_[pick],
+                None if labels is None else [labels[j] for j in pick],
+                binary_items,
+                n_boot,
+                np.random.default_rng((seed, 2, idx)),
+            )
+        )
+    return tuple(rows)
+
+
 def is_loop(output: str) -> bool:
     """True when the last 400 characters are one chunk of at most 100 repeated 3 or more times."""
     tail = output[-_LOOP_TAIL:]
@@ -237,9 +411,22 @@ def _uncapped(
 
 
 def compare(
-    base: Sequence[Record], edit: Sequence[Record], n_boot: int = 10000, seed: int = 0
+    base: Sequence[Record],
+    edit: Sequence[Record],
+    n_boot: int = 10000,
+    seed: int = 0,
+    strata: Mapping[str, str] | None = None,
 ) -> PairedResult:
     """Paired comparison of two arms; scores and tokens are averaged over seeds per item first.
+
+    With K > 1 seeds per item (`k` is the most any item has) the statistics are over items.
+    Binary scores then get `sign_test_p`, the exact binomial test on the items whose mean
+    score differs (the discordant counts are those items); McNemar is for K = 1 only.
+    `score_ci95_boot` is a percentile bootstrap CI of the score difference, resampling items
+    (clusters when `cluster_id` is set), seeded; `tokens_ci95` is the same for tokens.
+    For binary scores on independent items the Wilson CIs of each arm and Newcombe's CI of
+    the difference are filled in; use them rather than `ci95` when `small_n`.
+    `strata` maps every item_id to a stratum name and adds one `StratumResult` per stratum.
 
     If records carry `cluster_id` (every record of both arms, the same id for an item across
     arms and seeds), SEs, the score CI and the MDEs use the cluster-robust SE (see
@@ -268,8 +455,23 @@ def compare(
     se = _paired_se(d) if g is None else _clustered_se(d, g, n_g)
 
     binary = bool(np.isin(np.concatenate([sb, se_]), (0.0, 1.0)).all())
-    n_base_only = int(((sb == 1) & (se_ == 0)).sum()) if binary else 0
-    n_edit_only = int(((sb == 0) & (se_ == 1)).sum()) if binary else 0
+    binary_records = all(
+        p[0].score in (0.0, 1.0) and p[1].score in (0.0, 1.0) for p in pairs
+    )
+    n_base_only, n_edit_only = _sign_counts(d) if binary or binary_records else (0, 0)
+    k = max(Counter(b.item_id for b, _ in pairs).values())
+    items = sorted({b.item_id for b, _ in pairs})
+    wb = we = nc = None
+    if binary and g is None:
+        wb, we, nc = _newcombe(sb, se_)
+    ci_normal = (diff - _Z * se, diff + _Z * se)
+    use_newcombe = nc is not None and k == 1 and n < _SMALL_N
+    score_boot = _boot_ci(d, g, n_g, n_boot, np.random.default_rng((seed, 1)))
+    strata_rows = (
+        ()
+        if strata is None
+        else _strata_rows(strata, items, sb, se_, labels, binary, n_boot, seed)
+    )
 
     dt = te - tb
     boot = _boot_means(dt, g, n_g, n_boot, np.random.default_rng(seed))
@@ -288,7 +490,7 @@ def compare(
         mean_edit=float(se_.mean()),
         diff=diff,
         se=se,
-        ci95=(diff - 1.96 * se, diff + 1.96 * se),
+        ci95=nc if use_newcombe and nc is not None else ci_normal,
         correlation=_pearson(sb, se_),
         mcnemar_p=_mcnemar_exact(n_base_only, n_edit_only) if binary else None,
         n_base_only=n_base_only,
@@ -314,6 +516,17 @@ def compare(
         uncapped_tokens_diff=uncapped_tokens_diff,
         loops_base=sum(b.hit_cap and is_loop(b.output) for b, _ in pairs),
         loops_edit=sum(e.hit_cap and is_loop(e.output) for _, e in pairs),
+        k=k,
+        score_ci95_boot=score_boot,
+        sign_test_p=_mcnemar_exact(n_base_only, n_edit_only)
+        if binary_records
+        else None,
+        base_ci95_wilson=wb,
+        edit_ci95_wilson=we,
+        newcombe_ci95=nc,
+        strata=strata_rows,
+        ci95_normal=ci_normal,
+        ci95_method="newcombe" if use_newcombe else "normal",
     )
 
 
@@ -341,9 +554,33 @@ def exceeds_floor(result: PairedResult, floor: PairedResult) -> dict[str, bool]:
 
 
 def _mde_note(ci: tuple[float, float], mde: float, fmt: str) -> str:
+    """Always the MDE; adds the not-significant reading when the CI contains 0."""
+    out = f"  MDE={mde:{fmt}}"
     if ci[0] <= 0 <= ci[1] and math.isfinite(mde):
-        return f"; not significant; smallest detectable difference at this n is {mde:{fmt}}"
-    return ""
+        out += f"; not significant; smallest detectable difference at this n is {mde:{fmt}}"
+    return out
+
+
+def _span(ci: tuple[float, float], fmt: str) -> str:
+    return f"[{ci[0]:{fmt}}, {ci[1]:{fmt}}]"
+
+
+def _stratum_line(r: StratumResult) -> str:
+    return (
+        f"stratum {r.stratum}: n={r.n_items}  base={r.mean_base:.4f}  edit={r.mean_edit:.4f}  "
+        f"diff={r.diff:+.4f}  95% CI {_span(r.ci95, '+.4f')} ({r.ci95_method})"
+        + _mde_note(r.ci95, r.score_mde, ".4f")
+        + (
+            "  WARNING: under 100 items"
+            + (
+                "; percentile bootstrap under-covers at small n"
+                if r.ci95_method == "bootstrap"
+                else ""
+            )
+            if r.small_n
+            else ""
+        )
+    )
 
 
 def _floor_line(
@@ -395,26 +632,45 @@ def _cap_warning(r: PairedResult) -> list[str]:
 def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
     """A few plain lines summarising a `PairedResult`; `floor` adds noise-floor verdicts."""
     clusters = "" if r.n_clusters is None else f" in {r.n_clusters} clusters"
+    mde = f"  MDE={r.score_mde:.4f}"
     lines = [
-        f"n={r.n_items} items{clusters}  base={r.mean_base:.4f}  edit={r.mean_edit:.4f}",
-        f"score diff={r.diff:+.4f}  SE={r.se:.4f}  95% CI [{r.ci95[0]:+.4f}, {r.ci95[1]:+.4f}]"
+        f"n={r.n_items} items{clusters}  K={r.k}  base={r.mean_base:.4f}  edit={r.mean_edit:.4f}",
+        f"score diff={r.diff:+.4f}  SE={r.se:.4f}  95% CI {_span(r.ci95, '+.4f')}"
+        f" ({r.ci95_method})  corr={r.correlation:.3f}"
         + _mde_note(r.ci95, r.score_mde, ".4f"),
+        f"score diff bootstrap 95% CI {_span(r.score_ci95_boot, '+.4f')}{mde}",
     ]
-    if r.mcnemar_p is not None:
+    if r.newcombe_ci95 is not None and r.base_ci95_wilson and r.edit_ci95_wilson:
+        lines.append(
+            f"Wilson 95% CI: base {_span(r.base_ci95_wilson, '.4f')}  "
+            f"edit {_span(r.edit_ci95_wilson, '.4f')}; "
+            f"Newcombe 95% CI of diff {_span(r.newcombe_ci95, '+.4f')}{mde}"
+        )
+    ignores = "; ignores clustering" if r.n_clusters is not None else ""
+    if r.k > 1 and r.sign_test_p is not None:
+        lines.append(
+            f"sign test exact p={r.sign_test_p:.4g}  K={r.k} samples per item, "
+            f"items with higher mean score: base={r.n_base_only}, edit={r.n_edit_only}"
+            + ignores
+            + mde
+        )
+    elif r.mcnemar_p is not None:
         lines.append(
             f"McNemar exact p={r.mcnemar_p:.4g}  "
             f"(base-only right={r.n_base_only}, edit-only right={r.n_edit_only})"
-            + ("; ignores clustering" if r.n_clusters is not None else "")
+            + ignores
+            + mde
         )
     lines += [
         (
             f"tokens: base={r.tokens_base:.1f}  edit={r.tokens_edit:.1f}  "
             f"diff={r.tokens_diff:+.1f} ({r.tokens_diff_pct:+.1f}%)  "
-            f"bootstrap 95% CI [{r.tokens_ci95[0]:+.1f}, {r.tokens_ci95[1]:+.1f}]"
+            f"bootstrap 95% CI {_span(r.tokens_ci95, '+.1f')}"
             + _mde_note(r.tokens_ci95, r.tokens_mde, ".1f")
         ),
         f"cap-hit rate: base={r.cap_hit_base:.3f}  edit={r.cap_hit_edit:.3f}",
     ]
+    lines += [_stratum_line(s) for s in r.strata]
     if floor is not None:
         v = exceeds_floor(r, floor)
         lines.append(
