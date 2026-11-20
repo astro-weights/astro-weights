@@ -405,7 +405,8 @@ def run_header(
     """Settings that decide the outputs, plus where the run happened, for the run log.
 
     Keys are CONFIG (compared, hashed by `config_hash`) or PROVENANCE (stored only):
-    see `astro_weights.eval.header`. `run_id` is random when not given; `k` is samples
+    see `astro_weights.eval.header`. `backend` is the device type (cpu, cuda, mps);
+    the torch and transformers versions are CONFIG, the device string is provenance. `run_id` is random when not given; `k` is samples
     per item and `concurrency` requests in flight (both recorded as given). GPU model
     and count are recorded when CUDA is available. The astro-weights version and
     library commit (`-dirty` when the checkout has changes) and the numpy version are
@@ -420,9 +421,14 @@ def run_header(
     """
     _check_sampling(sampling)
     template = getattr(tokenizer, "chat_template", None)
+    # the model under an applied adapter, so a base arm and an edit arm compare equal
+    inner = getattr(model, "get_base_model", lambda: model)()
     header: dict[str, Any] = {
-        # the class under an applied adapter, so a base arm and an edit arm compare equal
-        "model": type(getattr(model, "get_base_model", lambda: model)()).__name__,
+        "model": type(inner).__name__,
+        "model_name_or_path": str(
+            getattr(getattr(inner, "config", None), "_name_or_path", "") or ""
+        ),
+        "backend": model.device.type,
         "dtype": str(model.dtype),
         "device": str(model.device),
         "max_new_tokens": max_new_tokens,

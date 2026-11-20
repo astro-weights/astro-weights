@@ -33,7 +33,7 @@ class Verdict:
 
     verdict: str
     backend: str
-    build: str | None
+    build: str
     config_hash: str
     split_manifest_sha256: str
     candidates_tried: int
@@ -45,11 +45,9 @@ class Verdict:
     def __post_init__(self) -> None:
         if self.verdict not in VERDICTS:
             raise ValueError(f"verdict must be one of {', '.join(VERDICTS)}")
-        for name in ("backend", "config_hash", "split_manifest_sha256"):
+        for name in ("backend", "build", "config_hash", "split_manifest_sha256"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"{name} must be a non-empty string")
-        if self.build is not None and not isinstance(self.build, str):
-            raise ValueError("build must be a string or null")
         for name in ("candidates_tried", "confirm_queries", "infra_errors"):
             v = getattr(self, name)
             if not _is_int(v) or v < 0:

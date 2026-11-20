@@ -6,9 +6,11 @@ import pytest
 
 from astro_weights.edits import Edit, rank1
 from astro_weights.eval import (
+    CONFIG_KEYS,
     PROVENANCE_KEYS,
     PairedResult,
     Record,
+    check_headers,
     compare,
     config_hash,
     grade_exact,
@@ -139,6 +141,21 @@ def test_run_header(model: Any, tok: Any) -> None:
     } <= h.keys()
     tok.chat_template = "x"
     assert len(run_header(model, tok, 6, 0, True)["chat_template_sha256"]) == 64
+
+
+def test_run_header_identity_and_backend(model: Any, tok: Any) -> None:
+    h = run_header(model, tok, 6, 0, False)
+    assert h["backend"] == "cpu"
+    assert h["device"] == "cpu"
+    assert {"backend", "model_name_or_path", "torch", "transformers"} <= CONFIG_KEYS
+    assert h["model_name_or_path"] == (model.config._name_or_path or "")
+    model.config._name_or_path = "org/a"
+    a = run_header(model, tok, 6, 0, False)
+    model.config._name_or_path = "org/b"
+    b = run_header(model, tok, 6, 0, False)
+    with pytest.raises(ValueError, match="model_name_or_path"):
+        check_headers(a, b)
+    assert config_hash(a) != config_hash(b)
 
 
 def test_run_header_record_keys(model: Any, tok: Any, monkeypatch: Any) -> None:
@@ -604,4 +621,5 @@ def test_run_header_same_under_adapter(model: Any, tok: Any) -> None:
     assert type(edited).__name__ == "PeftModel"
     same = run_header(edited, tok, 6, 0, False, run_id="r")
     assert same == {**base, "run_id": "r"}
+    assert same["model_name_or_path"] == base["model_name_or_path"]
     assert config_hash(same) == config_hash(base)

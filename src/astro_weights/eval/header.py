@@ -3,9 +3,11 @@
 A header has two kinds of key. CONFIG keys decide the outputs (dtype, `max_new_tokens`,
 seed, sampling, batch size, template hash, serving flags, `extra_body`, ...): two arms
 are comparable only when they agree on them, and `config_hash` hashes them. PROVENANCE
-keys say where and when the run happened (device, GPU, library and package versions,
-library commit, run id, server build, served name, base URL): they are stored, never
-compared by default and never hashed. A key in neither set is CONFIG, the safe side.
+keys say where and when the run happened (device string, GPU, library commit, run id,
+served name, base URL): they are stored, never compared and never hashed. Model
+identity and the backend and its build (`backend`, `llama_cpp_build`, `vllm_version`,
+`torch`, `transformers`) are CONFIG: a pair of arms must share one backend and build.
+A key in neither set is CONFIG, the safe side.
 """
 
 import hashlib
@@ -26,6 +28,13 @@ _MISSING = "<missing>"
 CONFIG_KEYS = frozenset(
     {
         "model",  # HF: model class under any adapter
+        "model_name_or_path",  # HF: base checkpoint, same under an adapter
+        "model_id",  # HTTP: model file (/props model_path) or declared id
+        "backend",  # HF: cpu / cuda / mps; HTTP: llama.cpp / vllm / unknown
+        "llama_cpp_build",  # one build per pair of arms
+        "vllm_version",
+        "torch",
+        "transformers",
         "dtype",
         "max_new_tokens",
         "seed",
@@ -42,11 +51,9 @@ CONFIG_KEYS = frozenset(
 )
 PROVENANCE_KEYS = frozenset(
     {
-        "device",
+        "device",  # the full string; its type is CONFIG under "backend"
         "gpu_model",
         "gpu_count",
-        "torch",
-        "transformers",
         "peft",
         "numpy",
         "astro_weights",
@@ -56,8 +63,6 @@ PROVENANCE_KEYS = frozenset(
         "served_model",
         "server_model",
         "system_fingerprint",
-        "llama_cpp_build",
-        "vllm_version",
     }
 )
 # A CONFIG key that older headers lack counts as its default, not as a difference.
@@ -89,19 +94,18 @@ def read_header(path: str | Path) -> dict[str, Any]:
 def check_headers(
     base: dict[str, Any],
     edit: dict[str, Any],
-    ignore: Collection[str] | None = None,
+    ignore: Collection[str] = (),
     arm_keys: Collection[str] = (),
 ) -> None:
     """Raise ValueError listing every CONFIG key that differs or is missing on one side.
 
-    `ignore=None` (the default) skips every PROVENANCE key. An explicit `ignore` skips
-    exactly those keys: `ignore=()` compares provenance too. A key in neither set is
-    compared. A CONFIG key that old headers lack (`k`, `concurrency`) counts as its
-    default (1). `arm_keys` names `extra_body` keys that may differ between the arms,
-    for two arms on one server that differ only in a request field such as a `lora`
-    scale.
+    PROVENANCE keys are always skipped; `ignore` names more keys to skip (a union, so
+    the old `ignore=("device",)` still works). A key in neither set is compared. A
+    CONFIG key that old headers lack (`k`, `concurrency`) counts as its default (1).
+    `arm_keys` names `extra_body` keys that may differ between the arms, for two arms
+    on one server that differ only in a request field such as a `lora` scale.
     """
-    skip = PROVENANCE_KEYS if ignore is None else frozenset(ignore)
+    skip = PROVENANCE_KEYS | frozenset(ignore)
     b = {**_DEFAULTS, **_arm_free(base, arm_keys)}
     e = {**_DEFAULTS, **_arm_free(edit, arm_keys)}
     diffs = [
@@ -131,14 +135,26 @@ def _config(header: Mapping[str, Any], arm_keys: Collection[str]) -> dict[str, A
     return {k: v for k, v in h.items() if k not in PROVENANCE_KEYS}
 
 
+def _norm(value: Any) -> Any:
+    """`value` with whole-number floats as ints, so 1 and 1.0 hash alike."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, Mapping):
+        return {k: _norm(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_norm(v) for v in value]
+    return value
+
+
 def config_hash(header: Mapping[str, Any], arm_keys: Collection[str] = ()) -> str:
     """SHA-256 hex of the canonical JSON (sorted keys) of the header's CONFIG keys.
 
-    Unchanged by key order and by any PROVENANCE value; changes with any CONFIG value.
+    Unchanged by key order, by any PROVENANCE value and by 1 versus 1.0; changes with
+    any other CONFIG value.
     `arm_keys` names `extra_body` keys left out, as in `check_headers`.
     """
     text = json.dumps(
-        _config(header, arm_keys),
+        _norm(_config(header, arm_keys)),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

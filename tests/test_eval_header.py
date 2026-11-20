@@ -63,8 +63,8 @@ def test_check_lists_every_difference() -> None:
 
 def test_check_custom_ignore() -> None:
     check_headers({"a": 1, "seed": 0}, {"a": 1, "seed": 1}, ignore=("seed",))
-    with pytest.raises(ValueError, match="device"):
-        check_headers({"device": "a"}, {"device": "b"}, ignore=())
+    check_headers({"a": 1, "device": "a"}, {"a": 1, "device": "b"}, ignore=())
+    check_headers({"device": "a"}, {"device": "b"}, ignore=("device",))  # old default
 
 
 def test_key_sets_disjoint() -> None:
@@ -73,7 +73,7 @@ def test_key_sets_disjoint() -> None:
 
 def test_check_ignores_provenance_by_default() -> None:
     a = {"seed": 0, "run_id": "1", "gpu_model": "H200", "torch": "2.1"}
-    b = {"seed": 0, "run_id": "2", "base_url": "http://x", "library_commit": "abc"}
+    b = {"seed": 0, "run_id": "2", "base_url": "http://x", "torch": "2.1"}
     check_headers(a, b)  # provenance missing on one side is not a difference
     with pytest.raises(ValueError, match="seed: base=0 edit=1"):
         check_headers(a, {**b, "seed": 1})
@@ -84,11 +84,22 @@ def test_check_unknown_key_is_config() -> None:
         check_headers({"novel": 1}, {"novel": 2})
 
 
-def test_check_explicit_ignore_is_exact() -> None:
+def test_check_explicit_ignore_is_union_with_provenance() -> None:
     a, b = {"seed": 0, "run_id": "1"}, {"seed": 1, "run_id": "2"}
-    with pytest.raises(ValueError, match="run_id"):
-        check_headers(a, b, ignore=("seed",))  # provenance now compared
-    check_headers(a, b, ignore=("seed", "run_id"))
+    with pytest.raises(ValueError, match="seed"):
+        check_headers(a, b, ignore=("run_id",))
+    check_headers(a, b, ignore=("seed",))  # run_id is provenance, still skipped
+
+
+def test_backend_and_build_are_config() -> None:
+    for key in ("backend", "llama_cpp_build", "vllm_version", "torch", "transformers"):
+        assert key in CONFIG_KEYS
+        with pytest.raises(ValueError, match=key):
+            check_headers({key: "1"}, {key: "2"})
+        assert config_hash({key: "1"}) != config_hash({key: "2"})
+    for key in ("model_id", "model_name_or_path"):
+        with pytest.raises(ValueError, match=key):
+            check_headers({key: "a"}, {key: "b"})
 
 
 def test_check_arm_keys() -> None:
@@ -123,6 +134,12 @@ def test_old_headers_still_compare() -> None:
     new = {**old, "device": "cuda:0", "run_id": "r", "k": 1, "concurrency": 1}
     check_headers(old, old)
     check_headers(old, new)  # new CONFIG keys at their defaults are no difference
+    # a new CONFIG key the old header lacks is a difference
+    with pytest.raises(ValueError, match="backend: base='<missing>' edit='cpu'"):
+        check_headers(old, {**new, "backend": "cpu"})
+    # an old HTTP header has `model`, a new one does not
+    with pytest.raises(ValueError, match="model: base='m' edit='<missing>'"):
+        check_headers({"model": "m"}, {"served_model": "m"})
     with pytest.raises(ValueError, match="k: base=1 edit=4"):
         check_headers(old, {**new, "k": 4})
     assert config_hash(old) == config_hash(new)
@@ -140,6 +157,14 @@ def test_config_hash_properties() -> None:
     assert config_hash({**h, "novel": 1}) != config_hash(h)  # unknown key is CONFIG
     assert config_hash({**h, "k": 2}) != config_hash(h)
     assert config_hash({**h, "k": 1}) == config_hash(h)  # default
+
+
+def test_config_hash_whole_floats() -> None:
+    a = {"sampling": {"temperature": 1, "top_p": 0.9}, "x": [1, {"y": 2}]}
+    b = {"sampling": {"temperature": 1.0, "top_p": 0.9}, "x": [1.0, {"y": 2.0}]}
+    assert config_hash(a) == config_hash(b)
+    assert config_hash({"t": 1.5}) != config_hash({"t": 1})
+    assert config_hash({"t": True}) != config_hash({"t": 1})
 
 
 def test_config_hash_arm_keys() -> None:

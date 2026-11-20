@@ -7,7 +7,7 @@ astro-weights [--version] {build,compose,eval,export,inspect,mcp,run} ...
 | Command | Does |
 |---|---|
 | `inspect DIR` | summarize and verify a saved PEFT adapter; see [How-to: inspect an adapter](../how-to/inspect-adapter.md) |
-| `eval BASE.jsonl EDIT.jsonl [--boot N] [--seed N] [--floor A.jsonl B.jsonl] [--ignore-header]` | compare two arms from per-item records and print the [`format_report`](../how-to/compare-arms.md); `--boot` sets the bootstrap resamples (default 10000), `--seed` the bootstrap seed (default 0), `--floor` takes two base-arm runs for a noise floor, `--ignore-header` skips the run-header check; see [How-to: run an eval end to end](../how-to/run-eval.md) |
+| `eval BASE.jsonl EDIT.jsonl [--boot N] [--seed N] [--floor A.jsonl B.jsonl] [--ignore-header] [--arm-key KEY ...]` | compare two arms from per-item records and print the [`format_report`](../how-to/compare-arms.md); `--boot` sets the bootstrap resamples (default 10000), `--seed` the bootstrap seed (default 0), `--floor` takes two base-arm runs for a noise floor, `--ignore-header` skips the run-header check, `--arm-key KEY` (repeatable) names an `extra_body` key that may differ between the arms; see [How-to: run an eval end to end](../how-to/run-eval.md) |
 | `build RECIPE.json --base MODEL_DIR --out DIR [--card LICENSE] [--force]` | build a PEFT adapter from a recipe file and the base model weights; print one line per module (`out x in`, rank), then `wrote DIR`; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) |
 | `compose ADAPTER ADAPTER [ADAPTER...] -o OUT_DIR [--base-model NAME] [--force]` | combine two or more PEFT adapters on the same base model into one adapter whose change is exactly their sum; print the module count and rank, then `wrote OUT_DIR` |
 | `export DIR [--gguf OUT.gguf --arch ARCH] [--card LICENSE] [--splice BASE.gguf --base-model DIR --merged OUT.gguf [--out-type TYPE]] [--force]` | verify the adapter in `DIR`, then write a GGUF LoRA adapter, a merged GGUF, a model card or any mix of them; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) and [How-to: use with Ollama](../how-to/use-with-ollama.md) |
@@ -18,7 +18,7 @@ Every command except `mcp` takes `--json`, which prints one JSON object on stdou
 
 ## eval
 
-- Run headers: when `BASE.header.json` and `EDIT.header.json` (beside `BASE.jsonl` and `EDIT.jsonl`) both exist, their keys must match, ignoring `device`. A difference exits 1. If one is missing, or with `--ignore-header`, there is no check.
+- Run headers: when `BASE.header.json` and `EDIT.header.json` (beside `BASE.jsonl` and `EDIT.jsonl`) both exist, their config keys must match (provenance keys such as `device`, run id and `base_url` are ignored; see [run headers](../how-to/run-eval.md#run-headers)). A difference exits 1. If one is missing, or with `--ignore-header`, there is no check.
 - `--floor A.jsonl B.jsonl` adds `noise floor (score)` and `noise floor (tokens)` lines to the report; see [How-to: compare two eval arms](../how-to/compare-arms.md#noise-floor).
 - The report ends with a `WARNING: cap-hit censoring` block when an arm hits the token cap often or unevenly; see [How-to: compare two eval arms](../how-to/compare-arms.md#cap-hit-censoring).
 - `--json` prints the `PairedResult` fields (including the cap-hit fields) plus `floor` (`null`, or `result` and `exceeds`), with non-finite numbers as `null`.

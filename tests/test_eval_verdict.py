@@ -29,8 +29,6 @@ def test_roundtrip() -> None:
     data = json.loads(text)
     assert list(data) == sorted(data)
     assert data["schema_version"] == 1
-    assert _v(build=None).to_json() == _v(build=None).to_json()
-    assert Verdict.from_json(_v(build=None).to_json()).build is None
 
 
 @pytest.mark.parametrize("name", VERDICTS)
@@ -46,6 +44,8 @@ def test_every_verdict_value(name: str) -> None:
         ({"config_hash": 5}, "config_hash"),
         ({"split_manifest_sha256": ""}, "split_manifest_sha256"),
         ({"build": 3}, "build"),
+        ({"build": ""}, "build"),
+        ({"build": None}, "build"),
         ({"candidates_tried": -1}, "candidates_tried"),
         ({"confirm_queries": True}, "confirm_queries"),
         ({"infra_errors": 1.5}, "infra_errors"),
