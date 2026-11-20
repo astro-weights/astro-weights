@@ -1,5 +1,6 @@
 """Paired eval statistics from per-item records. Never runs a model."""
 
+from astro_weights.eval.controls import ControlVerdict, control_rule, min_controls
 from astro_weights.eval.grade import (
     answer_part,
     grade_choice,
@@ -31,6 +32,7 @@ from astro_weights.eval.verdict import Verdict
 __all__ = [
     "CONFIG_KEYS",
     "PROVENANCE_KEYS",
+    "ControlVerdict",
     "PairedResult",
     "Record",
     "StratumResult",
@@ -39,6 +41,7 @@ __all__ = [
     "check_headers",
     "compare",
     "config_hash",
+    "control_rule",
     "exceeds_floor",
     "format_report",
     "grade_choice",
@@ -47,6 +50,7 @@ __all__ = [
     "header_path",
     "is_loop",
     "last_boxed",
+    "min_controls",
     "pair",
     "prompt_hash",
     "read_header",
