@@ -133,3 +133,10 @@ def test_verdict_equality_has_no_nan() -> None:
     a = control_rule(pr(20.0), ctrls(SPREAD), target="diff", direction="higher")
     b = control_rule(pr(20.0), ctrls(SPREAD), target="diff", direction="higher")
     assert a == b
+
+
+@pytest.mark.parametrize("target", ["dif", "mcnemar_p"])
+def test_unknown_or_non_numeric_target_is_a_value_error(target: str) -> None:
+    edit = pr(1.0)
+    with pytest.raises(ValueError, match="numeric PairedResult field"):
+        control_rule(edit, ctrls([0.0] * 20), target=target, direction="higher")

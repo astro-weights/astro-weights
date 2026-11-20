@@ -28,8 +28,8 @@ class ControlVerdict:
     """Outcome of `control_rule`.
 
     `target_rank` is how many controls the edit strictly beats on the target (out of
-    `n_controls`); `target_quantile` is the controls' `q`-quantile of the target metric, in
-    the metric's own units. `side_effects` maps each side-effect name to True when the edit
+    `n_controls`); `target_quantile` is the controls' `q`-quantile of goodness, given in the
+    metric's own units (for `direction="lower"` that is the `1 - q` quantile of the raw values). `side_effects` maps each side-effect name to True when the edit
     is inside the controls' range. `outside` names the ones that are not.
     """
 
@@ -49,7 +49,12 @@ def min_controls(q: float) -> int:
 
 
 def _values(results: Sequence[PairedResult], metric: str, what: str) -> list[float]:
-    out = [float(getattr(r, metric)) for r in results]
+    out: list[float] = []
+    for r in results:
+        v = getattr(r, metric, None)
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            raise ValueError(f"{what}: {metric!r} is not a numeric PairedResult field")  # noqa: TRY004 (caller arg, not a type bug)
+        out.append(float(v))
     if not all(math.isfinite(v) for v in out):
         raise ValueError(f"{what}: {metric} is NaN or infinite")
     return out
