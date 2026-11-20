@@ -367,3 +367,32 @@ astro-weights eval base.jsonl edit.jsonl --split test --manifest gsm8k.splits.js
 - Keep manifests and the seal dir outside an agent run's `RUN_DIR`: the MCP server never reads them, and the kernel sandbox cannot open them.
 
 What the seal stops, and what it does not: it stops an accidental second scoring, and an agent or optimiser hunting for a second look at the test split. It does not stop the machine's owner, who can delete the ledger or the salt, point `--seal-dir` somewhere new, or change the code. For that, the check is the run record and a published hash of the ledger: a reader compares the ledger behind a result with the hash published before it.
+
+## Noise floor
+
+Run the base arm twice under the same settings and keep what the two runs disagree on. `floor_from_records(run1, run2, header)` pairs the runs by item and seed and returns a `FloorResult`: the accuracy and token deltas with their standard errors, `flip_rate` (the share of (item, seed) pairs whose output text differs) and `k`. `save_floor` stores it as `floor-<config_hash>.json`, and `load_floor(dir, config_hash)` returns it only for that exact `config_hash` (the hash of the header's config keys, so a change to the model, sampling, `max_new_tokens`, `k` or any other config value gives `None`; provenance keys such as `run_id` do not count). A file whose stored hash is not the one in its name, or that is not a valid floor, raises `ValueError`. A deterministic server (greedy, one slot) gives a floor of exactly 0.
+
+```python
+from astro_weights.eval import floor_from_records, load_floor, save_floor
+from astro_weights.eval.header import config_hash
+
+ids = range(6)
+run1 = [
+    Record(f"n{i}", 0, "base", f"h{i}", f"out{i}", float(i % 2), 5, False) for i in ids
+]
+run2 = [
+    Record(f"n{i}", 0, "base", f"h{i}", f"out{i}", float(i % 2), 5, False) for i in ids
+]
+header = {"model": "tiny-llama", "temperature": 0.0, "max_new_tokens": 64}
+floor = floor_from_records(run1, run2, header)
+save_floor("floors", floor)
+print(floor.flip_rate, floor.accuracy_delta)
+assert load_floor("floors", floor.config_hash) == floor
+assert load_floor("floors", config_hash({**header, "max_new_tokens": 128})) is None
+```
+
+Output:
+
+```text
+0.0 0.0
+```
