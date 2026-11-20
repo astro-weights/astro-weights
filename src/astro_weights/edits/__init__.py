@@ -1,5 +1,6 @@
 """Edit types and recipes."""
 
+from astro_weights.edits.controls import random_controls, random_like
 from astro_weights.edits.core import Edit, LowRankDelta, compose
 from astro_weights.edits.dense import from_dense
 from astro_weights.edits.recipe_file import build_edit, load_recipe, save_recipe
@@ -26,6 +27,8 @@ __all__ = [
     "masked_rank1",
     "orthogonal_random",
     "project_out",
+    "random_controls",
+    "random_like",
     "rank1",
     "save_recipe",
     "scale_column",

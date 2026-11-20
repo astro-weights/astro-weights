@@ -142,3 +142,31 @@ Output:
 ```
 
 To check a shipped adapter against its recipe, compare `edit.meta["recipe"]["arrays_sha256"]` with the same field from `read_peft("my-adapter")`.
+
+## Random controls
+
+To show a direction matters and not just the size of the change, compare the edit with random edits of the same size. `random_controls` returns seeded edits with the same modules, shapes, rank and per-module `|B @ A|_F`. Pass `dtype="bfloat16"` (or `"float16"`) and `base=` (module name to `W0`) to match the norm after rounding the merged weight instead. This continues the example above:
+
+```python
+import numpy as np
+
+from astro_weights.edits import random_controls
+
+controls = random_controls(edit, n=3, seed=0)
+for c in controls:
+    print(
+        c.meta["control"],
+        all(
+            np.isclose(np.linalg.norm(x.dense()), np.linalg.norm(y.dense()), rtol=1e-5)
+            for x, y in zip(c.deltas, edit.deltas)
+        ),
+    )
+```
+
+Output:
+
+```text
+0 True
+1 True
+2 True
+```
