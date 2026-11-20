@@ -63,6 +63,7 @@ else:
 __all__ = [
     "FINGERPRINT_TOL",
     "LEDGER",
+    "MODULE_SHARE",
     "PROBES",
     "Scoring",
     "SealedError",
@@ -82,6 +83,7 @@ SALT = "seal.salt"
 SALT_BYTES = 32
 PROBES = 8
 FINGERPRINT_TOL = 1e-3
+MODULE_SHARE = 0.01
 _TAG = b"astro-weights seal v2\0"
 _SHA = re.compile(r"[0-9a-f]{64}")
 _KEYS = frozenset(
@@ -214,10 +216,15 @@ def _rel(x: float, nx: float, ny: float) -> float:
 def _distance(f: Mapping[str, np.ndarray], g: Mapping[str, np.ndarray]) -> float:
     """The larger of the global and the worst per-module relative distance.
 
-    Global: ``||f - g|| / max(||f||, ||g||)`` over the union of modules, a missing
-    module counting as 0, so adding a tiny module stays the same edit. Per module:
-    the same ratio for each module in both, so a wholly different small module is a
-    new edit even when its share of the norm is below ``FINGERPRINT_TOL``.
+    ``f`` is the earlier scoring's fingerprint. Global: ``||f - g|| / max(||f||,
+    ||g||)`` over the union of modules, a missing module counting as 0, so adding a
+    tiny module stays the same edit. Per module: the same ratio for each module in
+    both that carries at least ``MODULE_SHARE`` of ``||f||``, so a large module
+    changed alone is a new edit even when the global distance is small. A module
+    under that share counts only through the global term: tweaking a tiny module
+    does not make a new edit, and a wholly different small module (below about
+    0.07% of the norm) counts as the same edit (fail closed; ``unseal`` is the
+    escape).
     """
     zero = np.zeros((PROBES, PROBES))
 
@@ -228,8 +235,9 @@ def _distance(f: Mapping[str, np.ndarray], g: Mapping[str, np.ndarray]) -> float
     norms = [math.sqrt(sum(sq(x) for x in h.values())) for h in (f, g)]
     out = _rel(math.sqrt(diff), *norms)
     for m in f.keys() & g.keys():
-        d = _rel(math.sqrt(sq(f[m] - g[m])), math.sqrt(sq(f[m])), math.sqrt(sq(g[m])))
-        out = max(out, d)
+        nf = math.sqrt(sq(f[m]))
+        if nf >= MODULE_SHARE * norms[0]:
+            out = max(out, _rel(math.sqrt(sq(f[m] - g[m])), nf, math.sqrt(sq(g[m]))))
     return out
 
 

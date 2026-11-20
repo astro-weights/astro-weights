@@ -16,6 +16,7 @@ from astro_weights.eval import Record, read_jsonl, write_jsonl
 from astro_weights.eval.seal import (
     FINGERPRINT_TOL,
     LEDGER,
+    MODULE_SHARE,
     PROBES,
     SALT,
     Scoring,
@@ -226,12 +227,45 @@ def _small(e: Edit, norm: float, share: float, seed: int) -> Edit:
     return Edit.from_deltas([*e.deltas, small], "b")
 
 
-@pytest.mark.parametrize("share", [2.5e-3, 1e-4])
-def test_wholly_different_small_module_is_a_new_edit(share: float) -> None:
-    """Review finding 3: the per-module distance sees a small module's change."""
-    e, norm = _big(4)
-    f1 = fingerprint(_small(e, norm, share, 1), SALT1)
-    assert _distance(f1, fingerprint(_small(e, norm, share, 2), SALT1)) > 0.5
+def _module(norm: float, share: float, seed: int, scale: float = 1.0) -> LowRankDelta:
+    r = np.random.default_rng(seed)
+    b, a = r.standard_normal((256, 8)), r.standard_normal((8, 256))
+    b *= scale * share * norm / np.linalg.norm(b @ a)
+    return LowRankDelta("model.layers.9.self_attn.o_proj", b, a)
+
+
+def test_tiny_module_tweak_is_the_same_edit() -> None:
+    """Round-3 regression: a 1e-6-share module x1.002 read as a new edit."""
+    e, norm = _big()
+    before = fingerprint(Edit((*e.deltas, _module(norm, 1e-6, 1)), "b"), SALT1)
+    after = fingerprint(Edit((*e.deltas, _module(norm, 1e-6, 1, 1.002)), "b"), SALT1)
+    assert _distance(before, after) < 1e-6
+
+
+@pytest.mark.parametrize(
+    ("share", "new"),
+    [(2.5e-3, True), (1e-4, False)],
+    ids=["global-term-sees-it", "same-edit"],
+)
+def test_wholly_different_module_under_share(share: float, new: bool) -> None:
+    """Under MODULE_SHARE only the global term counts: about sqrt(2) * share.
+
+    So a wholly different module is a new edit above ~0.07% of the norm (2.5e-3
+    gives ~3.5e-3) and the same edit below it (fail closed, --unseal escapes).
+    """
+    e, norm = _big()
+    f1 = fingerprint(Edit((*e.deltas, _module(norm, share, 1)), "b"), SALT1)
+    f2 = fingerprint(Edit((*e.deltas, _module(norm, share, 2)), "b"), SALT1)
+    assert (_distance(f1, f2) > FINGERPRINT_TOL) is new
+
+
+def test_large_module_changed_alone_is_a_new_edit() -> None:
+    """A 5%-share module x1.01: global ~5e-4, per-module 1e-2."""
+    e, norm = _big()
+    f1 = fingerprint(Edit((*e.deltas, _module(norm, 0.05, 1)), "b"), SALT1)
+    f2 = fingerprint(Edit((*e.deltas, _module(norm, 0.05, 1, 1.01)), "b"), SALT1)
+    assert _distance(f1, f2) > 5 * FINGERPRINT_TOL
+    assert MODULE_SHARE == 0.01
 
 
 def test_tiny_module_added_is_the_same_edit() -> None:
