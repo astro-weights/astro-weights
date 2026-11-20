@@ -37,8 +37,8 @@ def _same_items(base: Sequence[Record], arm: str, records: Sequence[Record]) -> 
     if a == b:
         return
     items_b, items_a = {i for i, _ in b}, {i for i, _ in a}
-    x: list[object]
-    y: list[object]
+    x: Sequence[object]
+    y: Sequence[object]
     if items_a != items_b:
         what, x, y = "item set", sorted(items_b - items_a), sorted(items_a - items_b)
     else:
