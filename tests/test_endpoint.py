@@ -144,9 +144,9 @@ def test_missing_usage_names_response() -> None:
 
 def test_http_500_has_status_and_truncated_body() -> None:
     with serve(lambda _b: (500, "boom" * 300)) as (url, state):
-        with pytest.raises(RuntimeError, match="HTTP 500") as exc:
+        with pytest.raises(RuntimeError, match=r"item 'i0'.*HTTP 500") as exc:
             generate_records_http(url, "m", ITEMS[:1], "a", grade_exact, 4)
-        assert len(state.requests) == 1
+        assert len(state.requests) == 3  # 5xx is retried
     assert "boom" in str(exc.value)
     assert len(str(exc.value)) < 600
 
