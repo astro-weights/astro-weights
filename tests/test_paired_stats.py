@@ -345,3 +345,98 @@ def test_cli_text_and_json_show_new_fields(
     assert j["strata"] == []
     assert j["sign_test_p"] == pytest.approx(_binom_two_sided(0, 6))
     assert (j["n_base_only"], j["n_edit_only"]) == (0, 6)
+
+
+def test_newcombe_published_example() -> None:
+    # Newcombe 1998, Stat. Med. 17:2635, method 10: a=36, b=12, c=2, d=0 -> (0.0569, 0.3404)
+    # (edit = row 1 = a + c right; base = column 1 = a + b right; b = base only).
+    sb = np.array([1.0] * 36 + [1.0] * 12 + [0.0] * 2)
+    se = np.array([1.0] * 36 + [0.0] * 12 + [1.0] * 2)
+    lo, hi = _newcombe(se, sb)[2]  # the paper's P1 - P2 with P1 = the 38/50 arm
+    assert (lo, hi) == pytest.approx((0.0569, 0.3404), abs=1e-4) or (
+        -hi,
+        -lo,
+    ) == pytest.approx((0.0569, 0.3404), abs=1e-4)
+
+
+def test_small_binary_ci95_is_newcombe_and_normal_kept() -> None:
+    b, e = _recs([[1], [1], [0], [0], [1], [0]], [[1], [0], [1], [1], [1], [1]])
+    r = compare(b, e, n_boot=10)
+    assert (r.ci95_method, r.ci95) == ("newcombe", r.newcombe_ci95)
+    assert r.ci95_normal == pytest.approx((r.diff - 1.96 * r.se, r.diff + 1.96 * r.se))
+    assert r.ci95 != r.ci95_normal
+    assert "(newcombe)" in format_report(r)
+
+
+@pytest.mark.parametrize("which", ["n100", "graded", "k2", "clustered"])
+def test_ci95_stays_normal_otherwise(which: str) -> None:
+    rng = np.random.default_rng(0)
+    n = 100 if which == "n100" else 30
+    k = 2 if which == "k2" else 1
+    sb = rng.integers(0, 2, (n, k)).astype(float)
+    se = rng.integers(0, 2, (n, k)).astype(float)
+    if which == "graded":
+        sb, se = sb * 0.5, se * 0.7
+    cl = [f"c{i // 2}" for i in range(n)] if which == "clustered" else None
+    b, e = _recs(sb.tolist(), se.tolist(), cl)
+    r = compare(b, e, n_boot=10)
+    assert r.ci95_method == "normal"
+    assert r.ci95 == r.ci95_normal
+
+
+def test_exceeds_floor_uses_newcombe_at_small_n() -> None:
+    # 3 edit-only items of 8: the CLT interval excludes 0 (lower end +0.016), Newcombe does not.
+    from astro_weights.eval import exceeds_floor
+
+    b, e = _recs([[0.0]] * 8, [[1.0]] * 3 + [[0.0]] * 5)
+    r = compare(b, e, n_boot=10)
+    assert r.ci95_normal is not None
+    assert r.ci95_normal[0] > 0
+    assert r.ci95[0] < 0
+    floor = compare(*_recs([[0.0]] * 8, [[0.0]] * 8), n_boot=10)
+    assert exceeds_floor(r, floor)["score"] is False
+
+
+def test_mde_on_every_result_line() -> None:
+    b, e = _recs([[1], [1], [0], [0], [1], [0]], [[1], [0], [1], [1], [1], [1]])
+    text = format_report(compare(b, e, n_boot=50))
+    for prefix in (
+        "score diff=",
+        "score diff bootstrap",
+        "Wilson 95% CI",
+        "McNemar",
+        "tokens:",
+    ):
+        (line,) = (ln for ln in text.splitlines() if ln.startswith(prefix))
+        assert "MDE=" in line, prefix
+    b4, e4 = _recs([[0, 0, 1, 0]] * 7, [[1, 0, 1, 1]] * 7)
+    text = format_report(compare(b4, e4, n_boot=50))
+    (line,) = (ln for ln in text.splitlines() if ln.startswith("sign test"))
+    assert "MDE=" in line
+
+
+def test_small_bootstrap_stratum_is_flagged() -> None:
+    rng = np.random.default_rng(4)
+    b, e = _recs(
+        [[float(x)] for x in rng.random(30)], [[float(x)] for x in rng.random(30)]
+    )
+    r = compare(b, e, n_boot=50, strata={f"i{k}": "s" for k in range(30)})
+    s = r.strata[0]
+    assert (s.ci95_method, s.small_n) == ("bootstrap", True)
+    assert json.loads(json.dumps(dataclasses.asdict(r)))["strata"][0]["small_n"] is True
+    assert "percentile bootstrap under-covers at small n" in format_report(r)
+
+
+def test_small_stratum_bootstrap_coverage_simulation() -> None:
+    # Measured, skewed d, true diff 0: n=20 89.2%, n=30 88.8-93.3% (two seeds, 400-600 reps),
+    # n=50 93.8%: the percentile bootstrap under-covers a little below ~50 items.
+    rng = np.random.default_rng(31)
+    reps, n, hit = 400, 30, 0
+    for _ in range(reps):
+        x = rng.normal(0, 1, n)
+        y = x + rng.exponential(1, n) - 1 + rng.normal(0, 0.5, n)
+        b, e = _recs([[v] for v in x], [[v] for v in y])
+        s = compare(b, e, n_boot=300, strata={f"i{k}": "s" for k in range(n)}).strata[0]
+        assert s.ci95_method == "bootstrap"
+        hit += s.ci95[0] <= 0 <= s.ci95[1]
+    assert 0.85 <= hit / reps <= 0.99

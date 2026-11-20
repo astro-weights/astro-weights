@@ -30,6 +30,11 @@ class PairedResult:
     When set, `se`, `ci95`, `tokens_se`, both MDEs and `tokens_ci95` account for clustering,
     and `small_n` also flags fewer than 100 clusters. McNemar always treats items as independent.
 
+    `ci95` is `diff +- 1.96 SE` (`ci95_method` "normal") except for binary scores on
+    fewer than 100 independent items with K = 1, where it is Newcombe's interval
+    (`ci95_method` "newcombe": no normal approximation, PDR 0.3 section 4.2); `exceeds_floor`
+    uses it. `ci95_normal` always holds the `diff +- 1.96 SE` value (None on old constructors).
+
     The cap fields come last. `cap_hit_p` is the exact McNemar p-value on `hit_cap` between the
     arms (1.0 when no record differs). `n_uncapped`, `uncapped_diff` and `uncapped_tokens_diff`
     cover the items with at least one (item, seed) pair where neither arm hit the cap, using only
@@ -74,6 +79,8 @@ class PairedResult:
     edit_ci95_wilson: tuple[float, float] | None = None
     newcombe_ci95: tuple[float, float] | None = None
     strata: tuple["StratumResult", ...] = ()
+    ci95_normal: tuple[float, float] | None = None
+    ci95_method: str = "normal"
 
 
 @dataclass(frozen=True)
@@ -457,6 +464,8 @@ def compare(
     wb = we = nc = None
     if binary and g is None:
         wb, we, nc = _newcombe(sb, se_)
+    ci_normal = (diff - _Z * se, diff + _Z * se)
+    use_newcombe = nc is not None and k == 1 and n < _SMALL_N
     score_boot = _boot_ci(d, g, n_g, n_boot, np.random.default_rng((seed, 1)))
     strata_rows = (
         ()
@@ -481,7 +490,7 @@ def compare(
         mean_edit=float(se_.mean()),
         diff=diff,
         se=se,
-        ci95=(diff - 1.96 * se, diff + 1.96 * se),
+        ci95=nc if use_newcombe and nc is not None else ci_normal,
         correlation=_pearson(sb, se_),
         mcnemar_p=_mcnemar_exact(n_base_only, n_edit_only) if binary else None,
         n_base_only=n_base_only,
@@ -516,6 +525,8 @@ def compare(
         edit_ci95_wilson=we,
         newcombe_ci95=nc,
         strata=strata_rows,
+        ci95_normal=ci_normal,
+        ci95_method="newcombe" if use_newcombe else "normal",
     )
 
 
@@ -559,7 +570,16 @@ def _stratum_line(r: StratumResult) -> str:
         f"stratum {r.stratum}: n={r.n_items}  base={r.mean_base:.4f}  edit={r.mean_edit:.4f}  "
         f"diff={r.diff:+.4f}  95% CI {_span(r.ci95, '+.4f')} ({r.ci95_method})"
         + _mde_note(r.ci95, r.score_mde, ".4f")
-        + ("  WARNING: under 100 items" if r.small_n else "")
+        + (
+            "  WARNING: under 100 items"
+            + (
+                "; percentile bootstrap under-covers at small n"
+                if r.ci95_method == "bootstrap"
+                else ""
+            )
+            if r.small_n
+            else ""
+        )
     )
 
 
@@ -612,17 +632,19 @@ def _cap_warning(r: PairedResult) -> list[str]:
 def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
     """A few plain lines summarising a `PairedResult`; `floor` adds noise-floor verdicts."""
     clusters = "" if r.n_clusters is None else f" in {r.n_clusters} clusters"
+    mde = f"  MDE={r.score_mde:.4f}"
     lines = [
         f"n={r.n_items} items{clusters}  K={r.k}  base={r.mean_base:.4f}  edit={r.mean_edit:.4f}",
         f"score diff={r.diff:+.4f}  SE={r.se:.4f}  95% CI {_span(r.ci95, '+.4f')}"
-        f"  corr={r.correlation:.3f}" + _mde_note(r.ci95, r.score_mde, ".4f"),
-        f"score diff bootstrap 95% CI {_span(r.score_ci95_boot, '+.4f')}",
+        f" ({r.ci95_method})  corr={r.correlation:.3f}"
+        + _mde_note(r.ci95, r.score_mde, ".4f"),
+        f"score diff bootstrap 95% CI {_span(r.score_ci95_boot, '+.4f')}{mde}",
     ]
     if r.newcombe_ci95 is not None and r.base_ci95_wilson and r.edit_ci95_wilson:
         lines.append(
             f"Wilson 95% CI: base {_span(r.base_ci95_wilson, '.4f')}  "
             f"edit {_span(r.edit_ci95_wilson, '.4f')}; "
-            f"Newcombe 95% CI of diff {_span(r.newcombe_ci95, '+.4f')}"
+            f"Newcombe 95% CI of diff {_span(r.newcombe_ci95, '+.4f')}{mde}"
         )
     ignores = "; ignores clustering" if r.n_clusters is not None else ""
     if r.k > 1 and r.sign_test_p is not None:
@@ -630,12 +652,14 @@ def format_report(r: PairedResult, floor: PairedResult | None = None) -> str:
             f"sign test exact p={r.sign_test_p:.4g}  K={r.k} samples per item, "
             f"items with higher mean score: base={r.n_base_only}, edit={r.n_edit_only}"
             + ignores
+            + mde
         )
     elif r.mcnemar_p is not None:
         lines.append(
             f"McNemar exact p={r.mcnemar_p:.4g}  "
             f"(base-only right={r.n_base_only}, edit-only right={r.n_edit_only})"
             + ignores
+            + mde
         )
     lines += [
         (

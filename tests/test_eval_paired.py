@@ -51,8 +51,11 @@ def test_hand_computed_example() -> None:
     assert r.n_items == 6
     assert r.diff == pytest.approx(1 / 3, abs=1e-9)
     assert r.se == pytest.approx(1 / 3, abs=1e-9)
-    assert r.ci95[0] == pytest.approx(1 / 3 - 1.96 / 3, abs=1e-9)
-    assert r.ci95[1] == pytest.approx(1 / 3 + 1.96 / 3, abs=1e-9)
+    # normal interval kept in ci95_normal; ci95 is Newcombe here (binary, n < 100)
+    assert r.ci95_normal is not None
+    assert r.ci95_normal[0] == pytest.approx(1 / 3 - 1.96 / 3, abs=1e-9)
+    assert r.ci95_normal[1] == pytest.approx(1 / 3 + 1.96 / 3, abs=1e-9)
+    assert (r.ci95_method, r.ci95) == ("newcombe", r.newcombe_ci95)
     # discordant: 1 base-only, 3 edit-only; p = 2 * (C(4,0) + C(4,1)) / 2**4
     assert (r.n_base_only, r.n_edit_only) == (1, 3)
     expected_p = 2 * (math.comb(4, 0) + math.comb(4, 1)) / 2**4
@@ -533,8 +536,18 @@ def test_unclustered_results_bit_identical_to_before(binary: bool) -> None:
             "edit_ci95_wilson",
             "newcombe_ci95",
             "strata",
+            "ci95_normal",
+            "ci95_method",
         )
     }
+    # binary, K=1, n=37 < 100: ci95 is Newcombe now; the old value lives in ci95_normal
+    if binary:
+        assert r.ci95_method == "newcombe"
+        assert r.ci95 == r.newcombe_ci95
+        cap["ci95"] = want.ci95  # compared via ci95_normal below
+    else:
+        assert r.ci95_method == "normal"
+    assert r.ci95_normal == want.ci95
     assert dataclasses.replace(r, correlation=want.correlation, **cap) == want
     assert r.n_clusters is None
 
