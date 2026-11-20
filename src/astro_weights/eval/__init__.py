@@ -1,5 +1,11 @@
 """Paired eval statistics from per-item records. Never runs a model."""
 
+from astro_weights.eval.floor import (
+    FloorResult,
+    floor_from_records,
+    load_floor,
+    save_floor,
+)
 from astro_weights.eval.grade import (
     answer_part,
     grade_choice,
@@ -31,6 +37,7 @@ from astro_weights.eval.verdict import Verdict
 __all__ = [
     "CONFIG_KEYS",
     "PROVENANCE_KEYS",
+    "FloorResult",
     "PairedResult",
     "Record",
     "StratumResult",
@@ -40,6 +47,7 @@ __all__ = [
     "compare",
     "config_hash",
     "exceeds_floor",
+    "floor_from_records",
     "format_report",
     "grade_choice",
     "grade_exact",
@@ -47,10 +55,12 @@ __all__ = [
     "header_path",
     "is_loop",
     "last_boxed",
+    "load_floor",
     "pair",
     "prompt_hash",
     "read_header",
     "read_jsonl",
+    "save_floor",
     "write_header",
     "write_jsonl",
 ]
