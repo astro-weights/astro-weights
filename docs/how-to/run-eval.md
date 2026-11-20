@@ -247,7 +247,8 @@ URL, NAME = "http://127.0.0.1:8080", "base.gguf"
 items = [{"item_id": "i0", "prompt": "Say w5.", "gold": "w5"}]
 headers = {}
 for arm, scale in [("base", 0), ("edit", 1)]:
-    lora = {"lora": [{"id": 0, "scale": scale}]}  # always explicit, also for the base arm
+    # always explicit, also for the base arm
+    lora = {"lora": [{"id": 0, "scale": scale}]}
     headers[arm] = run_header_http(URL, NAME, 64, 0, lora)
     write_header(header_path(f"{arm}-http.jsonl"), headers[arm])
     generate_records_http(
