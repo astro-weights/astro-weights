@@ -457,8 +457,10 @@ def generate_records_http(
             seen = _scrub(json.dumps(obj), api_key)[:_BODY_CHARS]
             output = _content(obj, seen)
             n = _tokens(obj, seen)
-        except (RuntimeError, ValueError) as e:
-            raise type(e)(f"item {item_id!r}: {e}") from e
+        except RuntimeError as e:
+            raise RuntimeError(f"item {item_id!r}: {e}") from e
+        except ValueError as e:  # subclasses (e.g. UnicodeDecodeError) take other args
+            raise ValueError(f"item {item_id!r}: {e}") from e
         return output, n, obj["choices"][0].get("finish_reason") == "length"
 
     def save_header() -> None:
