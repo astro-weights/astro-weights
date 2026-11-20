@@ -6,7 +6,7 @@ import json
 import math
 import secrets
 import sys
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +15,7 @@ from safetensors import SafetensorError
 from astro_weights import __version__
 from astro_weights.edits import Edit, LowRankDelta, build_edit, compose, load_recipe
 from astro_weights.eval import (
+    PairedResult,
     Record,
     check_headers,
     compare,
@@ -24,6 +25,16 @@ from astro_weights.eval import (
     read_header,
     read_jsonl,
 )
+from astro_weights.eval.seal import (
+    Scoring,
+    SealedError,
+    check_unsealed,
+    record_scoring,
+    records_sha256,
+    scoring_of,
+    seal_salt,
+)
+from astro_weights.eval.splits import Split, SplitManifest
 from astro_weights.export import (
     load_peft,
     model_card,
@@ -150,6 +161,142 @@ def _check_run_headers(base: Path, edit: Path, arm_keys: list[str]) -> int:
     return 0
 
 
+@dataclass(frozen=True)
+class _SplitArgs:
+    """``eval --split``: which split, its manifest, and for test the seal."""
+
+    split: Split
+    manifest: Path
+    seal_dir: Path | None
+    adapter: Path | None
+    unseal: bool
+
+
+@dataclass(frozen=True)
+class _Seal:
+    directory: Path
+    scoring: Scoring
+    unseal: bool
+    adapter: Path
+    base: str
+    shown: tuple[str, ...]
+
+
+def _split_args(args: argparse.Namespace) -> _SplitArgs | str | None:
+    """The split flags, None when absent, or an error message."""
+    if args.split is None:
+        extra = [
+            f
+            for f, v in (
+                ("--manifest", args.manifest),
+                ("--seal-dir", args.seal_dir),
+                ("--adapter", args.adapter),
+                ("--unseal", args.unseal),
+            )
+            if v
+        ]
+        return f"{', '.join(extra)} need --split" if extra else None
+    if args.manifest is None:
+        return "--split needs --manifest"
+    if args.split == "test":
+        if args.seal_dir is None or args.adapter is None:
+            return "--split test needs --seal-dir and --adapter"
+    elif args.seal_dir or args.adapter or args.unseal:
+        return "--seal-dir, --adapter and --unseal apply only to --split test"
+    return _SplitArgs(
+        args.split, args.manifest, args.seal_dir, args.adapter, args.unseal
+    )
+
+
+def _check_split(
+    sp: _SplitArgs, arms: list[tuple[Path, list[Record]]]
+) -> int | _Seal | None:
+    """Refuse records outside the split; for test, check K, arms and the seal.
+
+    ``arms`` is base, edit, then any floor arms. On test the base and floor arms
+    (runs of the base model) must have ``arm == "base"`` and must not hold the
+    records of an edit in the ledger. Exit code on error.
+    """
+    try:
+        manifest = SplitManifest.load(sp.manifest)
+    except (ValueError, OSError) as e:
+        return _error(str(e))
+    test = sp.split == "test"
+    seeds: set[tuple[int, ...]] = set()
+    for path, records in arms:
+        try:
+            manifest.check_records(records, sp.split, complete=test)
+            if test:
+                seeds.add(manifest.check_seeds(records))
+        except ValueError as e:
+            print(f"error: {path}: {e}", file=sys.stderr)
+            return 1
+    if not test:
+        return None
+    for path, records in [arms[0], *arms[2:]]:
+        if bad := sorted({r.arm for r in records} - {"base"}):
+            print(
+                f"error: {path}: arm {bad[0]!r}; base and floor arms must be "
+                "arm 'base' on --split test",
+                file=sys.stderr,
+            )
+            return 1
+    if len(seeds) > 1:
+        print(
+            f"error: arms were run with different seeds: {sorted(seeds)}",
+            file=sys.stderr,
+        )
+        return 1
+    assert sp.seal_dir is not None
+    assert sp.adapter is not None
+    try:
+        salt = seal_salt(sp.seal_dir)
+    except (ValueError, OSError) as e:
+        return _error(str(e))
+    try:
+        edit = load_peft(sp.adapter)
+        scoring = scoring_of(edit, manifest, arms[1][1], salt)
+    except _ERRORS as e:
+        return _fail(sp.adapter, e)
+    base_sha = hashlib.sha256(
+        json.dumps(edit.base_sha256, sort_keys=True).encode()
+    ).hexdigest()
+    base = f"base_model={edit.base_model!r} base_sha256_digest={base_sha[:16]}"
+    shown = tuple(records_sha256(r) for _, r in [arms[0], *arms[2:]])
+    seal = _Seal(sp.seal_dir, scoring, sp.unseal, sp.adapter, base, shown)
+    if not seal.unseal:
+        try:
+            check_unsealed(seal.directory, scoring, shown)
+        except SealedError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        except (ValueError, OSError) as e:
+            return _error(str(e))
+    return seal
+
+
+def _record_seal(seal: _Seal, base: Path, edit: Path, result: PairedResult) -> int:
+    """Write the ledger line before the result is shown; exit code on refusal."""
+    note = (
+        f"eval base={base} edit={edit} adapter={seal.adapter} {seal.base} "
+        f"n={result.n_items} diff={result.diff:+.6f}"
+    )
+    try:
+        record_scoring(seal.directory, seal.scoring, seal.unseal, note, seal.shown)
+    except SealedError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (ValueError, OSError) as e:
+        return _error(str(e))
+    if seal.unseal:
+        print(
+            f"warning: --unseal: test split scored again for edit "
+            f"{seal.scoring.key[:12]}; recorded in {seal.directory}",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def _eval(
     base: Path,
     edit: Path,
@@ -159,12 +306,20 @@ def _eval(
     ignore_header: bool,
     as_json: bool,
     arm_keys: list[str] | None = None,
+    split: _SplitArgs | None = None,
 ) -> int:
     if not ignore_header and (code := _check_run_headers(base, edit, arm_keys or [])):
         return code
     arms = [_read_arm(p) for p in (base, edit, *(floor or ()))]
     if any(a is None for a in arms):
         return 2
+    seal = None
+    if split is not None:
+        named = zip((base, edit, *(floor or ())), arms, strict=True)
+        checked = _check_split(split, [(p, a or []) for p, a in named])
+        if isinstance(checked, int):
+            return checked
+        seal = checked
     try:
         result = compare(arms[0] or [], arms[1] or [], n_boot=boot, seed=seed)
         floor_result = (
@@ -175,6 +330,8 @@ def _eval(
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    if seal is not None and (code := _record_seal(seal, base, edit, result)):
+        return code
     if as_json:
         _emit(
             {
@@ -529,6 +686,31 @@ def main(argv: list[str] | None = None) -> int:
         dest="arm_keys",
         help="extra_body key allowed to differ between the arms (repeatable)",
     )
+    p.add_argument(
+        "--split",
+        choices=("dev", "confirm", "test"),
+        help="refuse records outside this split of --manifest; test is sealed",
+    )
+    p.add_argument(
+        "--manifest", metavar="SPLITS.json", type=Path, help="split manifest file"
+    )
+    p.add_argument(
+        "--seal-dir",
+        metavar="DIR",
+        type=Path,
+        help="with --split test: directory of the seal ledger (seal.jsonl)",
+    )
+    p.add_argument(
+        "--adapter",
+        metavar="DIR",
+        type=Path,
+        help="with --split test: the edit's adapter directory, keyed by content",
+    )
+    p.add_argument(
+        "--unseal",
+        action="store_true",
+        help="with --split test: score an edit again; the ledger records it",
+    )
     _json_flag(p)
     p = sub.add_parser("build", help="build a PEFT adapter from a recipe file")
     p.add_argument("recipe", metavar="RECIPE.json", type=Path, help="recipe file")
@@ -647,6 +829,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "inspect":
         return _inspect(args.directory, args.json)
     if args.command == "eval":
+        split = _split_args(args)
+        if isinstance(split, str):
+            return _error(split)
         return _eval(
             args.base,
             args.edit,
@@ -656,6 +841,7 @@ def main(argv: list[str] | None = None) -> int:
             args.ignore_header,
             args.json,
             args.arm_keys,
+            split,
         )
     if args.command == "build":
         return _build(
