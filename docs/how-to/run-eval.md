@@ -293,3 +293,64 @@ All graders take `(gold, answer)` and return a `bool`.
 | `grade_exact` | the stripped strings are equal |
 | `grade_choice` | the last `\boxed{}` holds the gold letter (A-J) |
 | `grade_math` | the last boxed value equals the gold answer, checked by `math_verify`; `strip_commas=True` drops commas from the gold answer. In the main thread each check has `math_verify`'s 5 s timeouts; in other threads those timeouts (built on `signal.alarm`) are off, so put your own time limit on a worker pool |
+
+## Splits and the sealed test
+
+Split a dataset's items into dev, confirm and test once, by seeded item id, and keep the manifest with the results. An item's split depends only on the seed and its id, so adding or removing items never moves another item. The default fractions are 20 / 30 / 50.
+
+```python
+from astro_weights.eval import Record
+from astro_weights.eval.seal import read_seal, record_scoring, seal_key
+from astro_weights.eval.splits import SplitManifest, assign_splits
+
+ids = [f"gsm8k-{i}" for i in range(1319)]  # ids of the pinned dataset file
+manifest = SplitManifest.build(
+    ids,
+    dataset="openai/gsm8k main test",
+    revision="740312add88f781978c0658806c59bc2815b9866",
+    file_sha256="c55b65bc330379188022e1d2c8180e434f828b21bd089814e575d7896d92b8c4",
+    seed=0,
+)
+manifest.save("gsm8k.splits.json")
+print(len(manifest.dev), len(manifest.confirm), len(manifest.test))
+# fewer items: the remaining ones keep their split
+assert assign_splits(ids[:10], seed=0) == {
+    i: assign_splits(ids, 0)[i] for i in ids[:10]
+}
+
+test_records = [
+    Record(i, 0, "edit", "h", "out", 1.0, 5, False) for i in sorted(manifest.test)
+]
+manifest.check_records(test_records, "test", complete=True)
+
+key = seal_key(Edit((delta,), "tiny-llama"))  # the edit from "Generate both arms"
+record_scoring("seal", key, manifest.manifest_sha256, note="first test score")
+print(read_seal("seal")[0]["scoring"])
+```
+
+Output:
+
+```text
+250 428 641
+1
+```
+
+`SplitManifest.load` refuses unknown or missing keys, a `manifest_sha256` that does not match the contents, and an id listed under a split it does not hash to. Score dev and confirm with `--split` and the manifest; `eval` refuses records whose ids are outside that split:
+
+```bash
+astro-weights eval base.jsonl edit.jsonl --split confirm --manifest gsm8k.splits.json
+```
+
+The test split is sealed: each edit is scored once per test manifest.
+
+```bash
+astro-weights eval base.jsonl edit.jsonl --split test --manifest gsm8k.splits.json \
+  --seal-dir seal --adapter ADAPTER_DIR
+```
+
+- On `--split test` both arms must hold a record for every test id and no other id; anything else exits 1.
+- The seal key is `seal_key(load_peft(ADAPTER_DIR))`: a sha256 of the adapter's factors (scaling folded in) and its base (`base_sha256` when the adapter has one, else the base model name). Renaming or copying the adapter directory, a new run id or new `meta` keep the key. Reordering modules or rank terms and zero-padding the rank keep it too. Any changed factor value gives a new key, also a rescale `B*c, A/c`.
+- `eval` writes one line to `SEAL_DIR/seal.jsonl` (fsynced) before it prints the result. A second scoring of the same key on the same manifest exits 1 and prints no result. `--unseal` scores it again, warns on stderr, and the line says `"unseal": true`.
+- Two `eval` processes racing on one key: one prints its result, the other exits 1. The ledger is locked with `flock` (`msvcrt.locking` on Windows), so keep the seal dir on a local disk, and use one seal dir for every scoring of a dataset.
+- Each line holds the sha256 of the line before it, so an edited or deleted earlier line makes reads fail. A last line cut short by a crash is dropped; that scoring never printed a result. Deleting the whole file is not detected.
+- Keep manifests and the seal dir outside an agent run's `RUN_DIR`: the MCP server never reads them, and the kernel sandbox cannot open them.

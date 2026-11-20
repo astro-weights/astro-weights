@@ -1,0 +1,1 @@
+Seeded dev / confirm / test splits (`astro_weights.eval.splits`: `assign_splits`, `SplitManifest`) and a sealed test split (`astro_weights.eval.seal`): `astro-weights eval --split test --manifest M --seal-dir D --adapter A` scores each edit once per test manifest, keyed by the adapter's content, and `--unseal` scores it again with a line in the ledger saying so.

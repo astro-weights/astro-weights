@@ -1002,3 +1002,81 @@ def test_start_event_records_library_commit(
     build_server(run)
     start = RunRecord.open(run / "record.jsonl").read()[0]
     assert start["library_commit"] == "abc-dirty"
+
+
+@pytest.mark.anyio
+async def test_split_manifests_and_ids_never_reach_the_agent(
+    tmp_path: Path, unsafe: bool
+) -> None:
+    """Confirm/test ids, split manifests and the seal ledger stay outside the agent.
+
+    No module under ``astro_weights.mcp`` imports the splits or seal code, the tool
+    list names none of it, and after a kernel session neither the run dir nor the
+    kernel work dir holds a manifest, a probe id or a manifest hash. With a real
+    sandbox the kernel cannot open the manifest by absolute path either.
+    """
+    import ast
+
+    import astro_weights.mcp as mcp_pkg
+    from astro_weights.eval.seal import record_scoring
+    from astro_weights.eval.splits import SplitManifest
+
+    banned = {"astro_weights.eval.splits", "astro_weights.eval.seal"}
+    for py in Path(mcp_pkg.__file__).parent.rglob("*.py"):
+        for node in ast.walk(ast.parse(py.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                found = {a.name for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                found = {mod, *(f"{mod}.{a.name}" for a in node.names)}
+            else:
+                continue
+            assert not found & banned, f"{py} imports {found & banned}"
+
+    secret = tmp_path / "eval-secret"
+    secret.mkdir()
+    manifest = SplitManifest.build(
+        [f"leakprobe-{i}" for i in range(60)],
+        dataset="synthetic",
+        revision="r1",
+        file_sha256="ab" * 32,
+        seed=0,
+    )
+    manifest.save(secret / "splits.json")
+    record_scoring(secret / "seal", "a" * 64, manifest.manifest_sha256)
+    probes = [
+        *manifest.confirm,
+        *manifest.test,
+        manifest.manifest_sha256,
+        str(secret),
+        "splits.json",
+        "seal.jsonl",
+    ]
+
+    def scan(run_dir: Path) -> None:
+        for path in run_dir.rglob("*"):
+            assert path.name not in {"splits.json", "seal.jsonl"}
+            if path.is_file():
+                data = path.read_bytes()
+                leaked = [p for p in probes if p.encode() in data]
+                assert not leaked, f"{path} holds {leaked[:3]}"
+
+    run = kernel_run(tmp_path / "run")
+    async with Client(build_server(run, allow_unsafe_kernel=unsafe)) as client:
+        tools = await client.list_tools()
+        text = json.dumps([t.model_dump(mode="json") for t in tools.tools])
+        assert "manifest" not in text.lower()
+        listing = await run_cell(
+            client,
+            "import os\nprint(sorted(os.listdir('.')), sorted(os.environ))",
+        )
+        assert listing["result"]["ok"], listing["result"]["output"]
+        assert not [p for p in probes if p in listing["result"]["output"]]
+        scan(run)
+        if not unsafe:  # this cell's code and traceback name the path: scan first
+            opened = await run_cell(
+                client, f"open({str(secret / 'splits.json')!r}).read()"
+            )
+            assert not opened["result"]["ok"]
+            out = opened["result"]["output"]
+            assert "PermissionError" in out or "FileNotFoundError" in out, out
