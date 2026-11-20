@@ -113,10 +113,15 @@ Output:
 
 ## Run headers
 
-`run_header(model, tokenizer, max_new_tokens, seed, chat, batch_size=..., sampling=...)` returns the settings that decide the outputs: the model class (for an `apply` result, the class under the adapter), dtype, device, `max_new_tokens`, seed, chat, `batch_size`, the chat template sha256, the torch, transformers and peft versions, and `sampling` when it is given. `write_header(header_path("X.jsonl"), header)` stores it beside the records as `X.header.json`. This continues the example above:
+`run_header(model, tokenizer, max_new_tokens, seed, chat, batch_size=..., sampling=..., run_id=..., k=..., concurrency=...)` returns the run record of one arm. Its keys are of two kinds.
+
+- **Config** keys decide the outputs: the model class and `model_name_or_path` (the base checkpoint; for an `apply` result, the one under the adapter), `backend` (the device type: cpu, cuda or mps), the torch and transformers versions, dtype, `max_new_tokens`, seed, chat, `batch_size`, `training`, the chat template sha256, `sampling` when it is given, `k` (samples per item, default 1) and `concurrency` (default 1). Two arms are comparable only when their config keys agree, which includes one backend and build for both. A key that is in neither list is also config.
+- **Provenance** keys say where and when the run happened and are never compared: `device` (the full string), `gpu_model` and `gpu_count` (when CUDA is available), the peft and numpy versions, the astro-weights version, `library_commit` (`None` for a release wheel, `-dirty` appended when the checkout has uncommitted changes) and `run_id` (random unless you pass one). The sets are `astro_weights.eval.CONFIG_KEYS` and `PROVENANCE_KEYS`.
+
+`config_hash(header)` is the SHA-256 of the canonical JSON of the config keys only. It does not depend on key order, on any provenance value or on `1` versus `1.0`, so two runs with the same hash ran under the same settings. `write_header(header_path("X.jsonl"), header)` stores a header beside the records as `X.header.json`. This continues the example above:
 
 ```python
-from astro_weights.eval import check_headers, header_path, write_header
+from astro_weights.eval import check_headers, config_hash, header_path, write_header
 
 peft_model = apply(model, Edit((delta,), "tiny-llama"))
 for arm, m in [("base", model), ("edit", peft_model)]:
@@ -127,6 +132,7 @@ base_h = run_header(model, tok, 6, 0, False)
 edit_h = run_header(peft_model, tok, 6, 0, False)
 check_headers(base_h, edit_h)  # raises when arms are not comparable
 print(base_h["model"], edit_h["model"])
+print(config_hash(base_h) == config_hash(edit_h))  # same config, different run ids
 ```
 
 Output:
@@ -134,9 +140,12 @@ Output:
 ```text
 base.header.json
 LlamaForCausalLM LlamaForCausalLM
+True
 ```
 
-`check_headers(base, edit, ignore=("device",))` raises an error that lists every key that differs or is missing on one side.
+`check_headers(base, edit)` compares the config keys only and raises an error that lists every one that differs or is missing on one side. A provenance key that is missing, as in a header written by 0.1 or 0.2, is not a difference, and neither is a missing `k` or `concurrency` when the other side has the default. `ignore=...` names more keys to skip, on top of the provenance keys. `arm_keys=("lora",)` names `extra_body` keys that may differ between the arms, for two arms on one HTTP server that differ only in a request field.
+
+`astro_weights.eval.Verdict` is the schema of a `verdict.json`: the verdict, the backend and build it ran on, the config hash, the split manifest sha256, the candidates tried, the confirm queries, the infra errors and the edit footprint. `to_json` and `Verdict.from_json` round-trip it, and `from_json` rejects unknown keys. No command writes one yet.
 
 ## Greedy or sampled
 
@@ -204,7 +213,7 @@ WARNING: cap-hit censoring
 
 With `max_new_tokens=6` every output hits the cap, so the report warns that the diffs are censored. Pick `max_new_tokens` from a short pilot of the base arm: raise it until almost no output hits the cap, then run both arms with that value. The warning and its fields are described in [Compare two eval arms](compare-arms.md#cap-hit-censoring).
 
-- When `BASE.header.json` and `EDIT.header.json` both exist, `eval` compares them (ignoring `device`) and exits 1 on any difference, with `error: arms ran under different settings ...` on stderr. `--ignore-header` skips the check.
+- When `BASE.header.json` and `EDIT.header.json` both exist, `eval` compares their config keys (provenance keys are ignored) and exits 1 on any difference, with `error: arms ran under different settings ...` on stderr. `--ignore-header` skips the check.
 - `--floor A.jsonl B.jsonl` takes two runs of the base arm under the same settings, and the report adds noise-floor lines. See [Compare two eval arms](compare-arms.md#noise-floor).
 - `--json` prints one JSON object on stdout instead of text (`PairedResult` fields plus `floor`, with non-finite numbers as `null`).
 - `--boot` sets the number of bootstrap resamples (default 10000) and `--seed` the bootstrap seed (default 0). An unreadable file or arms that do not pair give a message on stderr and exit code 2.
@@ -228,7 +237,7 @@ for arm, name in [("base", "base-model"), ("edit", "edit-model")]:
 
 - It sends one `POST /v1/chat/completions` per item, with temperature 0 and `max_tokens` and `seed` set; `extra_body` keys are merged last. The output is `message.content` (`reasoning_content` is ignored), the token count comes from `usage.completion_tokens`, and `hit_cap` is set when `finish_reason` is `length`.
 - `out` must be empty or absent; there is no resume. `api_key` is sent as a bearer token and is never recorded or shown in errors. Redirects are refused.
-- `run_header_http` records `base_url`, `model`, `max_new_tokens`, `seed` and `extra_body`, plus the server's `/v1/models` entry and `system_fingerprint` when the server gives them. Two served names give headers that differ on `model` (and `server_model`), so `astro-weights eval` needs `--ignore-header` for HTTP arms.
+- `run_header_http(url, name, max_new_tokens, seed, extra_body, run_id=..., k=..., concurrency=..., serving_flags=..., model_id=...)` records the config keys `max_new_tokens`, `seed`, `extra_body`, `k`, `concurrency`, `serving_flags`, `model_id`, `backend` and the server build, and the provenance keys `base_url`, `served_model` (the name), the run id, the library version and commit, and the numpy version. `model_id` is the argument you pass (for example the base GGUF's sha256), else the basename of the `model_path` that llama.cpp reports at `/props`, else the served name; it is what makes two servers with different models differ. When the server answers it adds `llama_cpp_build` (`build_info` from `/props`; `backend` is then `llama.cpp`), `vllm_version` (from `/version`; `backend` is `vllm`), and the provenance keys `server_model` (the `/v1/models` entry) and `system_fingerprint`. `/props` and `/version` are asked once each, with a timeout of at most 5 seconds. The client cannot read the server's flags or environment, so declare them in `serving_flags` (for example `{"--parallel": "4"}`); they are compared. Two arms under different served names or URLs, with the same model and build and the same config, pass the header check without `--ignore-header`; give the arms different `extra_body` fields (a `lora` scale) with `--arm-key lora`.
 
 ### Base and edit on one llama-server
 

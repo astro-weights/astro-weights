@@ -456,6 +456,31 @@ def test_eval_header_mismatch_fails(
     assert main(["eval", str(b), str(e), "--boot", "20", "--ignore-header"]) == 0
 
 
+def test_eval_arm_key(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from astro_weights.eval import write_header
+
+    b, e = _arm_files(tmp_path)
+    write_header(tmp_path / "b.header.json", {"extra_body": {"lora": 0, "top_k": 1}})
+    write_header(tmp_path / "e.header.json", {"extra_body": {"lora": 1, "top_k": 1}})
+    assert main(["eval", str(b), str(e), "--boot", "20"]) == 1
+    assert "extra_body" in capsys.readouterr().err
+    assert main(["eval", str(b), str(e), "--boot", "20", "--arm-key", "lora"]) == 0
+    args = [
+        "eval",
+        str(b),
+        str(e),
+        "--boot",
+        "20",
+        "--arm-key",
+        "x",
+        "--arm-key",
+        "lora",
+    ]
+    assert main(args) == 0
+    write_header(tmp_path / "e.header.json", {"extra_body": {"lora": 1, "top_k": 2}})
+    assert main(["eval", str(b), str(e), "--boot", "20", "--arm-key", "lora"]) == 1
+
+
 def test_eval_header_match_and_one_missing(tmp_path: Path) -> None:
     from astro_weights.eval import write_header
 

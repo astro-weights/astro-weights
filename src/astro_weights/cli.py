@@ -133,7 +133,7 @@ def _read_arm(path: Path) -> list[Record] | None:
         return None
 
 
-def _check_run_headers(base: Path, edit: Path) -> int:
+def _check_run_headers(base: Path, edit: Path, arm_keys: list[str]) -> int:
     """0 when headers agree or one is missing; 1 when they differ; 2 when unreadable."""
     hb, he = header_path(base), header_path(edit)
     if not (hb.is_file() and he.is_file()):
@@ -143,7 +143,7 @@ def _check_run_headers(base: Path, edit: Path) -> int:
     except (ValueError, OSError) as e:
         return _error(str(e))
     try:
-        check_headers(*headers)
+        check_headers(*headers, arm_keys=arm_keys)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -158,8 +158,9 @@ def _eval(
     floor: list[Path] | None,
     ignore_header: bool,
     as_json: bool,
+    arm_keys: list[str] | None = None,
 ) -> int:
-    if not ignore_header and (code := _check_run_headers(base, edit)):
+    if not ignore_header and (code := _check_run_headers(base, edit, arm_keys or [])):
         return code
     arms = [_read_arm(p) for p in (base, edit, *(floor or ()))]
     if any(a is None for a in arms):
@@ -520,6 +521,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="do not fail when the arms' X.header.json files differ",
     )
+    p.add_argument(
+        "--arm-key",
+        action="append",
+        default=[],
+        metavar="KEY",
+        dest="arm_keys",
+        help="extra_body key allowed to differ between the arms (repeatable)",
+    )
     _json_flag(p)
     p = sub.add_parser("build", help="build a PEFT adapter from a recipe file")
     p.add_argument("recipe", metavar="RECIPE.json", type=Path, help="recipe file")
@@ -646,6 +655,7 @@ def main(argv: list[str] | None = None) -> int:
             args.floor,
             args.ignore_header,
             args.json,
+            args.arm_keys,
         )
     if args.command == "build":
         return _build(

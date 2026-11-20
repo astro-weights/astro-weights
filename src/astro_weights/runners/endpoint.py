@@ -17,11 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from astro_weights.eval import Record, prompt_hash
+from astro_weights.eval.header import run_identity
 
 _KEYS = ("item_id", "prompt", "gold")
 _RETRIES = 2
 _RETRY_SLEEP = 0.5
 _BODY_CHARS = 500
+_PROBE_TIMEOUT = 5.0
 
 
 def _root(base_url: str) -> str:
@@ -58,7 +60,11 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _request(
-    url: str, body: dict[str, Any] | None, api_key: str | None, timeout: float
+    url: str,
+    body: dict[str, Any] | None,
+    api_key: str | None,
+    timeout: float,
+    retries: int = _RETRIES,
 ) -> tuple[int, str]:
     """GET (no body) or POST JSON; return (status, text). Retries connection errors."""
     headers = {"Content-Type": "application/json"}
@@ -66,7 +72,7 @@ def _request(
         headers["Authorization"] = f"Bearer {api_key}"
     data = None if body is None else json.dumps(body).encode("utf-8")
     last = ""
-    for attempt in range(_RETRIES + 1):
+    for attempt in range(retries + 1):
         if attempt:
             time.sleep(_RETRY_SLEEP)
         req = urllib.request.Request(url, data=data, headers=headers)
@@ -77,7 +83,7 @@ def _request(
             return int(e.code), e.read().decode("utf-8", "replace")
         except (OSError, http.client.HTTPException) as e:
             last = f"{type(e).__name__}: {_scrub(str(e), api_key)}"
-    raise RuntimeError(f"cannot reach {url} after {_RETRIES + 1} attempts: {last}")
+    raise RuntimeError(f"cannot reach {url} after {retries + 1} attempts: {last}")
 
 
 def _fail(what: str, status: int, text: str, api_key: str | None) -> RuntimeError:
@@ -219,21 +225,63 @@ def run_header_http(
     *,
     api_key: str | None = None,
     timeout: float = 120.0,
+    run_id: str | None = None,
+    k: int = 1,
+    concurrency: int = 1,
+    serving_flags: Mapping[str, str] | None = None,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     """Settings that decide the outputs, plus what the server reports, for the run log.
 
-    The server's `/v1/models` entry and `system_fingerprint` are best effort: left
-    out when the server does not give them. The api key is never recorded.
+    CONFIG keys (compared, hashed by `config_hash`): `max_new_tokens`, `seed`,
+    `extra_body`, `k`, `concurrency`, `serving_flags`, `backend` ("llama.cpp" when
+    `/props` gives `build_info`, "vllm" when `/version` answers, else "unknown"),
+    `llama_cpp_build`, `vllm_version` and `model_id`. `model_id` is the `model_id`
+    argument (for example the base GGUF's sha256), else the basename of `/props`
+    `model_path`, else the served name; it must be equal for two arms on one server. The client cannot read the
+    server's flags or environment, so declare them in `serving_flags` (for example
+    `{"--parallel": "4", "VLLM_BATCH_INVARIANT": "1"}`); it is recorded only when
+    given. PROVENANCE keys (stored, not compared): `base_url`, the served name
+    (`served_model`), the server's `/v1/models` entry, `system_fingerprint`, the run id
+    (random when not given), the library version and commit, and the numpy version.
+    The server's answers are best effort: left out when the server does not give them.
+    `/props` and `/version` are asked once, with a timeout of at most 5 seconds.
+    The api key is never recorded.
     """
     root = _root(base_url)
     _check_key(api_key)
     header: dict[str, Any] = {
         "base_url": root,
-        "model": model,
+        "served_model": model,
         "max_new_tokens": max_new_tokens,
         "seed": seed,
         "extra_body": dict(extra_body or {}),
+        **run_identity(run_id, k, concurrency),
     }
+    if serving_flags is not None:
+        header["serving_flags"] = dict(sorted(serving_flags.items()))
+    props = _server_json(root, "/props", api_key, timeout)
+    ver = _server_json(root, "/version", api_key, timeout).get("version")
+    build = props.get("build_info")
+    path = props.get("model_path")
+    if isinstance(build, str):
+        header["llama_cpp_build"] = build
+    if isinstance(ver, str):
+        header["vllm_version"] = ver
+    header["backend"] = (
+        "llama.cpp"
+        if isinstance(build, str)
+        else "vllm"
+        if "vllm_version" in header
+        else "unknown"
+    )
+    header["model_id"] = (
+        model_id
+        if model_id is not None
+        else path.replace("\\", "/").rsplit("/", 1)[-1]
+        if isinstance(path, str) and path
+        else model
+    )
     entry = _model_entry(root, model, api_key, timeout)
     if entry is not None:
         header["server_model"] = entry
@@ -246,6 +294,20 @@ def run_header_http(
     if obj.get("system_fingerprint") is not None:
         header["system_fingerprint"] = obj["system_fingerprint"]
     return header
+
+
+def _server_json(
+    root: str, path: str, api_key: str | None, timeout: float
+) -> dict[str, Any]:
+    """A JSON object from one GET `path` (short timeout, no retry), else {}."""
+    try:
+        status, text = _request(
+            f"{root}{path}", None, api_key, min(timeout, _PROBE_TIMEOUT), retries=0
+        )
+        obj = json.loads(text) if status < 400 else {}
+    except (RuntimeError, ValueError):
+        return {}
+    return obj if isinstance(obj, dict) else {}
 
 
 def _model_entry(
