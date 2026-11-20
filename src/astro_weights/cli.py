@@ -30,7 +30,9 @@ from astro_weights.eval.seal import (
     SealedError,
     check_unsealed,
     record_scoring,
+    records_sha256,
     scoring_of,
+    seal_salt,
 )
 from astro_weights.eval.splits import Split, SplitManifest
 from astro_weights.export import (
@@ -177,6 +179,7 @@ class _Seal:
     unseal: bool
     adapter: Path
     base: str
+    shown: tuple[str, ...]
 
 
 def _split_args(args: argparse.Namespace) -> _SplitArgs | str | None:
@@ -208,9 +211,11 @@ def _split_args(args: argparse.Namespace) -> _SplitArgs | str | None:
 def _check_split(
     sp: _SplitArgs, arms: list[tuple[Path, list[Record]]]
 ) -> int | _Seal | None:
-    """Refuse records outside the split; for test, check K and the seal.
+    """Refuse records outside the split; for test, check K, arms and the seal.
 
-    ``arms`` is base, edit, then any floor arms. Exit code on error.
+    ``arms`` is base, edit, then any floor arms. On test the base and floor arms
+    (runs of the base model) must have ``arm == "base"`` and must not hold the
+    records of an edit in the ledger. Exit code on error.
     """
     try:
         manifest = SplitManifest.load(sp.manifest)
@@ -228,6 +233,14 @@ def _check_split(
             return 1
     if not test:
         return None
+    for path, records in [arms[0], *arms[2:]]:
+        if bad := sorted({r.arm for r in records} - {"base"}):
+            print(
+                f"error: {path}: arm {bad[0]!r}; base and floor arms must be "
+                "arm 'base' on --split test",
+                file=sys.stderr,
+            )
+            return 1
     if len(seeds) > 1:
         print(
             f"error: arms were run with different seeds: {sorted(seeds)}",
@@ -237,18 +250,23 @@ def _check_split(
     assert sp.seal_dir is not None
     assert sp.adapter is not None
     try:
+        salt = seal_salt(sp.seal_dir)
+    except (ValueError, OSError) as e:
+        return _error(str(e))
+    try:
         edit = load_peft(sp.adapter)
-        scoring = scoring_of(edit, manifest, arms[1][1])
+        scoring = scoring_of(edit, manifest, arms[1][1], salt)
     except _ERRORS as e:
         return _fail(sp.adapter, e)
     base_sha = hashlib.sha256(
         json.dumps(edit.base_sha256, sort_keys=True).encode()
     ).hexdigest()
     base = f"base_model={edit.base_model!r} base_sha256_digest={base_sha[:16]}"
-    seal = _Seal(sp.seal_dir, scoring, sp.unseal, sp.adapter, base)
+    shown = tuple(records_sha256(r) for _, r in [arms[0], *arms[2:]])
+    seal = _Seal(sp.seal_dir, scoring, sp.unseal, sp.adapter, base, shown)
     if not seal.unseal:
         try:
-            check_unsealed(seal.directory, scoring)
+            check_unsealed(seal.directory, scoring, shown)
         except SealedError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
@@ -264,7 +282,7 @@ def _record_seal(seal: _Seal, base: Path, edit: Path, result: PairedResult) -> i
         f"n={result.n_items} diff={result.diff:+.6f}"
     )
     try:
-        record_scoring(seal.directory, seal.scoring, seal.unseal, note)
+        record_scoring(seal.directory, seal.scoring, seal.unseal, note, seal.shown)
     except SealedError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

@@ -2,6 +2,7 @@ import base64
 import json
 import multiprocessing as mp
 import shutil
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -16,9 +17,11 @@ from astro_weights.eval.seal import (
     FINGERPRINT_TOL,
     LEDGER,
     PROBES,
+    SALT,
     Scoring,
     SealedError,
     _distance,
+    _probes,
     check_unsealed,
     fingerprint,
     read_seal,
@@ -26,12 +29,14 @@ from astro_weights.eval.seal import (
     records_sha256,
     scoring_of,
     seal_key,
+    seal_salt,
 )
 from astro_weights.eval.splits import SplitManifest
 from astro_weights.export import load_peft, save_peft
 
 M1, M2 = "model.layers.0.mlp.down_proj", "model.layers.1.self_attn.q_proj"
 SHA = "ab" * 32
+SALT1, SALT2 = b"\x01" * 32, b"\x02" * 32
 
 
 def _edit(seed: int = 0, rank: int = 3, **kw: Any) -> Edit:
@@ -136,7 +141,7 @@ def test_key_refuses_bad_duck_edits() -> None:
     with pytest.raises(ValueError, match="finite 2-D"):
         seal_key(_E((_D(M1, np.ones(2), ok),)))
     with pytest.raises(ValueError, match="rank mismatch"):
-        fingerprint(_E((_D(M1, np.ones((2, 3)), ok),)))
+        fingerprint(_E((_D(M1, np.ones((2, 3)), ok),)), SALT1)
 
 
 # ---------------------------------------------------------------- fingerprint
@@ -144,28 +149,96 @@ def test_key_refuses_bad_duck_edits() -> None:
 
 def test_fingerprint_depends_on_dw_only() -> None:
     e = _edit()
-    f = fingerprint(e)
+    f = fingerprint(e, SALT1)
     assert sorted(f) == [M1, M2]
     assert all(v.shape == (PROBES, PROBES) for v in f.values())
-    assert _distance(f, fingerprint(_rescale(e, 2.0))) < 1e-6
-    assert _distance(f, fingerprint(_rescale(e, 3.7))) < 1e-5
-    assert _distance(f, fingerprint(_rotate(e))) < 1e-5
+    assert _distance(f, fingerprint(_rescale(e, 2.0), SALT1)) < 1e-6
+    assert _distance(f, fingerprint(_rescale(e, 3.7), SALT1)) < 1e-5
+    assert _distance(f, fingerprint(_rotate(e), SALT1)) < 1e-5
     padded = Edit.from_deltas([*e.deltas[:1], e.deltas[1].padded(6)], "tiny")
-    assert _distance(f, fingerprint(padded)) == 0.0
-    assert _distance(f, fingerprint(replace(e, base_model="other"))) == 0.0
+    assert _distance(f, fingerprint(padded, SALT1)) == 0.0
+    assert _distance(f, fingerprint(replace(e, base_model="other"), SALT1)) == 0.0
 
 
 def test_fingerprint_moves_with_the_edit() -> None:
     e = _edit()
-    f = fingerprint(e)
+    f = fingerprint(e, SALT1)
     near = _map(e, lambda b, a: (b * 1.0005, a))
-    assert _distance(f, fingerprint(near)) <= FINGERPRINT_TOL
+    assert _distance(f, fingerprint(near, SALT1)) <= FINGERPRINT_TOL
     far = _map(e, lambda b, a: (b * 1.01, a))
-    assert _distance(f, fingerprint(far)) > FINGERPRINT_TOL
-    assert _distance(f, fingerprint(_edit(seed=1))) > 0.5
+    assert _distance(f, fingerprint(far, SALT1)) > FINGERPRINT_TOL
+    assert _distance(f, fingerprint(_edit(seed=1), SALT1)) > 0.5
     one = replace(e, deltas=e.deltas[:1])  # a module dropped counts as zero
-    assert _distance(f, fingerprint(one)) > FINGERPRINT_TOL
+    assert _distance(f, fingerprint(one, SALT1)) > FINGERPRINT_TOL
     assert _distance({}, {}) == 0.0
+
+
+def test_fingerprint_depends_on_the_salt() -> None:
+    e = _edit()
+    assert _distance(fingerprint(e, SALT1), fingerprint(e, SALT2)) > 0.1
+    with pytest.raises(ValueError, match="32 bytes"):
+        fingerprint(e, b"short")
+
+
+def _big(n: int = 8) -> tuple[Edit, float]:
+    """Review setup: n modules of 1024 x 768, rank 8; and the edit's Frobenius norm."""
+    rng = np.random.default_rng(0)
+    ds = [
+        LowRankDelta(
+            f"model.layers.{i}.mlp.down_proj",
+            rng.standard_normal((1024, 8)),
+            rng.standard_normal((8, 768)),
+        )
+        for i in range(n)
+    ]
+    return Edit(tuple(ds), "b"), float(
+        np.sqrt(sum(np.linalg.norm(d.B @ d.A) ** 2 for d in ds))
+    )
+
+
+def test_change_aimed_at_probes_needs_the_salt() -> None:
+    """Review probe: a rank-1 add of 1.1e-5 along the probes read as a new edit.
+
+    Without the ledger's salt the attacker aims at the wrong probes, and the same
+    add stays far below FINGERPRINT_TOL.
+    """
+    e, norm = _big()
+    d0 = e.deltas[0]
+
+    def aimed(salt: bytes) -> Edit:
+        u, v = _probes(salt, d0.module, 1024, 768)
+        c = 1.1e-5 * norm / (np.linalg.norm(u[:, 0]) * np.linalg.norm(v[:, 0]))
+        b = np.hstack([d0.B, c * u[:, :1]])
+        a = np.vstack([d0.A, v[:, :1].T])
+        return Edit.from_deltas([LowRankDelta(d0.module, b, a), *e.deltas[1:]], "b")
+
+    f = fingerprint(e, SALT1)
+    assert _distance(f, fingerprint(aimed(SALT2), SALT1)) < FINGERPRINT_TOL / 10
+    # what the salt hides: knowing the probes, the same add reads as a new edit
+    assert _distance(f, fingerprint(aimed(SALT1), SALT1)) > FINGERPRINT_TOL
+
+
+def _small(e: Edit, norm: float, share: float, seed: int) -> Edit:
+    r = np.random.default_rng(seed)
+    b, a = r.standard_normal((256, 2)), r.standard_normal((2, 256))
+    k = share * norm / np.linalg.norm(b @ a)
+    small = LowRankDelta("model.layers.9.self_attn.o_proj", b * k, a)
+    return Edit.from_deltas([*e.deltas, small], "b")
+
+
+@pytest.mark.parametrize("share", [2.5e-3, 1e-4])
+def test_wholly_different_small_module_is_a_new_edit(share: float) -> None:
+    """Review finding 3: the per-module distance sees a small module's change."""
+    e, norm = _big(4)
+    f1 = fingerprint(_small(e, norm, share, 1), SALT1)
+    assert _distance(f1, fingerprint(_small(e, norm, share, 2), SALT1)) > 0.5
+
+
+def test_tiny_module_added_is_the_same_edit() -> None:
+    e, norm = _big(4)
+    f = fingerprint(e, SALT1)
+    assert _distance(f, fingerprint(_small(e, norm, 1e-4, 1), SALT1)) < 2e-4
+    assert _distance(f, fingerprint(_small(e, norm, 3e-3, 1), SALT1)) > 2e-3
 
 
 # ---------------------------------------------------------------- ledger
@@ -193,15 +266,19 @@ def _records(
 
 
 def _sc(
-    e: Edit | None = None, m: SplitManifest | None = None, tag: str = "out"
+    d: Path | str,
+    e: Edit | None = None,
+    m: SplitManifest | None = None,
+    tag: str = "out",
 ) -> Scoring:
+    """A scoring for the ledger in ``d``, with its salt."""
     m = m or _manifest()
-    return scoring_of(e or _edit(), m, _records(m, tag))
+    return scoring_of(e or _edit(), m, _records(m, tag), seal_salt(d))
 
 
-def test_scoring_of() -> None:
+def test_scoring_of(tmp_path: Path) -> None:
     m = _manifest()
-    s = _sc(m=m)
+    s = _sc(tmp_path, m=m)
     assert s.key == seal_key(_edit())
     assert s.test_ids_sha256 == m.test_ids_sha256
     assert s.manifest_sha256 == m.manifest_sha256
@@ -213,7 +290,7 @@ def test_scoring_of() -> None:
 
 
 def test_second_scoring_refused_unseal_recorded(tmp_path: Path) -> None:
-    s = _sc()
+    s = _sc(tmp_path / "seal")
     check_unsealed(tmp_path / "seal", s)  # no ledger yet: unsealed
     first = record_scoring(tmp_path / "seal", s, note="first")
     assert (first["scoring"], first["unseal"], first["k"]) == (1, False, 4)
@@ -232,7 +309,7 @@ def test_second_scoring_refused_unseal_recorded(tmp_path: Path) -> None:
 
 
 def test_many_reasons_are_cut_short(tmp_path: Path) -> None:
-    s = _sc()
+    s = _sc(tmp_path)
     for _ in range(4):
         record_scoring(tmp_path, s, unseal=True)
     with pytest.raises(SealedError, match=r"; \.\.\."):
@@ -243,22 +320,22 @@ def test_manifest_change_keeping_test_ids_stays_sealed(tmp_path: Path) -> None:
     """Review probe: a retyped revision gave a fresh manifest_sha256 and a rescore."""
     m1, m2 = _manifest(revision="740312ad"), _manifest(revision="740312add88f")
     assert m1.test_ids_sha256 == m2.test_ids_sha256
-    record_scoring(tmp_path, _sc(m=m1))
+    record_scoring(tmp_path, _sc(tmp_path, m=m1))
     with pytest.raises(SealedError, match="scored on this test set"):
-        record_scoring(tmp_path, _sc(m=m2, tag="new-outputs"))
+        record_scoring(tmp_path, _sc(tmp_path, m=m2, tag="new-outputs"))
 
 
 def test_overlapping_prompts_stay_sealed(tmp_path: Path) -> None:
     m1, m2 = _manifest(seed=3), _manifest(seed=4)
     assert m1.test_ids_sha256 != m2.test_ids_sha256
     assert set(m1.test) & set(m2.test)
-    record_scoring(tmp_path, _sc(m=m1))
+    record_scoring(tmp_path, _sc(tmp_path, m=m1))
     with pytest.raises(SealedError, match=r"scored on \d+ of these prompts"):
-        record_scoring(tmp_path, _sc(m=m2, tag="new"))
+        record_scoring(tmp_path, _sc(tmp_path, m=m2, tag="new"))
 
 
 def test_disjoint_test_set_is_allowed(tmp_path: Path) -> None:
-    record_scoring(tmp_path, _sc())
+    record_scoring(tmp_path, _sc(tmp_path))
     other = SplitManifest.build(
         [f"z{i}" for i in range(60)],
         dataset="synthetic",
@@ -266,14 +343,14 @@ def test_disjoint_test_set_is_allowed(tmp_path: Path) -> None:
         file_sha256=SHA,
         seed=3,
     )
-    record_scoring(tmp_path, _sc(m=other))
+    record_scoring(tmp_path, _sc(tmp_path, m=other))
     assert len(read_seal(tmp_path)) == 2
 
 
 def test_same_records_under_another_adapter_stay_sealed(tmp_path: Path) -> None:
-    record_scoring(tmp_path, _sc())
+    record_scoring(tmp_path, _sc(tmp_path))
     with pytest.raises(SealedError, match="same edit-arm records"):
-        record_scoring(tmp_path, _sc(_edit(seed=7)))
+        record_scoring(tmp_path, _sc(tmp_path, _edit(seed=7)))
 
 
 @pytest.mark.parametrize(
@@ -288,40 +365,99 @@ def test_same_records_under_another_adapter_stay_sealed(tmp_path: Path) -> None:
     ids=["rescale-2", "rescale-0.3", "rotation", "base-name", "within-tol"],
 )
 def test_same_dw_stays_sealed(tmp_path: Path, variant: Any) -> None:
-    record_scoring(tmp_path, _sc())
+    record_scoring(tmp_path, _sc(tmp_path))
     with pytest.raises(SealedError, match="scored on this test set"):
-        record_scoring(tmp_path, _sc(variant(_edit()), tag="fresh-outputs"))
+        record_scoring(tmp_path, _sc(tmp_path, variant(_edit()), tag="fresh-outputs"))
 
 
 def test_edit_changed_beyond_tol_is_new(tmp_path: Path) -> None:
-    record_scoring(tmp_path, _sc())
-    record_scoring(tmp_path, _sc(_map(_edit(), lambda b, a: (b * 1.01, a)), tag="x"))
-    record_scoring(tmp_path, _sc(_edit(seed=1), tag="y"))
+    record_scoring(tmp_path, _sc(tmp_path))
+    record_scoring(
+        tmp_path, _sc(tmp_path, _map(_edit(), lambda b, a: (b * 1.01, a)), tag="x")
+    )
+    record_scoring(tmp_path, _sc(tmp_path, _edit(seed=1), tag="y"))
     assert len(read_seal(tmp_path)) == 3
 
 
 def test_scoring_validation(tmp_path: Path) -> None:
-    s = _sc()
+    s = _sc(tmp_path)
     with pytest.raises(ValueError, match="key must be a sha256"):
         replace(s, key="edit-name")
     with pytest.raises(ValueError, match="test_ids_sha256 must be"):
         replace(s, test_ids_sha256="short")
     with pytest.raises(ValueError, match="k must be an int"):
         replace(s, k=0)
-    with pytest.raises(ValueError, match="must be finite 4x4"):
+    with pytest.raises(ValueError, match="must be finite 8x8"):
         replace(s, fingerprint={M1: np.ones((2, 2))})
     with pytest.raises(TypeError, match="must be a Scoring"):
         record_scoring(tmp_path, "a" * 64)  # type: ignore[arg-type]
 
 
+def test_salt_made_once_0600(tmp_path: Path) -> None:
+    salt = seal_salt(tmp_path / "seal")
+    path = tmp_path / "seal" / SALT
+    assert len(salt) == 32
+    assert path.read_bytes() == salt
+    if sys.platform != "win32":
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert seal_salt(tmp_path / "seal") == salt
+    assert seal_salt(tmp_path / "other") != salt  # one salt per ledger
+    assert not list((tmp_path / "seal").glob("*.tmp"))
+
+
+def test_missing_salt_with_lines_is_an_error(tmp_path: Path) -> None:
+    s = _sc(tmp_path)
+    record_scoring(tmp_path, s)
+    (tmp_path / SALT).unlink()
+    for call in (
+        lambda: seal_salt(tmp_path),
+        lambda: check_unsealed(tmp_path, s),
+        lambda: record_scoring(tmp_path, s, unseal=True),
+    ):
+        with pytest.raises(ValueError, match="is missing but"):
+            call()
+    assert not (tmp_path / SALT).exists()  # never silently remade
+    (tmp_path / SALT).write_bytes(b"x" * 5)
+    with pytest.raises(ValueError, match="not a seal salt"):
+        seal_salt(tmp_path)
+
+
+def test_scoring_from_another_salt_refused(tmp_path: Path) -> None:
+    s = _sc(tmp_path / "a")
+    check_unsealed(tmp_path / "b", s)  # no salt, no lines: nothing to compare
+    seal_salt(tmp_path / "b")
+    with pytest.raises(ValueError, match="not made with"):
+        check_unsealed(tmp_path / "b", s)
+    with pytest.raises(ValueError, match="not made with"):
+        record_scoring(tmp_path / "b", s)
+    with pytest.raises(ValueError, match="not made with"):
+        record_scoring(tmp_path / "c", s)  # made under the lock, then compared
+    assert read_seal(tmp_path / "b") == read_seal(tmp_path / "c") == []
+
+
+def test_scored_records_cannot_be_shown_as_another_arm(tmp_path: Path) -> None:
+    a = _sc(tmp_path)
+    record_scoring(tmp_path, a)
+    b = _sc(tmp_path, _edit(seed=4), tag="b")
+    for call in (
+        lambda: check_unsealed(tmp_path, b, [a.records_sha256]),
+        lambda: record_scoring(tmp_path, b, shown=[a.records_sha256]),
+        lambda: record_scoring(tmp_path, b, True, shown=[a.records_sha256]),
+    ):
+        with pytest.raises(SealedError, match="base or floor arm"):
+            call()
+    record_scoring(tmp_path, b, shown=["0" * 64])
+    assert len(read_seal(tmp_path)) == 2
+
+
 def test_torn_tail_is_cut_earlier_lines_kept(tmp_path: Path) -> None:
-    record_scoring(tmp_path, _sc())
+    record_scoring(tmp_path, _sc(tmp_path))
     path = tmp_path / LEDGER
     before = path.read_bytes()
     with path.open("ab") as f:
         f.write(b'{"key": "' + b"b" * 20)  # crash mid-write
     assert len(read_seal(tmp_path)) == 1  # reading leaves the file alone
-    other = _sc(_edit(seed=5), tag="other")
+    other = _sc(tmp_path, _edit(seed=5), tag="other")
     check_unsealed(tmp_path, other)
     record_scoring(tmp_path, other)
     assert path.read_bytes().startswith(before)
@@ -329,20 +465,20 @@ def test_torn_tail_is_cut_earlier_lines_kept(tmp_path: Path) -> None:
 
 
 def test_line_missing_only_its_newline_is_kept(tmp_path: Path) -> None:
-    s = _sc()
+    s = _sc(tmp_path)
     record_scoring(tmp_path, s)
     path = tmp_path / LEDGER
     path.write_bytes(path.read_bytes().rstrip(b"\n"))
     assert len(read_seal(tmp_path)) == 1
     with pytest.raises(SealedError):
         record_scoring(tmp_path, s)
-    record_scoring(tmp_path, _sc(_edit(seed=5), tag="other"))
+    record_scoring(tmp_path, _sc(tmp_path, _edit(seed=5), tag="other"))
     assert len(read_seal(tmp_path)) == 2
 
 
 def test_edited_earlier_line_breaks_the_chain(tmp_path: Path) -> None:
-    record_scoring(tmp_path, _sc())
-    record_scoring(tmp_path, _sc(_edit(seed=5), tag="other"))
+    record_scoring(tmp_path, _sc(tmp_path))
+    record_scoring(tmp_path, _sc(tmp_path, _edit(seed=5), tag="other"))
     path = tmp_path / LEDGER
     lines = path.read_bytes().split(b"\n")
     lines[0] = lines[0].replace(b'"note":""', b'"note":"x"')
@@ -351,7 +487,7 @@ def test_edited_earlier_line_breaks_the_chain(tmp_path: Path) -> None:
         read_seal(tmp_path)
     path.write_bytes(b"\n".join(lines[1:]))  # first line deleted
     with pytest.raises(ValueError, match="chain broken"):
-        record_scoring(tmp_path, _sc())
+        record_scoring(tmp_path, _sc(tmp_path))
 
 
 def _line(**change: Any) -> bytes:
@@ -400,7 +536,7 @@ def test_malformed_line_raises(tmp_path: Path, line: bytes, match: str) -> None:
 def _race(directory: str, barrier: Any, out: Any) -> None:
     barrier.wait()
     try:
-        record_scoring(directory, _sc(), note="race")
+        record_scoring(directory, _sc(directory), note="race")
         out.put("won")
     except SealedError:
         out.put("sealed")
@@ -685,3 +821,78 @@ def test_cli_broken_ledger_exits_2(
     assert "invalid JSON line" in capsys.readouterr().err
     assert main(_test_args(setup, "--unseal")) == 2  # skips the early check
     assert "invalid JSON line" in capsys.readouterr().err
+
+
+def test_cli_sealed_edit_records_as_base_arm_refused(
+    setup: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Review probe: `eval A_test B_test --split test --adapter B` reprinted A."""
+    d = setup["dir"]
+    assert main(_test_args(setup)) == 0
+    capsys.readouterr()
+    save_peft(_edit(seed=8), d / "b")
+    b_test = _new_outputs(setup, "b")
+    a_test = d / "test-edit.jsonl"
+    args = _test_args(setup, adapter=d / "b", edit=b_test, base=a_test)
+    assert main(args) == 1
+    assert "must be arm 'base'" in capsys.readouterr().err
+    relabelled = d / "a-as-base.jsonl"
+    write_jsonl(relabelled, [replace(r, arm="base") for r in read_jsonl(a_test)])
+    for extra in ((), ("--unseal",)):
+        args = _test_args(setup, *extra, adapter=d / "b", edit=b_test, base=relabelled)
+        assert main(args) == 1
+        cap = capsys.readouterr()
+        assert cap.out == ""
+        assert "base or floor arm" in cap.err
+    assert len(read_seal(setup["seal"])) == 1
+    assert main(_test_args(setup, adapter=d / "b", edit=b_test)) == 0
+
+
+def test_cli_sealed_or_edit_records_as_floor_arm_refused(
+    setup: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    d = setup["dir"]
+    assert main(_test_args(setup)) == 0
+    capsys.readouterr()
+    save_peft(_edit(seed=8), d / "b")
+    b_test = _new_outputs(setup, "b")
+    base = str(d / "test-base.jsonl")
+    sealed = d / "a-as-base.jsonl"
+    a = read_jsonl(d / "test-edit.jsonl")
+    write_jsonl(sealed, [replace(r, arm="base") for r in a])
+    floor = ["--floor", str(sealed), base]
+    assert main(_test_args(setup, *floor, adapter=d / "b", edit=b_test)) == 1
+    assert "base or floor arm" in capsys.readouterr().err
+    # a never-scored edit C as a floor arm: its records say arm "edit"
+    c = _new_outputs(setup, "c")
+    floor = ["--floor", base, str(c)]
+    assert main(_test_args(setup, *floor, adapter=d / "b", edit=b_test)) == 1
+    assert "must be arm 'base'" in capsys.readouterr().err
+    assert len(read_seal(setup["seal"])) == 1
+
+
+def test_cli_missing_salt_exits_2(
+    setup: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(_test_args(setup)) == 0
+    (setup["seal"] / SALT).unlink()
+    save_peft(_edit(seed=8), setup["dir"] / "b")
+    args = _test_args(setup, adapter=setup["dir"] / "b", edit=_new_outputs(setup, "b"))
+    assert main(args) == 2
+    assert "is missing but" in capsys.readouterr().err
+
+
+def test_cli_salt_mismatch_exits_2(
+    setup: dict[str, Path],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scoring made with another salt is never compared, early or under the lock."""
+    seal_salt(setup["seal"])
+    monkeypatch.setattr("astro_weights.cli.seal_salt", lambda d: SALT2)
+    assert main(_test_args(setup)) == 2
+    assert "not made with" in capsys.readouterr().err
+    assert main(_test_args(setup, "--unseal")) == 2
+    cap = capsys.readouterr()
+    assert (cap.out, "not made with" in cap.err) == ("", True)
+    assert read_seal(setup["seal"]) == []

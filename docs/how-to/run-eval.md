@@ -300,7 +300,7 @@ Split a dataset's items into dev, confirm and test once, by seeded item id, and 
 
 ```python
 from astro_weights.eval import Record
-from astro_weights.eval.seal import read_seal, record_scoring, scoring_of
+from astro_weights.eval.seal import read_seal, record_scoring, scoring_of, seal_salt
 from astro_weights.eval.splits import SplitManifest, assign_splits
 
 ids = [f"gsm8k-{i}" for i in range(1319)]  # ids of the pinned dataset file
@@ -327,7 +327,8 @@ manifest.check_records(test_records, "test", complete=True)
 print(manifest.check_seeds(test_records))
 
 edit = Edit((delta,), "tiny-llama")  # the edit from "Generate both arms"
-record_scoring("seal", scoring_of(edit, manifest, test_records), note="first")
+salt = seal_salt("seal")  # made on first use: seal/seal.salt, 32 bytes, mode 0600
+record_scoring("seal", scoring_of(edit, manifest, test_records, salt), note="first")
 print(read_seal("seal")[0]["k"])
 ```
 
@@ -354,10 +355,15 @@ astro-weights eval base.jsonl edit.jsonl --split test --manifest gsm8k.splits.js
 
 - The seal guards only runs with `--split test`. `astro-weights eval` without `--split` still compares any two record files, test records included, and records nothing.
 - On `--split test` every arm (base, edit and any `--floor` arms) must hold every test id, no other id, and the same `k` seeds for every item; anything else exits 1.
+- On `--split test` the base arm and both `--floor` arms are runs of the base model (the floor is two base runs, the noise floor): every record must say `arm` `"base"`, and none of them may hold the records of an edit already in the ledger (same `records_sha256`). Either exits 1, with or without `--unseal`, so a scored edit's test result cannot come back as a base or floor arm. `arm` is a label the run chose, so the first rule catches mistakes, not a relabelled file; the second catches a relabelled file of a scored edit.
 - `eval` writes one line to `SEAL_DIR/seal.jsonl` (fsynced) before it prints the result. The line holds the adapter's exact key (`seal_key`, a sha256 of its factors, without the base model), its fingerprint, the hash of the sorted test ids, the sorted prompt hashes scored, `k`, and `records_sha256`, a hash of the edit arm's sorted item id, seed, prompt hash and output. The base model goes in `note`.
-- A scoring is refused (exit 1, no result printed) when an earlier line has the same `records_sha256`, whatever adapter is named, or is the same edit and has the same test ids or shares any prompt. The same edit means the same key, or a fingerprint within 1e-3 relative distance.
-- The fingerprint is `U.T @ (B @ A) @ V` per module, with 4 Gaussian probe vectors on each side seeded by the module name and shape; a module missing on one side counts as zero. It depends on `B @ A` only: a rescale `B*c, A/c`, a rotation of the factors, a renamed or copied adapter directory, a new run id, new `meta` or another base model name all count as the same edit. An edit counts as new only when it moves more than 1e-3 relative to every earlier one.
+- A scoring is refused (exit 1, no result printed) when an earlier line has the same `records_sha256`, whatever adapter is named, or is the same edit and has the same test ids or shares any prompt. The same edit means the same key, or a fingerprint distance of at most 1e-3.
+- The fingerprint is `U.T @ (B @ A) @ V` per module, with 8 Gaussian probe vectors on each side seeded by the ledger's salt, the module name and its shape. It depends on `B @ A` only: a rescale `B*c, A/c`, a rotation of the factors, a renamed or copied adapter directory, a new run id, new `meta` or another base model name all count as the same edit.
+- The distance is the larger of two relative distances: over all modules together (a module missing on one side counts as zero, so adding a tiny module keeps it the same edit), and the worst single module present on both sides (so a wholly different module counts, however small). An edit is new when that distance is above 1e-3 for every earlier one.
+- The salt is `SEAL_DIR/seal.salt`: 32 random bytes, mode 0600, made on first use under the ledger lock. Without it the probes are unknown, so a change cannot be aimed at them to look new while barely changing the edit. Keep it with `seal.jsonl` and never give it to whatever makes the edits. A seal dir with ledger lines and no salt is an error (exit 2); restore the file rather than letting a new salt make every earlier fingerprint incomparable.
 - `--unseal` scores it again, warns on stderr, and the line says `"unseal": true`.
 - Two `eval` processes racing on one edit: one prints its result, the other exits 1. The ledger is locked with `flock` (`msvcrt.locking` on Windows), so keep the seal dir on a local disk, and use one seal dir for every scoring of a dataset.
 - Each line holds the sha256 of the line before it, so an edited or deleted earlier line makes reads fail. A last line cut short by a crash is dropped; that scoring never printed a result. Deleting the whole file, or pointing `--seal-dir` somewhere new, is not detected.
 - Keep manifests and the seal dir outside an agent run's `RUN_DIR`: the MCP server never reads them, and the kernel sandbox cannot open them.
+
+What the seal stops, and what it does not: it stops an accidental second scoring, and an agent or optimiser hunting for a second look at the test split. It does not stop the machine's owner, who can delete the ledger or the salt, point `--seal-dir` somewhere new, or change the code. For that, the check is the run record and a published hash of the ledger: a reader compares the ledger behind a result with the hash published before it.

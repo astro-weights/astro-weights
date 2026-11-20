@@ -1027,7 +1027,7 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
     import astro_weights.mcp as mcp_pkg
     from astro_weights.edits import Edit, rank1
     from astro_weights.eval import Record
-    from astro_weights.eval.seal import record_scoring, scoring_of
+    from astro_weights.eval.seal import record_scoring, scoring_of, seal_salt
     from astro_weights.eval.splits import SplitManifest
     from astro_weights.mcp.jobs import RunConfig, load_run_config
 
@@ -1074,7 +1074,10 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
         for i in manifest.test
         for s in range(manifest.k)
     ]
-    record_scoring(secret / "seal", scoring_of(probe_edit, manifest, test_records))
+    salt = seal_salt(secret / "seal")
+    record_scoring(
+        secret / "seal", scoring_of(probe_edit, manifest, test_records, salt)
+    )
     probes = [
         *manifest.confirm,
         *manifest.test,
@@ -1082,13 +1085,16 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
         str(secret),
         "splits.json",
         "seal.jsonl",
+        "seal.salt",
+        salt.hex(),
     ]
 
     def scan(run_dir: Path) -> None:
         for path in run_dir.rglob("*"):
-            assert path.name not in {"splits.json", "seal.jsonl"}
+            assert path.name not in {"splits.json", "seal.jsonl", "seal.salt"}
             if path.is_file():
                 data = path.read_bytes()
+                assert salt not in data, f"{path} holds the seal salt"
                 leaked = [p for p in probes if p.encode() in data]
                 assert not leaked, f"{path} holds {leaked[:3]}"
 
