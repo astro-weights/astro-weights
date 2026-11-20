@@ -106,7 +106,9 @@ def test_bootstrap_ci_clustered_wider_and_seeded() -> None:
     cl = [f"c{k // 4}" for k in range(120)]
     base, edit = _recs([[0.0]] * 120, [[float(x)] for x in d], cl)
     r = compare(base, edit, n_boot=2000, seed=4)
-    assert r == compare(base, edit, n_boot=2000, seed=4)
+    # repr, not ==: the base arm is constant, so correlation is nan, and since
+    # Python 3.13 dataclass == compares fields one by one (nan != nan)
+    assert repr(r) == repr(compare(base, edit, n_boot=2000, seed=4))
     nb, ne = _recs([[0.0]] * 120, [[float(x)] for x in d])
     u = compare(nb, ne, n_boot=2000, seed=4)
     wr, wu = (x.score_ci95_boot[1] - x.score_ci95_boot[0] for x in (r, u))
