@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from astro_weights.mcp import record as record_mod
+from astro_weights.eval import header as header_mod
 from astro_weights.mcp.budget import Ledger, Limits
 from astro_weights.mcp.record import CATEGORY_MAX, DETAIL_MAX, RunRecord, library_commit
 
@@ -318,7 +318,7 @@ class _Dist:
 
 def _installed(monkeypatch: pytest.MonkeyPatch, info: Any) -> None:
     text = info if info is None or isinstance(info, str) else json.dumps(info)
-    monkeypatch.setattr(record_mod, "distribution", lambda _: _Dist(text))
+    monkeypatch.setattr(header_mod, "distribution", lambda _: _Dist(text))
 
 
 def _git_repo(where: Path) -> str:
@@ -375,5 +375,5 @@ def test_library_commit_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     def missing(_: str) -> Any:
         raise PackageNotFoundError("astro-weights")
 
-    monkeypatch.setattr(record_mod, "distribution", missing)
+    monkeypatch.setattr(header_mod, "distribution", missing)
     assert library_commit() is None

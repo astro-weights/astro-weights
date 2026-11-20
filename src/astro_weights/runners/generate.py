@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from astro_weights.eval import Record, prompt_hash, read_jsonl
+from astro_weights.eval.header import run_identity
 
 try:
     import peft
@@ -397,8 +398,18 @@ def run_header(
     *,
     batch_size: int = 1,
     sampling: Mapping[str, float] | None = None,
+    run_id: str | None = None,
+    k: int = 1,
+    concurrency: int = 1,
 ) -> dict[str, Any]:
-    """Settings that decide the outputs, for the run log.
+    """Settings that decide the outputs, plus where the run happened, for the run log.
+
+    Keys are CONFIG (compared, hashed by `config_hash`) or PROVENANCE (stored only):
+    see `astro_weights.eval.header`. `run_id` is random when not given; `k` is samples
+    per item and `concurrency` requests in flight (both recorded as given). GPU model
+    and count are recorded when CUDA is available. The astro-weights version and
+    library commit (`-dirty` when the checkout has changes) and the numpy version are
+    provenance.
 
     Pass the same `sampling` as to `generate_records`. It is recorded under
     "sampling" (sorted keys) only when given, so a greedy header has no such key
@@ -427,7 +438,11 @@ def run_header(
         "torch": torch.__version__,
         "transformers": transformers.__version__,
         "peft": peft.__version__,
+        **run_identity(run_id, k, concurrency),
     }
+    if torch.cuda.is_available():
+        header["gpu_model"] = torch.cuda.get_device_name(0)
+        header["gpu_count"] = torch.cuda.device_count()
     if sampling is not None:
         header["sampling"] = dict(sorted(sampling.items()))
     return header

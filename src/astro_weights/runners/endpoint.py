@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from astro_weights.eval import Record, prompt_hash
+from astro_weights.eval.header import run_identity
 
 _KEYS = ("item_id", "prompt", "gold")
 _RETRIES = 2
@@ -219,21 +220,42 @@ def run_header_http(
     *,
     api_key: str | None = None,
     timeout: float = 120.0,
+    run_id: str | None = None,
+    k: int = 1,
+    concurrency: int = 1,
+    serving_flags: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Settings that decide the outputs, plus what the server reports, for the run log.
 
-    The server's `/v1/models` entry and `system_fingerprint` are best effort: left
-    out when the server does not give them. The api key is never recorded.
+    CONFIG keys (compared, hashed by `config_hash`): `max_new_tokens`, `seed`,
+    `extra_body`, `k`, `concurrency` and `serving_flags`. The client cannot read the
+    server's flags or environment, so declare them in `serving_flags` (for example
+    `{"--parallel": "4", "VLLM_BATCH_INVARIANT": "1"}`); it is recorded only when
+    given. PROVENANCE keys (stored, not compared): `base_url`, the served name
+    (`served_model`), the server's `/v1/models` entry, `system_fingerprint`, the
+    llama.cpp `build_info` from `/props`, the vLLM version from `/version`, the run id
+    (random when not given), the library version and commit, and the numpy version.
+    The server's answers are best effort: left out when the server does not give them.
+    The api key is never recorded.
     """
     root = _root(base_url)
     _check_key(api_key)
     header: dict[str, Any] = {
         "base_url": root,
-        "model": model,
+        "served_model": model,
         "max_new_tokens": max_new_tokens,
         "seed": seed,
         "extra_body": dict(extra_body or {}),
+        **run_identity(run_id, k, concurrency),
     }
+    if serving_flags is not None:
+        header["serving_flags"] = dict(sorted(serving_flags.items()))
+    build = _server_json(root, "/props", api_key, timeout).get("build_info")
+    if isinstance(build, str):
+        header["llama_cpp_build"] = build
+    ver = _server_json(root, "/version", api_key, timeout).get("version")
+    if isinstance(ver, str):
+        header["vllm_version"] = ver
     entry = _model_entry(root, model, api_key, timeout)
     if entry is not None:
         header["server_model"] = entry
@@ -246,6 +268,18 @@ def run_header_http(
     if obj.get("system_fingerprint") is not None:
         header["system_fingerprint"] = obj["system_fingerprint"]
     return header
+
+
+def _server_json(
+    root: str, path: str, api_key: str | None, timeout: float
+) -> dict[str, Any]:
+    """A JSON object from GET `path`, or {} when the server does not give one."""
+    try:
+        status, text = _request(f"{root}{path}", None, api_key, timeout)
+        obj = json.loads(text) if status < 400 else {}
+    except (RuntimeError, ValueError):
+        return {}
+    return obj if isinstance(obj, dict) else {}
 
 
 def _model_entry(

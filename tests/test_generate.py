@@ -6,15 +6,18 @@ import pytest
 
 from astro_weights.edits import Edit, rank1
 from astro_weights.eval import (
+    PROVENANCE_KEYS,
     PairedResult,
     Record,
     compare,
+    config_hash,
     grade_exact,
     pair,
     prompt_hash,
     read_jsonl,
     write_jsonl,
 )
+from astro_weights.eval.header import library_commit, library_version
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("peft")
@@ -136,6 +139,27 @@ def test_run_header(model: Any, tok: Any) -> None:
     } <= h.keys()
     tok.chat_template = "x"
     assert len(run_header(model, tok, 6, 0, True)["chat_template_sha256"]) == 64
+
+
+def test_run_header_record_keys(model: Any, tok: Any, monkeypatch: Any) -> None:
+    h = run_header(model, tok, 6, 0, False)
+    assert len(h["run_id"]) == 32
+    assert h["run_id"] != run_header(model, tok, 6, 0, False)["run_id"]
+    assert (h["k"], h["concurrency"]) == (1, 1)
+    assert h["numpy"] == np.__version__
+    assert h["astro_weights"] == library_version()
+    assert h["library_commit"] == library_commit()
+    assert "gpu_model" not in h  # no CUDA on the CPU test runner
+    h = run_header(model, tok, 6, 0, False, run_id="mine", k=4, concurrency=8)
+    assert (h["run_id"], h["k"], h["concurrency"]) == ("mine", 4, 8)
+    with pytest.raises(ValueError, match="at least 1"):
+        run_header(model, tok, 6, 0, False, k=0)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda _i: "Fake H200")
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    h = run_header(model, tok, 6, 0, False)
+    assert (h["gpu_model"], h["gpu_count"]) == ("Fake H200", 2)
+    assert {"gpu_model", "gpu_count"} <= PROVENANCE_KEYS
 
 
 @pytest.fixture
@@ -578,4 +602,6 @@ def test_run_header_same_under_adapter(model: Any, tok: Any) -> None:
     delta = rank1(MODULE, np.ones(w.shape[0]), np.ones(w.shape[1]))
     edited = apply(model, Edit((delta,), "tiny"))
     assert type(edited).__name__ == "PeftModel"
-    assert run_header(edited, tok, 6, 0, False) == base
+    same = run_header(edited, tok, 6, 0, False, run_id="r")
+    assert same == {**base, "run_id": "r"}
+    assert config_hash(same) == config_hash(base)

@@ -28,6 +28,7 @@ class Server:
         self.requests: list[dict[str, Any]] = []
         self.models: Reply = (200, json.dumps({"data": []}))
         self.location: str | None = None
+        self.paths: dict[str, Reply] = {}  # GET path -> reply; others get `models`
 
 
 @contextmanager
@@ -48,7 +49,7 @@ def serve(respond: Responder) -> Iterator[tuple[str, Server]]:
             state.requests.append(
                 {"path": self.path, "auth": self.headers["Authorization"]}
             )
-            self._send(state.models)
+            self._send(state.paths.get(self.path, state.models))
 
         def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers["Content-Length"]))

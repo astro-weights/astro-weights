@@ -7,7 +7,18 @@ import pytest
 from fake_endpoint import Reply, Server, serve
 from fake_endpoint import ok as _ok
 
-from astro_weights.eval import Record, compare, grade_exact, pair, read_jsonl
+from astro_weights.eval import (
+    CONFIG_KEYS,
+    PROVENANCE_KEYS,
+    Record,
+    check_headers,
+    compare,
+    config_hash,
+    grade_exact,
+    pair,
+    read_jsonl,
+)
+from astro_weights.eval.header import run_identity
 from astro_weights.runners import endpoint
 from astro_weights.runners.endpoint import generate_records_http, run_header_http
 
@@ -267,17 +278,84 @@ def test_run_header_http() -> None:
     }
     with serve(lambda _b: _ok(system_fingerprint="fp-1")) as (url, state):
         state.models = (200, json.dumps(models))
-        header = run_header_http(url + "/v1", "m", 32, 3, {"top_k": 1}, api_key=KEY)
+        header = run_header_http(
+            url + "/v1", "m", 32, 3, {"top_k": 1}, api_key=KEY, run_id="r1"
+        )
+    identity = run_identity("r1", 1, 1)
     assert header == {
         "base_url": url,
-        "model": "m",
+        "served_model": "m",
         "max_new_tokens": 32,
         "seed": 3,
         "extra_body": {"top_k": 1},
         "server_model": {"id": "m", "owned_by": "me", "meta": {"n": 1}},
         "system_fingerprint": "fp-1",
+        **identity,
     }
     assert KEY not in json.dumps(header)
+    assert header.keys() <= CONFIG_KEYS | PROVENANCE_KEYS
+
+
+def test_run_header_http_server_build_and_flags() -> None:
+    with serve(lambda _b: _ok()) as (url, state):
+        state.paths["/props"] = (200, json.dumps({"build_info": "b4567-abc"}))
+        state.paths["/version"] = (200, json.dumps({"version": "0.11.0"}))
+        header = run_header_http(
+            url,
+            "m",
+            8,
+            0,
+            k=4,
+            concurrency=2,
+            serving_flags={"--parallel": "4", "VLLM_BATCH_INVARIANT": "1"},
+        )
+    assert header["llama_cpp_build"] == "b4567-abc"
+    assert header["vllm_version"] == "0.11.0"
+    assert header["serving_flags"] == {"--parallel": "4", "VLLM_BATCH_INVARIANT": "1"}
+    assert (header["k"], header["concurrency"]) == (4, 2)
+    assert [r["path"] for r in state.requests[:2]] == ["/props", "/version"]
+    other = {**header, "serving_flags": {"--parallel": "1"}}
+    with pytest.raises(ValueError, match="serving_flags"):
+        check_headers(header, other)
+    check_headers(header, {**header, "llama_cpp_build": "b1", "vllm_version": "9"})
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [(404, "nope"), (200, "not json"), (200, "[1]"), (200, '{"build_info": 3}')],
+)
+def test_run_header_http_server_build_absent(reply: Reply) -> None:
+    with serve(lambda _b: _ok()) as (url, state):
+        state.paths["/props"] = reply
+        state.paths["/version"] = reply
+        header = run_header_http(url, "m", 8, 0)
+    assert "llama_cpp_build" not in header
+    assert "vllm_version" not in header
+    assert "serving_flags" not in header
+
+
+def test_http_arms_one_server_arm_keys() -> None:
+    with serve(lambda _b: _ok()) as (url, _):
+        base = run_header_http(url, "m", 8, 0, {"top_k": 1, "lora": 0.0})
+        edit = run_header_http(url + "/v1", "m", 8, 0, {"top_k": 1, "lora": 1.0})
+    with pytest.raises(ValueError, match="extra_body"):
+        check_headers(base, edit)
+    check_headers(base, edit, arm_keys=("lora",))
+    assert config_hash(base, ("lora",)) == config_hash(edit, ("lora",))
+
+
+def test_http_arms_two_servers_compare() -> None:
+    with (
+        serve(lambda _b: _ok()) as (url_a, state_a),
+        serve(lambda _b: _ok()) as (url_b, state_b),
+    ):
+        state_a.models = (200, json.dumps({"data": [{"id": "base"}]}))
+        state_b.models = (200, json.dumps({"data": [{"id": "edit"}]}))
+        base = run_header_http(url_a, "base", 8, 0)
+        edit = run_header_http(url_b, "edit", 8, 0)
+    assert base["server_model"] != edit["server_model"]
+    check_headers(base, edit)  # no --ignore-header needed
+    assert config_hash(base) == config_hash(edit)
 
 
 @pytest.mark.parametrize(
@@ -294,7 +372,14 @@ def test_run_header_http_without_server_info(models: Reply) -> None:
     with serve(lambda _b: _ok()) as (url, state):
         state.models = models
         header = run_header_http(url, "m", 8, 0)
-    assert set(header) == {"base_url", "model", "max_new_tokens", "seed", "extra_body"}
+    assert set(header) == {
+        "base_url",
+        "served_model",
+        "max_new_tokens",
+        "seed",
+        "extra_body",
+        *run_identity(None, 1, 1),
+    }
 
 
 def test_run_header_http_server_down() -> None:
@@ -303,6 +388,7 @@ def test_run_header_http_server_down() -> None:
     header = run_header_http(url, "m", 8, 0)
     assert "system_fingerprint" not in header
     assert "server_model" not in header
+    assert "llama_cpp_build" not in header
 
 
 def _redirect_pair(path: str = "/steal") -> Iterator[tuple[str, str, Server, Server]]:
