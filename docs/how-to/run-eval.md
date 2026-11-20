@@ -229,14 +229,25 @@ from astro_weights.runners.endpoint import generate_records_http, run_header_htt
 URL = "http://127.0.0.1:8080"  # server root; trailing /v1 also accepted
 items = [{"item_id": "i0", "prompt": "Say w5.", "gold": "w5"}]
 for arm, name in [("base", "base-model"), ("edit", "edit-model")]:
-    write_header(header_path(f"{arm}-http.jsonl"), run_header_http(URL, name, 64, 0))
     generate_records_http(
-        URL, name, items, arm, grade_exact, 64, out=f"{arm}-http.jsonl"
+        URL,
+        name,
+        items,
+        arm,
+        grade_exact,
+        64,
+        out=f"{arm}-http.jsonl",
+        header=run_header_http(URL, name, 64, 0),  # written to {arm}-http.header.json
+        resume=True,  # after a crash, asks only for the items not in the file
     )
 ```
 
 - It sends one `POST /v1/chat/completions` per item, with temperature 0 and `max_tokens` and `seed` set; `extra_body` keys are merged last. The output is `message.content` (`reasoning_content` is ignored), the token count comes from `usage.completion_tokens`, and `hit_cap` is set when `finish_reason` is `length`.
-- `out` must be empty or absent; there is no resume. `api_key` is sent as a bearer token and is never recorded or shown in errors. Redirects are refused.
+- A non-empty `out` raises `FileExistsError` unless `resume=True`. Resuming keeps the records in the file and asks only for the other items; a last line cut short by a crash is dropped and redone. Records of another arm, seed or prompt are refused.
+- `header` is the `run_header_http` result for this run. It must agree with the call (`max_new_tokens`, `seed`, `extra_body`, `concurrency`) and is written beside `out`. On a resume the header file already there is kept, and is refused when it disagrees with the call or, with `header` given, its `config_hash` differs: records made under two configs never end up in one file.
+- Connection errors, timeouts, HTTP 429 and 5xx are retried twice, with backoff. An item that still fails raises `RuntimeError` naming the item; no record is written for it (it is not scored as wrong), and a resume asks for it again. The header file's provenance key `infra_errors` counts `retries` and `failed` items, added up across resumes. Other 4xx answers are not retried.
+- `concurrency=N` keeps N requests in flight (default 1). Records are still written in item order, so the file is the one a one-at-a-time run writes, if the server answers alike. Most servers do not: on llama.cpp several slots break byte repeatability (in a test, 4 slots changed 17 of 20 outputs compared with 1 slot), and vLLM needs batch-invariant serving (`VLLM_BATCH_INVARIANT=1`). `concurrency` is a config key, so the header check refuses a pair of arms run at different concurrency; run both arms with the same value, and declare the server's slots in `serving_flags`.
+- `api_key` is sent as a bearer token and is never recorded or shown in errors. Redirects are refused.
 - `run_header_http(url, name, max_new_tokens, seed, extra_body, run_id=..., k=..., concurrency=..., serving_flags=..., model_id=...)` records the config keys `max_new_tokens`, `seed`, `extra_body`, `k`, `concurrency`, `serving_flags`, `model_id`, `backend` and the server build, and the provenance keys `base_url`, `served_model` (the name), the run id, the library version and commit, and the numpy version. `model_id` is the argument you pass (for example the base GGUF's sha256), else the basename of the `model_path` that llama.cpp reports at `/props`, else the served name; it is what makes two servers with different models differ. When the server answers it adds `llama_cpp_build` (`build_info` from `/props`; `backend` is then `llama.cpp`), `vllm_version` (from `/version`; `backend` is `vllm`), and the provenance keys `server_model` (the `/v1/models` entry) and `system_fingerprint`. `/props` and `/version` are asked once each, with a timeout of at most 5 seconds. The client cannot read the server's flags or environment, so declare them in `serving_flags` (for example `{"--parallel": "4"}`); they are compared. Two arms under different served names or URLs, with the same model and build and the same config, pass the header check without `--ignore-header`; give the arms different `extra_body` fields (a `lora` scale) with `--arm-key lora`.
 
 ### Base and edit on one llama-server
@@ -367,3 +378,32 @@ astro-weights eval base.jsonl edit.jsonl --split test --manifest gsm8k.splits.js
 - Keep manifests and the seal dir outside an agent run's `RUN_DIR`: the MCP server never reads them, and the kernel sandbox cannot open them.
 
 What the seal stops, and what it does not: it stops an accidental second scoring, and an agent or optimiser hunting for a second look at the test split. It does not stop the machine's owner, who can delete the ledger or the salt, point `--seal-dir` somewhere new, or change the code. For that, the check is the run record and a published hash of the ledger: a reader compares the ledger behind a result with the hash published before it.
+
+## Noise floor
+
+Run the base arm twice under the same settings and keep what the two runs disagree on. `floor_from_records(run1, run2, header)` pairs the runs by item and seed and returns a `FloorResult`: the accuracy and token deltas with their standard errors, `flip_rate` (the share of (item, seed) pairs whose output text differs) and `k`. `save_floor` stores it as `floor-<config_hash>.json`, and `load_floor(dir, config_hash)` returns it only for that exact `config_hash` (the hash of the header's config keys, so a change to the model, sampling, `max_new_tokens`, `k` or any other config value gives `None`; provenance keys such as `run_id` do not count). A file whose stored hash is not the one in its name, or that is not a valid floor, raises `ValueError`. A deterministic server (greedy, one slot) gives a floor of exactly 0.
+
+```python
+from astro_weights.eval import floor_from_records, load_floor, save_floor
+from astro_weights.eval.header import config_hash
+
+ids = range(6)
+run1 = [
+    Record(f"n{i}", 0, "base", f"h{i}", f"out{i}", float(i % 2), 5, False) for i in ids
+]
+run2 = [
+    Record(f"n{i}", 0, "base", f"h{i}", f"out{i}", float(i % 2), 5, False) for i in ids
+]
+header = {"model": "tiny-llama", "temperature": 0.0, "max_new_tokens": 64}
+floor = floor_from_records(run1, run2, header)
+save_floor("floors", floor)
+print(floor.flip_rate, floor.accuracy_delta)
+assert load_floor("floors", floor.config_hash) == floor
+assert load_floor("floors", config_hash({**header, "max_new_tokens": 128})) is None
+```
+
+Output:
+
+```text
+0.0 0.0
+```

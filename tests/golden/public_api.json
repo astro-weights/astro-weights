@@ -23,6 +23,8 @@
   "masked_rank1": "(module: str, W0: numpy.ndarray, u: numpy.ndarray, mask: numpy.ndarray, alpha: float) -> astro_weights.edits.core.LowRankDelta",
   "orthogonal_random": "(u: numpy.ndarray, seed: int) -> numpy.ndarray",
   "project_out": "(module: str, W0: numpy.ndarray, v: numpy.ndarray, strength: float = 1.0) -> astro_weights.edits.core.LowRankDelta",
+  "random_controls": "(edit: astro_weights.edits.core.Edit, n: int = 20, seed: int = 0, *, dtype: Literal['bfloat16', 'float16'] | None = None, base: collections.abc.Callable[[str], numpy.ndarray] | None = None) -> list[astro_weights.edits.core.Edit]",
+  "random_like": "(edit: astro_weights.edits.core.Edit, seed: int, *, dtype: Literal['bfloat16', 'float16'] | None = None, base: collections.abc.Callable[[str], numpy.ndarray] | None = None) -> astro_weights.edits.core.Edit",
   "rank1": "(module: str, b: numpy.ndarray, a: numpy.ndarray) -> astro_weights.edits.core.LowRankDelta",
   "save_recipe": "(path: pathlib.Path | str, recipe: dict[str, Any]) -> None",
   "scale_column": "(module: str, W0: numpy.ndarray, j: int, s: float) -> astro_weights.edits.core.LowRankDelta",
@@ -33,6 +35,7 @@
  "astro_weights.eval": {
   "CONFIG_KEYS": null,
   "ControlVerdict": "(passed: bool, target_beats_quantile: bool, target_rank: int, target_quantile: float, q: float, n_controls: int, side_effects: collections.abc.Mapping[str, bool], outside: tuple[str, ...]) -> None",
+  "FloorResult": "(config_hash: str, n_items: int, k: int, accuracy_delta: float, accuracy_se: float, flip_rate: float, tokens_delta: float, tokens_se: float, created: str, library_version: str | None) -> None",
   "PROVENANCE_KEYS": null,
   "PairedResult": "(n_items: int, mean_base: float, mean_edit: float, diff: float, se: float, ci95: tuple[float, float], correlation: float, mcnemar_p: float | None, n_base_only: int, n_edit_only: int, tokens_base: float, tokens_edit: float, tokens_diff: float, tokens_diff_pct: float, tokens_ci95: tuple[float, float], cap_hit_base: float, cap_hit_edit: float, small_n: bool, score_mde: float, tokens_se: float, tokens_mde: float, n_clusters: int | None = None, cap_hit_p: float = 1.0, n_uncapped: int = 0, uncapped_diff: float | None = None, uncapped_tokens_diff: float | None = None, loops_base: int = 0, loops_edit: int = 0, k: int = 1, score_ci95_boot: tuple[float, float] = (nan, nan), sign_test_p: float | None = None, base_ci95_wilson: tuple[float, float] | None = None, edit_ci95_wilson: tuple[float, float] | None = None, newcombe_ci95: tuple[float, float] | None = None, strata: tuple['StratumResult', ...] = (), ci95_normal: tuple[float, float] | None = None, ci95_method: str = 'normal') -> None",
   "Record": "(item_id: str, seed: int, arm: str, prompt_hash: str, output: str, score: float, n_output_tokens: int, hit_cap: bool, cluster_id: str | None = None) -> None",
@@ -44,6 +47,7 @@
   "config_hash": "(header: collections.abc.Mapping[str, Any], arm_keys: collections.abc.Collection[str] = ()) -> str",
   "control_rule": "(edit: astro_weights.eval.paired.PairedResult, controls: collections.abc.Sequence[astro_weights.eval.paired.PairedResult], *, target: str, direction: Literal['higher', 'lower'], side_effects: collections.abc.Mapping[str, tuple[astro_weights.eval.paired.PairedResult, collections.abc.Sequence[astro_weights.eval.paired.PairedResult]]] | None = None, q: float = 0.95) -> astro_weights.eval.controls.ControlVerdict",
   "exceeds_floor": "(result: astro_weights.eval.paired.PairedResult, floor: astro_weights.eval.paired.PairedResult) -> dict[str, bool]",
+  "floor_from_records": "(run1: collections.abc.Sequence[astro_weights.eval.records.Record], run2: collections.abc.Sequence[astro_weights.eval.records.Record], header: collections.abc.Mapping[str, Any]) -> astro_weights.eval.floor.FloorResult",
   "format_report": "(r: astro_weights.eval.paired.PairedResult, floor: astro_weights.eval.paired.PairedResult | None = None) -> str",
   "grade_choice": "(gold: str, answer: str) -> bool",
   "grade_exact": "(gold: str, answer: str) -> bool",
@@ -51,11 +55,13 @@
   "header_path": "(records_path: str | pathlib.Path) -> pathlib.Path",
   "is_loop": "(output: str) -> bool",
   "last_boxed": "(s: str) -> str | None",
+  "load_floor": "(directory: str | pathlib.Path, config_hash: str) -> astro_weights.eval.floor.FloorResult | None",
   "min_controls": "(q: float) -> int",
   "pair": "(base: collections.abc.Sequence[astro_weights.eval.records.Record], edit: collections.abc.Sequence[astro_weights.eval.records.Record]) -> list[tuple[astro_weights.eval.records.Record, astro_weights.eval.records.Record]]",
   "prompt_hash": "(text: str) -> str",
   "read_header": "(path: str | pathlib.Path) -> dict[str, Any]",
   "read_jsonl": "(path: str | pathlib.Path) -> list[astro_weights.eval.records.Record]",
+  "save_floor": "(directory: str | pathlib.Path, floor: astro_weights.eval.floor.FloorResult) -> pathlib.Path",
   "write_header": "(path: str | pathlib.Path, header: dict[str, Any]) -> None",
   "write_jsonl": "(path: str | pathlib.Path, records: collections.abc.Iterable[astro_weights.eval.records.Record]) -> None"
  },
@@ -175,7 +181,7 @@
   "main": "(argv: list[str] | None = None) -> int"
  },
  "astro_weights.runners.endpoint": {
-  "generate_records_http": "(base_url: str, model: str, items: collections.abc.Sequence[collections.abc.Mapping[str, Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, *, seed: int = 0, api_key: str | None = None, timeout: float = 120.0, extra_body: collections.abc.Mapping[str, Any] | None = None, out: str | pathlib.Path | None = None) -> list[astro_weights.eval.records.Record]",
+  "generate_records_http": "(base_url: str, model: str, items: collections.abc.Sequence[collections.abc.Mapping[str, Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, *, seed: int = 0, api_key: str | None = None, timeout: float = 120.0, extra_body: collections.abc.Mapping[str, Any] | None = None, out: str | pathlib.Path | None = None, concurrency: int = 1, resume: bool = False, header: collections.abc.Mapping[str, Any] | None = None) -> list[astro_weights.eval.records.Record]",
   "run_header_http": "(base_url: str, model: str, max_new_tokens: int, seed: int, extra_body: collections.abc.Mapping[str, Any] | None = None, *, api_key: str | None = None, timeout: float = 120.0, run_id: str | None = None, k: int = 1, concurrency: int = 1, serving_flags: collections.abc.Mapping[str, str] | None = None, model_id: str | None = None) -> dict[str, Any]"
  },
  "astro_weights.runners.generate": {
