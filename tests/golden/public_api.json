@@ -23,6 +23,8 @@
   "masked_rank1": "(module: str, W0: numpy.ndarray, u: numpy.ndarray, mask: numpy.ndarray, alpha: float) -> astro_weights.edits.core.LowRankDelta",
   "orthogonal_random": "(u: numpy.ndarray, seed: int) -> numpy.ndarray",
   "project_out": "(module: str, W0: numpy.ndarray, v: numpy.ndarray, strength: float = 1.0) -> astro_weights.edits.core.LowRankDelta",
+  "random_controls": "(edit: astro_weights.edits.core.Edit, n: int = 20, seed: int = 0, *, dtype: Literal['bfloat16', 'float16'] | None = None, base: collections.abc.Callable[[str], numpy.ndarray] | None = None) -> list[astro_weights.edits.core.Edit]",
+  "random_like": "(edit: astro_weights.edits.core.Edit, seed: int, *, dtype: Literal['bfloat16', 'float16'] | None = None, base: collections.abc.Callable[[str], numpy.ndarray] | None = None) -> astro_weights.edits.core.Edit",
   "rank1": "(module: str, b: numpy.ndarray, a: numpy.ndarray) -> astro_weights.edits.core.LowRankDelta",
   "save_recipe": "(path: pathlib.Path | str, recipe: dict[str, Any]) -> None",
   "scale_column": "(module: str, W0: numpy.ndarray, j: int, s: float) -> astro_weights.edits.core.LowRankDelta",
