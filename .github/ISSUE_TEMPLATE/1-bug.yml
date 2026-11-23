@@ -26,6 +26,19 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: hardware
+    attributes:
+      label: Hardware you can test on
+      description: Optional. Helps us label the issue so the right contributor picks it up.
+      multiple: true
+      options:
+        - CPU only
+        - Apple silicon Mac
+        - NVIDIA GPU
+        - Other
+    validations:
+      required: false
+  - type: dropdown
     id: ai
     attributes:
       label: Did you use AI tools to find or write this up?
