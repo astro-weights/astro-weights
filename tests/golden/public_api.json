@@ -15,9 +15,13 @@
  "astro_weights.edits": {
   "Edit": "(deltas: tuple[astro_weights.edits.core.LowRankDelta, ...], base_model: str, base_sha256: dict[str, str] = <factory>, meta: dict[str, object] = <factory>) -> None",
   "LowRankDelta": "(module: str, B: numpy.ndarray, A: numpy.ndarray) -> None",
+  "NormCheck": "(norms: dict[str, float], outside: tuple[str, ...], passed: bool) -> None",
   "build_edit": "(recipe: dict[str, Any], weights: collections.abc.Callable[[str], numpy.ndarray], directory: pathlib.Path | str) -> astro_weights.edits.core.Edit",
+  "check_norms": "(edit: astro_weights.edits.core.Edit, ranges: collections.abc.Mapping[str, tuple[float, float]] | tuple[float, float]) -> astro_weights.edits.norms.NormCheck",
   "column_shift": "(module: str, shift: numpy.ndarray, idx: numpy.ndarray, coef: numpy.ndarray, n_in: int) -> astro_weights.edits.core.LowRankDelta",
   "compose": "(*edits: astro_weights.edits.core.Edit) -> astro_weights.edits.core.Edit",
+  "delta_norm": "(d: astro_weights.edits.core.LowRankDelta) -> float",
+  "edit_norms": "(edit: astro_weights.edits.core.Edit) -> dict[str, float]",
   "from_dense": "(module: str, dW: numpy.ndarray, rank: int, max_rel_residual: float | None = None) -> tuple[astro_weights.edits.core.LowRankDelta, float]",
   "load_recipe": "(path: pathlib.Path | str) -> dict[str, Any]",
   "masked_rank1": "(module: str, W0: numpy.ndarray, u: numpy.ndarray, mask: numpy.ndarray, alpha: float) -> astro_weights.edits.core.LowRankDelta",
