@@ -6,4 +6,4 @@ google-research/google-research, instruction_following_eval (instructions.py,
 instructions_util.py), Copyright 2023 The Google Research Authors, licensed under
 the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
 https://github.com/google-research/google-research/tree/master/instruction_following_eval
-It was rewritten, not copied: checks are table entries, sentences are split without nltk.
+It was rewritten, not copied: checks are table entries; sentence and word counts call nltk as the original does.
