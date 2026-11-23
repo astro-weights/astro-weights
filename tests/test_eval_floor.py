@@ -1,5 +1,6 @@
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -8,12 +9,14 @@ import pytest
 from astro_weights.eval import (
     FloorResult,
     Record,
+    compare,
     config_hash,
     floor_from_records,
     load_floor,
     prompt_hash,
     read_jsonl,
     save_floor,
+    tokens_beyond_floor,
 )
 
 HEADER: dict[str, Any] = {
@@ -173,3 +176,39 @@ def test_old_records_and_headers_load(tmp_path: Path) -> None:
     f = floor_from_records(read_jsonl(p1), read_jsonl(p2), old)
     assert f.config_hash == config_hash({**old, "k": 1, "concurrency": 1})
     assert (f.k, f.n_items, f.flip_rate) == (1, 6, 0.0)
+
+
+# --- tokens_beyond_floor --------------------------------------------------------------
+
+
+def _tok(diff: float, ci: tuple[float, float]) -> Any:
+    a, b = runs()
+    return replace(compare(a, b, n_boot=1), tokens_diff=diff, tokens_ci95=ci)
+
+
+def _floor(delta: float, se: float) -> FloorResult:
+    return replace(floor(), tokens_delta=delta, tokens_se=se)
+
+
+# floor 1.5 + 1.96 * 2 = 5.42: an edit must lower tokens by more than that
+@pytest.mark.parametrize(
+    ("diff", "ci", "want"),
+    [
+        (-6.0, (-9.0, -3.0), True),  # lower, beyond the floor, CI below 0
+        (-5.0, (-9.0, -1.0), False),  # lower but inside the floor
+        (-5.43, (-9.0, -1.0), True),  # just past it
+        (-6.0, (-9.0, 0.0), False),  # CI reaches 0
+        (-6.0, (-9.0, 2.0), False),  # CI crosses 0
+        (6.0, (3.0, 9.0), False),  # more tokens
+        (-6.0, (-9.0, math.nan), False),
+        (math.nan, (-9.0, -3.0), False),
+    ],
+)
+def test_tokens_beyond_floor(diff: float, ci: tuple[float, float], want: bool) -> None:
+    assert tokens_beyond_floor(_tok(diff, ci), _floor(-1.5, 2.0)) is want
+
+
+def test_tokens_beyond_floor_uses_the_floor_size_not_its_sign() -> None:
+    r = _tok(-6.0, (-9.0, -3.0))
+    assert tokens_beyond_floor(r, _floor(1.5, 2.0))  # |delta| is what counts
+    assert not tokens_beyond_floor(r, _floor(0.0, 3.1))  # 1.96 * 3.1 = 6.076

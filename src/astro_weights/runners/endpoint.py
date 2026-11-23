@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -577,6 +577,132 @@ def run_header_http(
     if obj.get("system_fingerprint") is not None:
         header["system_fingerprint"] = obj["system_fingerprint"]
     return header
+
+
+@dataclass(frozen=True)
+class SelfTestResult:
+    """What `self_test_http` saw: one output per condition for the same prompt.
+
+    `outputs` maps a condition label (`batch=4`, `prefix=256`) to the target's
+    `message.content`. `n_requests` counts every request sent, fillers included.
+    `deterministic` is `unique_outputs == 1`. `first_divergence` is
+    `(label_a, label_b, index)`: the first condition whose output differs from the
+    first condition's, and the first differing character index; None when
+    deterministic. `server_model` and `system_fingerprint` are what the first reply
+    reported, None when it gave none.
+    """
+
+    n_requests: int
+    outputs: dict[str, str]
+    unique_outputs: int
+    deterministic: bool
+    first_divergence: tuple[str, str, int] | None
+    server_model: str | None
+    system_fingerprint: str | None
+
+
+_PAD = " Pad the context with notes about weights, adapters and servers."
+_CHARS_PER_TOKEN = 4
+
+
+def _check_sizes(name: str, sizes: Sequence[int], least: int) -> None:
+    if not sizes or any(
+        isinstance(n, bool) or not isinstance(n, int) or n < least for n in sizes
+    ):
+        raise ValueError(f"{name} must be a non-empty sequence of ints >= {least}")
+
+
+def _first_diff(a: str, b: str) -> int:
+    return next(
+        (i for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y),
+        min(len(a), len(b)),
+    )
+
+
+def self_test_http(
+    base_url: str,
+    model: str,
+    prompt: str,
+    *,
+    batch_sizes: Sequence[int] = (1, 4, 8),
+    prefix_lens: Sequence[int] = (0, 256, 1024),
+    max_new_tokens: int = 64,
+    api_key: str | None = None,
+    extra_body: Mapping[str, Any] | None = None,
+    timeout: float = 120.0,
+) -> SelfTestResult:
+    """Send one prompt under different serving conditions; expect one unique output.
+
+    Temperature 0 and a fixed seed (`extra_body` is merged last, as in
+    `generate_records_http`). The target request body is identical every time; only
+    its neighbours change. For each `b` in `batch_sizes` the target goes out together
+    with `b - 1` filler requests (different text), so the server batches it
+    differently. For each `p` in `prefix_lens` the target goes out right after a
+    filler request of about `p` tokens that shares the target's leading text (none
+    for 0), so the prefix cache differs. A server that is not batch invariant gives
+    more than one unique output.
+
+    Divergence never raises; read `deterministic`. A connection error, timeout or
+    HTTP error after retries raises `RuntimeError` with the api key scrubbed.
+    """
+    root = _root(base_url)
+    _check_key(api_key)
+    _check_sizes("batch_sizes", batch_sizes, 1)
+    _check_sizes("prefix_lens", prefix_lens, 0)
+    if not isinstance(prompt, str) or not prompt:
+        raise ValueError("prompt must be a non-empty string")
+    url = f"{root}/v1/chat/completions"
+    counts = _Counts()
+
+    def ask(text: str) -> dict[str, Any]:
+        msgs = [{"role": "user", "content": text}]
+        body = _body(model, msgs, max_new_tokens, 0, extra_body)
+        return _chat(url, body, api_key, timeout, counts)
+
+    outputs: dict[str, str] = {}
+    first: dict[str, Any] | None = None
+    sent = 0
+
+    def target(label: str) -> dict[str, Any]:
+        obj = ask(prompt)
+        outputs[label] = _content(obj, _scrub(json.dumps(obj), api_key)[:_BODY_CHARS])
+        return obj
+
+    for b in batch_sizes:
+        with ThreadPoolExecutor(b) as pool:
+            fillers = [
+                pool.submit(ask, f"Filler request {i}: name one thing about topic {i}.")
+                for i in range(1, b)
+            ]
+            obj = target(f"batch={b}")
+            for f in fillers:
+                f.result()
+        sent += b
+        first = first or obj
+    base = prompt + _PAD * (max(prefix_lens) * _CHARS_PER_TOKEN // len(_PAD) + 1)
+    for p in prefix_lens:
+        if p:
+            ask(base[: p * _CHARS_PER_TOKEN] + " [filler]")
+            sent += 1
+        obj = target(f"prefix={p}")
+        sent += 1
+        first = first or obj
+    labels = list(outputs)
+    ref = outputs[labels[0]]
+    diverged = next((k for k in labels if outputs[k] != ref), None)
+    served = first.get("model") if first else None
+    fingerprint = first.get("system_fingerprint") if first else None
+    return SelfTestResult(
+        n_requests=sent,
+        outputs=outputs,
+        unique_outputs=len(set(outputs.values())),
+        deterministic=diverged is None,
+        first_divergence=None
+        if diverged is None
+        else (labels[0], diverged, _first_diff(ref, outputs[diverged])),
+        server_model=served if isinstance(served, str) else None,
+        system_fingerprint=fingerprint if isinstance(fingerprint, str) else None,
+    )
 
 
 def _server_json(
