@@ -82,6 +82,21 @@ async def test_exec_python_description_names_the_kernel_api(tmp_path: Path) -> N
 
 
 @pytest.mark.anyio
+async def test_descriptions_state_the_export_rank_limit(tmp_path: Path) -> None:
+    # a client that saves a dense edit only learns at finish that export fails
+    from astro_weights.mcp.jobs import RunConfig
+
+    async with Client(build_server(write_run(tmp_path))) as client:
+        tools = await client.list_tools()
+    for name in ("exec_python", "finish"):
+        text = next(t.description for t in tools.tools if t.name == name) or ""
+        assert f"rank {RunConfig.export_rank}" in text
+        assert f"above {RunConfig.export_max_rel_residual}" in text
+        assert "export.rank" in text
+        assert "export.max_rel_residual" in text
+
+
+@pytest.mark.anyio
 async def test_lists_seven_tools(tmp_path: Path) -> None:
     async with Client(build_server(write_run(tmp_path))) as client:
         tools = await client.list_tools()

@@ -286,7 +286,9 @@ def build_server(
         edited weight, same shape; refused when its relative Frobenius change from the
         base is above 0.5), ``drop_edit(name)``, ``edited()``, and
         ``forward_result(handle, key)`` (an array or list of texts from a finished
-        forward_pass).
+        forward_pass). Keep each change low rank: finish exports it at rank 8 unless
+        run.json sets ``export.rank``, and fails the export when the change's relative
+        residual at that rank is above 0.05 (``export.max_rel_residual``).
         """
         return submit("exec_python", "exec", {"code": code})
 
@@ -328,7 +330,13 @@ def build_server(
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
     def finish(summary: str) -> dict[str, Any]:
-        """End the run, export the stored edits and write the run record. Works once."""
+        """End the run, export the stored edits and write the run record. Works once.
+
+        Each edit is cut to rank 8 (``export.rank`` in run.json) by truncated SVD. An
+        edit whose relative residual at that rank is above 0.05
+        (``export.max_rel_residual``) fails the export: the result then has
+        ``export_error`` and no adapter.
+        """
         nonlocal finished
         with finish_lock:
             if finished:
