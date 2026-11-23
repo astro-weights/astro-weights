@@ -1,8 +1,11 @@
 import builtins
+import sys
+import types
 from typing import Any
 
 import pytest
 
+from astro_weights.eval import ifeval
 from astro_weights.eval.ifeval import IFEVAL_IDS, check_ifeval, grade_ifeval
 
 EN = "The quick brown fox jumps over the lazy dog near the river bank today."
@@ -107,11 +110,24 @@ CASES: list[tuple[str, dict[str, Any], str, str]] = [
     ("punctuation:no_comma", {}, "no commas here", "one, two"),
     ("language:response_language", {"language": "fr"}, FR, EN),
 ]
+NEEDS_PUNKT = {
+    "length_constraints:number_sentences",
+    "change_case:capital_word_frequency",
+}
 NEEDS_LANGDETECT = {
     "language:response_language",
     "change_case:english_capital",
     "change_case:english_lowercase",
 }
+
+
+def _need_punkt() -> None:
+    """Skip unless nltk and its punkt_tab data are installed."""
+    pytest.importorskip("nltk")
+    try:
+        ifeval._count_sentences("a.")
+    except LookupError:
+        pytest.skip("run: python -m nltk.downloader punkt_tab")
 
 
 def _item(instruction_id: str, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -128,6 +144,8 @@ def test_instruction_pass_and_fail(
 ) -> None:
     if instruction_id in NEEDS_LANGDETECT:
         pytest.importorskip("langdetect")
+    if instruction_id in NEEDS_PUNKT:
+        _need_punkt()
     item = _item(instruction_id, kwargs)
     assert check_ifeval(item, good) == [True]
     assert check_ifeval(item, bad) == [False]
@@ -240,3 +258,123 @@ def test_edge_branches(
     instruction_id: str, kwargs: dict[str, Any], answer: str, ok: bool
 ) -> None:
     assert check_ifeval(_item(instruction_id, kwargs), answer) == [ok]
+
+
+# Pinned from Google's reference (instructions_util.count_sentences and
+# nltk.word_tokenize), so the port cannot drift back to a regex approximation.
+@pytest.mark.parametrize(
+    ("text", "sentences"),
+    [
+        ("Wow!!! Really?! Yes!!", 4),
+        ('Dr. Smith said, "It works." Then he left. (He was tired.)', 3),
+        ("Visit https://example.com/page.html. Or www.test.org.", 2),
+        ("One.Two.Three.Four.", 1),
+        ("e.g. this", 2),
+        ("P.S. x", 2),
+        ("He was born in 1990 A.D. and died in 2050 B.C. weird. Yes.", 3),
+        ("Inc. Ltd. Co.", 1),
+    ],
+)
+def test_sentence_count_matches_reference(text: str, sentences: int) -> None:
+    _need_punkt()
+    assert ifeval._count_sentences(text) == sentences
+
+
+@pytest.mark.parametrize(
+    ("text", "capital_words"),
+    [("U.S.A.", 1), ("P.S. X", 2), ("ALL-CAPS", 1), ("Don'T", 0)],
+)
+def test_capital_words_match_reference(text: str, capital_words: int) -> None:
+    _need_punkt()
+    item = _item(
+        "change_case:capital_word_frequency",
+        {"capital_frequency": capital_words, "capital_relation": "at least"},
+    )
+    more = _item(
+        "change_case:capital_word_frequency",
+        {"capital_frequency": capital_words + 1, "capital_relation": "at least"},
+    )
+    assert check_ifeval(item, text) == [True]
+    assert check_ifeval(more, text) == [False]
+
+
+def _fake_nltk(monkeypatch: pytest.MonkeyPatch, **attrs: Any) -> None:
+    """A stand-in nltk, so the wiring is tested without the package or its data."""
+    mod = types.ModuleType("nltk")
+    tokenize = types.ModuleType("nltk.tokenize")
+    for k, v in attrs.items():
+        setattr(tokenize if k == "PunktTokenizer" else mod, k, v)
+    mod.tokenize = tokenize  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "nltk", mod)
+    monkeypatch.setitem(sys.modules, "nltk.tokenize", tokenize)
+    ifeval._punkt.cache_clear()
+
+
+def test_nltk_wiring_with_a_fake(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Punkt:
+        def __init__(self, lang: str) -> None:
+            assert lang == "english"
+
+        def tokenize(self, text: str) -> list[str]:
+            return text.split("|")
+
+    _fake_nltk(monkeypatch, PunktTokenizer=Punkt, word_tokenize=str.split)
+    sentences = _item(
+        "length_constraints:number_sentences",
+        {"num_sentences": 3, "relation": "less than"},
+    )
+    assert check_ifeval(sentences, "a|b") == [True]
+    assert check_ifeval(sentences, "a|b|c") == [False]
+    caps = _item(
+        "change_case:capital_word_frequency",
+        {"capital_frequency": 2, "capital_relation": "at least"},
+    )
+    assert check_ifeval(caps, "AB CD ef") == [True]
+    assert check_ifeval(caps, "AB cd ef") == [False]
+    ifeval._punkt.cache_clear()
+
+
+def test_missing_nltk_data_names_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Punkt:
+        def __init__(self, lang: str) -> None:
+            raise LookupError("Resource punkt_tab not found")
+
+    def word_tokenize(text: str) -> list[str]:
+        raise LookupError("Resource punkt_tab not found")
+
+    _fake_nltk(monkeypatch, PunktTokenizer=Punkt, word_tokenize=word_tokenize)
+    for iid, kw in [
+        (
+            "length_constraints:number_sentences",
+            {"num_sentences": 1, "relation": "at least"},
+        ),
+        (
+            "change_case:capital_word_frequency",
+            {"capital_frequency": 1, "capital_relation": "at least"},
+        ),
+    ]:
+        with pytest.raises(LookupError, match=r"python -m nltk\.downloader punkt_tab"):
+            check_ifeval(_item(iid, kw), "Hello.")
+    ifeval._punkt.cache_clear()
+
+
+def test_sentence_check_needs_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "nltk", None)
+    monkeypatch.setitem(sys.modules, "nltk.tokenize", None)
+    ifeval._punkt.cache_clear()
+    item = _item(
+        "length_constraints:number_sentences",
+        {"num_sentences": 1, "relation": "at least"},
+    )
+    with pytest.raises(
+        ModuleNotFoundError, match=r"pip install 'astro-weights\[eval\]'"
+    ):
+        check_ifeval(item, "Hi.")
+    cap = _item(
+        "change_case:capital_word_frequency",
+        {"capital_frequency": 1, "capital_relation": "at least"},
+    )
+    with pytest.raises(
+        ModuleNotFoundError, match=r"pip install 'astro-weights\[eval\]'"
+    ):
+        check_ifeval(cap, "HI")

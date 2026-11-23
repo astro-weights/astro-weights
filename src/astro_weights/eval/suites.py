@@ -10,6 +10,7 @@ time; parquet sources need pyarrow (`pip install 'astro-weights[eval]'`).
 import hashlib
 import json
 import os
+import tempfile
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -116,7 +117,11 @@ def _fetch(pin: Pin, cache_dir: str | os.PathLike[str] | None) -> Path:
     if dest.is_file() and _sha256(dest) == pin.sha256:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_name(dest.name + ".part")
+    # unique per call, so two processes loading the same suite never share a file
+    with tempfile.NamedTemporaryFile(
+        dir=dest.parent, prefix=dest.name + ".", suffix=".part", delete=False
+    ) as tmp:
+        part = Path(tmp.name)
     try:
         _download(pin.repo, pin.revision, pin.filename, part)
         actual = _sha256(part)

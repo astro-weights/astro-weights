@@ -5,15 +5,24 @@ Ported from google-research/google-research, instruction_following_eval
 types of the IFEval dataset and the strict rule: an instruction counts only if
 the response is non-empty and the check passes. Standard library at import time.
 
-Differences from the original, so scores can differ by a few items:
+Sentence and capital-word counts use nltk (punkt sentence model and
+`word_tokenize`) as the original does. The NLTK data is not downloaded here; if it
+is missing, grading raises a LookupError that names the command to run once:
+`python -m nltk.downloader punkt_tab`. The language checks use `langdetect`.
+All of this needs `pip install 'astro-weights[eval]'`; the other checks do not.
 
-- Sentences are counted with the original's regex splitter, not nltk's punkt
-  model (punkt needs a data download).
-- Capital words are counted over a regex tokenization, not `nltk.word_tokenize`.
-- Language checks use `langdetect` with its seed fixed at 0 (it is random
-  otherwise). They need `pip install 'astro-weights[eval]'`; nothing else does.
+Deliberate differences from the original:
+
+- `keywords:letter_frequency`: the original swaps a `letter` that is not an ASCII
+  letter for a random one (IFEval keys 1122 and 1129 use "#" and "!"). Here the
+  given character is counted, so the score is deterministic.
+- Language checks set `langdetect.DetectorFactory.seed = 0` (langdetect is random
+  otherwise). That is a process-wide setting and affects other langdetect users.
+- Kwargs come straight from the dataset; the original's evaluation_lib drops
+  falsy kwarg values before building an instruction, which no dataset item needs.
 """
 
+import functools
 import json
 import re
 from collections import Counter
@@ -50,36 +59,32 @@ def _detect(text: str) -> str | None:
         return None  # the original counts an undetectable text as followed
 
 
-_PREFIXES = "(Mr|St|Mrs|Ms|Dr)[.]"
-_SUFFIXES = "(Inc|Ltd|Jr|Sr|Co)"
-_STARTERS = (
-    r"(Mr|Mrs|Ms|Dr|Prof|Capt|Cpt|Lt|He\s|She\s|It\s|They\s|Their\s|Our\s|We\s"
-    r"|But\s|However\s|That\s|This\s|Wherever)"
-)
-_ACRONYMS = "([A-Z][.][A-Z][.](?:[A-Z][.])?)"
-_ALPHA = "([A-Za-z])"
+_NLTK_DATA_HINT = "python -m nltk.downloader punkt_tab"
+
+
+@functools.lru_cache(maxsize=1)
+def _punkt() -> Any:
+    from nltk.tokenize import PunktTokenizer
+
+    return PunktTokenizer("english")
+
+
+def _nltk(fn: Callable[[], Any]) -> Any:
+    """Run an nltk call, turning a missing package or data into an actionable error."""
+    try:
+        return fn()
+    except ImportError as e:
+        raise ModuleNotFoundError(
+            "this IFEval check needs: pip install 'astro-weights[eval]'", name=e.name
+        ) from e
+    except LookupError as e:
+        raise LookupError(
+            f"this IFEval check needs NLTK data. Run once: {_NLTK_DATA_HINT}"
+        ) from e
 
 
 def _count_sentences(text: str) -> int:
-    t = " " + text.replace("\n", " ") + "  "
-    t = re.sub(_PREFIXES, r"\1<prd>", t)
-    t = re.sub("[.](com|net|org|io|gov|edu|me)", r"<prd>\1", t)
-    t = re.sub("([0-9])[.]([0-9])", r"\1<prd>\2", t)
-    t = re.sub(r"\.{2,}", lambda m: "<prd>" * len(m.group(0)) + "<stop>", t)
-    t = t.replace("Ph.D.", "Ph<prd>D<prd>") if "Ph.D" in t else t
-    t = re.sub(r"\s" + _ALPHA + "[.] ", r" \1<prd> ", t)
-    t = re.sub(_ACRONYMS + " " + _STARTERS, r"\1<stop> \2", t)
-    t = re.sub(f"{_ALPHA}[.]{_ALPHA}[.]{_ALPHA}[.]", r"\1<prd>\2<prd>\3<prd>", t)
-    t = re.sub(f"{_ALPHA}[.]{_ALPHA}[.]", r"\1<prd>\2<prd>", t)
-    t = re.sub(" " + _SUFFIXES + "[.] " + _STARTERS, r" \1<stop> \2", t)
-    t = re.sub(" " + _SUFFIXES + "[.]", r" \1<prd>", t)
-    t = re.sub(" " + _ALPHA + "[.]", r" \1<prd>", t)
-    for q, end in (("”", "."), ('"', "."), ('"', "!"), ('"', "?")):
-        t = t.replace(end + q, q + end)
-    for end in ".?!":
-        t = t.replace(end, end + "<stop>")
-    parts = [s.strip() for s in t.replace("<prd>", ".").split("<stop>")]
-    return len(parts) - (1 if parts and not parts[-1] else 0)
+    return len(_nltk(lambda: _punkt().tokenize(text)))
 
 
 def _words(text: str) -> int:
@@ -172,8 +177,15 @@ def _two_responses(v: str) -> bool:
     return len(valid) == 2 and valid[0].strip() != valid[1].strip()
 
 
+def _word_tokenize(text: str) -> list[str]:
+    import nltk
+
+    tokens: list[str] = nltk.word_tokenize(text)
+    return tokens
+
+
 def _capital_words(v: str, *, capital_frequency: int, capital_relation: str) -> bool:
-    n = sum(1 for w in re.findall(r"\w+|[^\w\s]", v) if w.isupper())
+    n = sum(1 for w in _nltk(lambda: _word_tokenize(v)) if w.isupper())
     return _compare(n, capital_relation, capital_frequency)
 
 
