@@ -7,6 +7,7 @@ from astro_weights.eval.floor import (
     floor_from_records,
     load_floor,
     save_floor,
+    tokens_beyond_floor,
 )
 from astro_weights.eval.grade import (
     answer_part,
@@ -70,6 +71,7 @@ __all__ = [
     "read_header",
     "read_jsonl",
     "save_floor",
+    "tokens_beyond_floor",
     "write_header",
     "write_jsonl",
 ]

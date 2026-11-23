@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Self
 
 from astro_weights.eval.header import config_hash, library_version
-from astro_weights.eval.paired import compare, pair
+from astro_weights.eval.paired import PairedResult, compare, pair
 from astro_weights.eval.records import Record
 
 _HASH = re.compile(r"[0-9a-f]{64}")
@@ -156,3 +156,14 @@ def load_floor(directory: str | Path, config_hash: str) -> FloorResult | None:
             f"{path}: stored config_hash {floor.config_hash} does not match its name"
         )
     return floor
+
+
+def tokens_beyond_floor(result: PairedResult, floor: FloorResult) -> bool:
+    """Whether the edit lowers output tokens by more than the base-vs-base noise.
+
+    One-sided: True when the upper end of `result.tokens_ci95` is below 0 and
+    `result.tokens_diff < -(abs(floor.tokens_delta) + 1.96 * floor.tokens_se)`.
+    More tokens, a CI that reaches 0 or a NaN anywhere gives False.
+    """
+    limit = -(abs(floor.tokens_delta) + 1.96 * floor.tokens_se)
+    return result.tokens_ci95[1] < 0 and result.tokens_diff < limit  # False if nan

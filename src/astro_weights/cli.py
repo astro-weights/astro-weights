@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import secrets
 import sys
 from dataclasses import asdict, dataclass, replace
@@ -636,6 +637,33 @@ def _run(config: Path, resume: bool, show_status: bool, as_json: bool) -> int:
     return 0
 
 
+def _self_test(
+    base_url: str, model: str, prompt: str, key_env: str | None, as_json: bool
+) -> int:
+    from astro_weights.runners.endpoint import self_test_http
+
+    key = os.environ.get(key_env) if key_env else None
+    if key_env and not key:
+        return _error(f"${key_env} is not set")
+    try:
+        r = self_test_http(base_url, model, prompt, api_key=key)
+    except (ValueError, RuntimeError) as e:
+        return _error(str(e))
+    if as_json:
+        _emit(asdict(r))
+    else:
+        for label, out in r.outputs.items():
+            print(f"{label}: {out[:60]!r}")
+        verdict = "deterministic" if r.deterministic else "NOT deterministic"
+        print(
+            f"{verdict}: {r.unique_outputs} unique output(s), {r.n_requests} requests"
+        )
+        if r.first_divergence:
+            a, b, i = r.first_divergence
+            print(f"first divergence: {a} vs {b} at character {i}")
+    return 0 if r.deterministic else 1
+
+
 def _json_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--json", action="store_true", help="print one JSON object instead of text"
@@ -652,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         "--version", action="version", version=f"astro-weights {__version__}"
     )
     sub = parser.add_subparsers(
-        dest="command", metavar="{build,compose,eval,export,inspect,mcp,run}"
+        dest="command", metavar="{build,compose,eval,export,inspect,mcp,run,self-test}"
     )
     p = sub.add_parser("inspect", help="summarize and verify a saved PEFT adapter")
     p.add_argument("directory", metavar="DIR", type=Path, help="adapter directory")
@@ -825,6 +853,21 @@ def main(argv: list[str] | None = None) -> int:
         help="print the run's budget, last events and finish state; starts nothing",
     )
     _json_flag(p)
+    p = sub.add_parser(
+        "self-test",
+        help="send one prompt under varied batch and prefix conditions; expect one output",
+    )
+    p.add_argument("--base-url", required=True, help="OpenAI-compatible server URL")
+    p.add_argument("--model", required=True, help="served model name")
+    p.add_argument(
+        "--prompt",
+        default="Count from 1 to 20, separated by commas.",
+        help="the prompt to repeat (default: a short counting prompt)",
+    )
+    p.add_argument(
+        "--api-key-env", metavar="VAR", help="environment variable holding the API key"
+    )
+    _json_flag(p)
     args = parser.parse_args(argv)
     if args.command == "inspect":
         return _inspect(args.directory, args.json)
@@ -868,5 +911,9 @@ def main(argv: list[str] | None = None) -> int:
         return _mcp(args.run_dir, args.unsafe_kernel)
     if args.command == "run":
         return _run(args.config, args.resume, args.status, args.json)
+    if args.command == "self-test":
+        return _self_test(
+            args.base_url, args.model, args.prompt, args.api_key_env, args.json
+        )
     parser.print_help()
     return 2
