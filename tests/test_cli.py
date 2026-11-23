@@ -8,8 +8,9 @@ import pytest
 from safetensors.numpy import load_file, save_file
 
 from astro_weights import __version__
-from astro_weights.cli import _norm_ba, main
+from astro_weights.cli import main
 from astro_weights.edits import Edit, LowRankDelta, project_out, rank1, save_recipe
+from astro_weights.edits.norms import delta_norm as _norm_ba
 from astro_weights.export import read_peft, save_peft
 
 MODULE = "model.layers.1.mlp.down_proj"
