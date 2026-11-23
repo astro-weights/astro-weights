@@ -15,3 +15,16 @@ body:
     attributes:
       label: Proposal
       description: What you would like to see. Examples of the API you have in mind help.
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Hardware you can test on
+      description: Optional. Helps us label the issue so the right contributor picks it up.
+      multiple: true
+      options:
+        - CPU only
+        - Apple silicon Mac
+        - NVIDIA GPU
+        - Other
+    validations:
+      required: false

@@ -2,6 +2,10 @@
 
 Thanks for helping. The project is early, so open an issue before starting large changes.
 
+## Find an issue
+
+Start at the pinned issue [Start here](https://github.com/astro-weights/astro-weights/issues/140). It lists open issues by the hardware you need (`no gpu needed`, `needs: mac`, `needs: gpu`) and their size (`size: S` is an hour or two, `size: M` about a day). Beginner issues also show on the [contribute page](https://github.com/astro-weights/astro-weights/contribute). Skip issues labelled `needs decision` until a maintainer decides.
+
 ## Setup
 
 Install [uv](https://docs.astral.sh/uv/), then:
