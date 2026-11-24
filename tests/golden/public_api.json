@@ -216,6 +216,7 @@
  },
  "astro_weights.runners.endpoint": {
   "ChatReply": "(text: str, tool_calls: tuple[astro_weights.eval.tasks.ToolCall, ...], output_tokens: int, finish_reason: str | None, usage: dict[str, Any], message: dict[str, Any]) -> None",
+  "ContextOverflowError": null,
   "SelfTestResult": "(n_requests: int, outputs: dict[str, str], unique_outputs: int, deterministic: bool, first_divergence: tuple[str, str, int] | None, server_model: str | None, system_fingerprint: str | None) -> None",
   "ToolCallParseError": null,
   "chat_http": "(base_url: str, model: str, messages: collections.abc.Sequence[collections.abc.Mapping[str, Any]], *, tools: collections.abc.Sequence[collections.abc.Mapping[str, Any]] | None = None, max_new_tokens: int, seed: int = 0, api_key: str | None = None, extra_body: collections.abc.Mapping[str, Any] | None = None, timeout: float = 120.0) -> astro_weights.runners.endpoint.ChatReply",

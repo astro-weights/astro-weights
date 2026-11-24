@@ -126,6 +126,26 @@ class ToolCallParseError(RuntimeError):
     """
 
 
+class ContextOverflowError(RuntimeError):
+    """The server refused the request because the conversation no longer fits its context.
+
+    HTTP 400 `exceed_context_size_error` (llama-server) or `context_length_exceeded` /
+    "maximum context length" (OpenAI-compatible servers). It is the task's size, not an
+    outage: not retried, and a multi-turn runner ends that conversation.
+    """
+
+
+_OVERFLOW = (
+    "exceed_context_size_error",
+    "context_length_exceeded",
+    "maximum context length",
+)
+
+
+def _overflow(status: int, text: str) -> bool:
+    return status == 400 and any(m in text for m in _OVERFLOW)
+
+
 def _unparsable(status: int, text: str) -> bool:
     return status == 500 and "Failed to parse" in text
 
@@ -184,6 +204,8 @@ def _chat(
     status, text = _ask(url, body, api_key, timeout, counts)
     if _unparsable(status, text):
         raise ToolCallParseError(_fail("server error", status, text, api_key).args[0])
+    if _overflow(status, text):
+        raise ContextOverflowError(_fail("server error", status, text, api_key).args[0])
     if status >= 400:
         tries = f" after {_RETRIES + 1} attempts" if _infra(status) else ""
         raise _fail(f"server error{tries}", status, text, api_key)
@@ -579,6 +601,9 @@ def chat_http(
     `{"role": "tool", "tool_call_id": ..., "content": ...}`); `tools` are OpenAI
     function tools. Connection errors, timeouts, 429 and 5xx are retried twice with
     backoff; what is still wrong raises `RuntimeError` with the api key scrubbed.
+    Two refusals are the conversation's own and are never retried: a model reply the
+    server cannot parse as a tool call raises `ToolCallParseError`, a conversation that
+    no longer fits the context raises `ContextOverflowError` (both `RuntimeError`).
     A reply without `usage.completion_tokens` or with malformed tool calls raises
     `ValueError`.
     """

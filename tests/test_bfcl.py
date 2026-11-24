@@ -572,3 +572,15 @@ def test_unparsable_tool_call_is_a_turn_without_a_call(
     replies = sum(t.role == "assistant" for t in r.turns)
     assert replies >= 1
     assert (r.tool_calls, r.output_tokens) == (0, 7 * replies)
+
+
+def test_context_overflow_ends_the_task_as_failed_and_the_run_goes_on(
+    tasks: dict[str, BfclTask],
+) -> None:
+    body = json.dumps({"error": {"type": "exceed_context_size_error", "message": "x"}})
+    ts = list(tasks.values())[:2]
+    with serve(lambda b: (400, body)) as (url, s):
+        records = run_bfcl(ts, url, "m", "a", max_new_tokens=7)
+    assert [r.task_id for r in records] == [t.task_id for t in ts]
+    assert not any(r.passed for r in records)
+    assert len(s.requests) == 2  # one request per task, no retry, no later turn
