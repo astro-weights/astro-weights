@@ -179,7 +179,9 @@ jobs:
       - name: All extras, lowest direct dependencies
         if: matrix.part == 'extras'
         # --no-sources: torch from PyPI; the CPU index has no plain 2.4.0 Linux wheel (only 2.4.0+cpu)
-        run: uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp --extra hosted pytest -m "not gpu" -n auto
+        run: |
+          uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp --extra hosted python -m nltk.downloader -q punkt_tab
+          uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp --extra hosted pytest -m "not gpu" -n auto
 
   # Not in ci-ok: hosted macOS can queue 15+ min. Runs after merge (push to main) and on release PRs; red goes to Eng.
   test-os:
