@@ -56,10 +56,12 @@ def scored(acc: bool = True, tokens: bool = True) -> PairedResult:
     )
 
 
-def suite(ok: bool) -> tuple[PairedResult, float]:
-    return dataclasses.replace(
-        _BASE, score_ci95_boot=(-0.01 if ok else -0.05, 0.0)
-    ), 0.02
+def suite(ok: bool) -> tuple[PairedResult, float, str]:
+    return (
+        dataclasses.replace(_BASE, score_ci95_boot=(-0.01 if ok else -0.05, 0.0)),
+        0.02,
+        f"pilot {'ok' if ok else 'bad'}",
+    )
 
 
 def full(**kw: object) -> GateInputs:
@@ -192,13 +194,16 @@ def test_margin_cap() -> None:
         with pytest.raises(ValueError, match="margin"):
             gate(full(margin=bad))
     with pytest.raises(ValueError, match=r"suite 'gsm8k'.*margin"):
-        gate(full(suites={"gsm8k": (_BASE, 0.0201)}))
+        gate(full(suites={"gsm8k": (_BASE, 0.0201, "pilot")}))
 
 
 def test_tie_with_control_quantile_not_significant() -> None:
     ctl = [dataclasses.replace(_BASE, tokens_diff=float(t)) for t in range(-10, 10)]
     edit = dataclasses.replace(_BASE, tokens_diff=-9.0)  # equals the q95 of goodness
-    v = control_rule(edit, ctl, target="tokens_diff", direction="lower")
+    acc = {"accuracy": (edit, ctl)}
+    v = control_rule(
+        edit, ctl, target="tokens_diff", direction="lower", side_effects=acc
+    )
     assert v.target_quantile == -9.0
     r = gate(full(controls=v))
     assert r.outcome == "not significant"
@@ -210,6 +215,7 @@ def test_tie_with_control_quantile_not_significant() -> None:
         ctl,
         target="tokens_diff",
         direction="lower",
+        side_effects=acc,
     )
     assert gate(full(controls=v2)).outcome == "confirmed"
 
@@ -249,7 +255,15 @@ NAN = (math.nan, math.nan)
         ({"test": dataclasses.replace(_BASE, tokens_ci95=NAN)}, "NaN"),
         ({"test": dataclasses.replace(_BASE, score_mde=math.nan)}, "NaN"),
         ({"confirm": dataclasses.replace(_BASE, score_mde=math.inf)}, "confirm MDE"),
-        ({"suites": {"x": (dataclasses.replace(_BASE, score_ci95_boot=NAN), 0.02)}}, "NaN"),
+        ({"suites": {"x": (dataclasses.replace(_BASE, score_ci95_boot=NAN), 0.02, "p")}}, "NaN"),
+        ({"suites": {"x": (_BASE, 0.02, " ")}}, "suite 'x': margin source"),
+        ({"floor": dataclasses.replace(_FLOOR, k=1)}, "floor k=1"),
+        ({"screens": screens()[:2]}, "missing screens: kl"),
+        ({"screens": screens()[1:]}, "missing screens: norm"),
+        ({"controls": dataclasses.replace(controls(), q=0.9, n_controls=20)}, "q outside"),
+        ({"controls": dataclasses.replace(controls(), side_effects={})}, "side effect"),
+        ({"controls": dataclasses.replace(controls(), side_effects={"ifeval": True})},
+         "'accuracy' side effect"),
         ({"floor": None}, "together"),
         ({"test": None}, "together"),
         ({"test": None, "floor": None, "k_test": None}, "stage 4 is missing"),
@@ -257,9 +271,9 @@ NAN = (math.nan, math.nan)
         ({"confirm": None}, "required"),
         ({"controls": None}, "required"),
         ({"screens": ()}, "no pre-screens"),
-        ({"screens": (Screen("kl", True, 0, 1), Screen("kl", True, 0, 1))}, "duplicate"),
-        ({"screens": (Screen("kl", True, math.nan, 1),)}, "finite"),
-        ({"screens": (Screen("kl", 1, 0, 1),)}, "bool"),  # type: ignore[arg-type]
+        ({"screens": (*screens(), Screen("kl", True, 0, 1))}, "duplicate"),
+        ({"screens": (*screens()[:2], Screen("kl", True, math.nan, 1))}, "finite"),
+        ({"screens": (*screens()[:2], Screen("kl", 1, 0, 1))}, "bool"),  # type: ignore[arg-type]
         ({"controls": dataclasses.replace(controls(), passed=False)}, "inconsistent"),
         ({"controls": dataclasses.replace(controls(), n_controls=5)}, "need 20"),
         ({"controls": dataclasses.replace(controls(), target_quantile=math.nan)}, "NaN"),
@@ -269,6 +283,20 @@ NAN = (math.nan, math.nan)
 def test_refuses_inconsistent_inputs(kw: dict[str, object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         gate(full(**kw))
+
+
+def test_non_token_target_needs_any_side_effect_only() -> None:
+    c = dataclasses.replace(controls(), side_effects={"ifeval": True})
+    assert gate(full(controls=c, control_target="diff")).outcome == "confirmed"
+
+
+def test_suite_margins_recorded() -> None:
+    r = gate(full())
+    assert r.suite_margins == {
+        "gsm8k": (0.02, "pilot ok"),
+        "ifeval": (0.02, "pilot ok"),
+    }
+    assert "suite gsm8k margin: 0.0200 (pilot ok)" in format_gate(r)
 
 
 def test_refuses_suites_without_test() -> None:
@@ -326,12 +354,16 @@ class _World:
         return out
 
 
-def _run_gate(w: _World, best_shift: float) -> tuple[bool, str]:
-    """One search-then-gate pass for the picked candidate; returns
-    (controls passed, outcome)."""
+def _run_gate(w: _World, n_cand: int, shift: float) -> tuple[bool, str]:
+    """Pick the lowest-token of `n_cand` candidates (each truly shifted by `shift`) on
+    confirm, judge it against 20 controls on the same confirm data, then score it once
+    on a fresh K=4 test split. Returns (controls passed, outcome).
+    """
     n_boot = 200
     cbase = w.arm("confirm", "base")
-    edit = compare(cbase, w.arm("confirm", "edit", shift=best_shift), n_boot=n_boot)
+    cands = [w.arm("confirm", "edit", shift=shift) for _ in range(n_cand)]
+    best = min(cands, key=lambda c: sum(r.n_output_tokens for r in c))
+    edit = compare(cbase, best, n_boot=n_boot)
     ctl = [compare(cbase, w.arm("confirm", f"c{j}"), n_boot=n_boot) for j in range(20)]
     v = control_rule(
         edit, ctl, target="tokens_diff", direction="lower",
@@ -339,46 +371,40 @@ def _run_gate(w: _World, best_shift: float) -> tuple[bool, str]:
     )  # fmt: skip
     tbase = w.arm("test", "base", k=4)
     floor = floor_from_records(tbase, w.arm("test", "base2", k=4), {"model": "sim"})
-    test = compare(tbase, w.arm("test", "edit", k=4, shift=best_shift), n_boot=n_boot)
+    test = compare(tbase, w.arm("test", "edit", k=4, shift=shift), n_boot=n_boot)
     sbase = w.arm("suite", "base")
     suite_r = compare(
         sbase, [dataclasses.replace(r, arm="edit") for r in sbase], n_boot=1
     )
     r = gate(
         GateInputs(
-            screens(), 0.02, "sim", edit, v, test, floor, 4, {"suite": (suite_r, 0.02)}
+            screens(), 0.02, "sim", confirm=edit, controls=v, test=test, floor=floor,
+            k_test=4, suites={"suite": (suite_r, 0.02, "sim pilot")},
         )
-    )
+    )  # fmt: skip
     return v.target_beats_quantile, r.outcome
 
 
 def test_planted_overfit_null_search_confirms_at_most_nominal() -> None:
-    """N=50 no-effect candidates searched on dev, best picked; gate on fresh confirm and
-    test. Nominal false-confirm rate is the control rule's 1/21 (rank 21 of 21 nulls);
-    the token floor on test cuts it further. Over 100 seeded reps: controls pass at
-    <= 1/21 + 3 sigma, confirmed at <= that, and the dev pick looked better than chance.
+    """Best of N=50 no-effect candidates picked on confirm, the same data the controls
+    use. Selection beats the controls almost always, so stage 3 gives no protection here:
+    only the once-scored test split (one-sided token floor, alpha 2.5%) does. Over 100
+    seeded reps: controls pass >= 80%, confirmed <= 2.5% + 3 sigma.
     """
     rng = np.random.default_rng(20261123)
-    reps, n_cand = 100, 50
-    dev_best, ctl_pass, confirmed = [], 0, 0
+    reps = 100
+    ctl_pass = confirmed = 0
     for _ in range(reps):
-        w = _World(rng)
-        # dev search: candidate token diffs are pure noise; pick the lowest
-        dev = rng.normal(0, TOKENS_SD * math.sqrt(2 / N_ITEMS), n_cand)
-        dev_best.append(dev.min())
-        passed, outcome = _run_gate(w, best_shift=0.0)  # the pick truly does nothing
+        passed, outcome = _run_gate(_World(rng), n_cand=50, shift=0.0)
         ctl_pass += passed
         confirmed += outcome == "confirmed"
-    nominal = 1 / 21
-    tol = 3 * math.sqrt(nominal * (1 - nominal) / reps)
-    assert np.mean(dev_best) < -2 * TOKENS_SD * math.sqrt(2 / N_ITEMS)  # dev overfit
-    assert ctl_pass / reps <= nominal + tol
-    assert confirmed / reps <= ctl_pass / reps
-    assert confirmed / reps <= nominal
+    alpha = 0.025
+    assert ctl_pass / reps >= 0.8  # selection on confirm defeats the control rule
+    assert confirmed / reps <= alpha + 3 * math.sqrt(alpha * (1 - alpha) / reps)
 
 
 def test_planted_real_effect_is_confirmed() -> None:
-    """Same harness, a real 40-token cut: the gate is not vacuously strict."""
+    """Same harness, one candidate with a real 40-token cut: not vacuously strict."""
     rng = np.random.default_rng(7)
-    outcomes = [_run_gate(_World(rng), best_shift=-40.0)[1] for _ in range(10)]
+    outcomes = [_run_gate(_World(rng), n_cand=1, shift=-40.0)[1] for _ in range(10)]
     assert outcomes.count("confirmed") >= 9

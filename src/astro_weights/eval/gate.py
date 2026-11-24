@@ -2,13 +2,15 @@
 
 Constraint style (PDR 0.3 section 4.6), no blended score. Stages, in order:
 
-1. Pre-screens (update norm, perplexity, KL), given as `Screen` pass/fail results. Any
+1. Pre-screens (update norm, perplexity, KL; all three required), given as `Screen`
+   pass/fail results. Any
    fail gives outcome "screened out": no verdict, and no later stage may be given (the
    test split is never scored, its seal unused).
 2. Selection on confirm is the agent loop's business and never reaches the gate.
 3. Random controls on confirm (`ControlVerdict` from `control_rule`): the edit not above
-   the controls' q-quantile on the target gives "not significant"; any side effect
-   outside the controls' range gives "regressed".
+   the controls' q-quantile (q >= 0.95) on the target gives "not significant"; any side
+   effect outside the controls' range gives "regressed". At least one side effect is
+   required, and "accuracy" when the target is `tokens_diff`.
 4. Final test, scored once with K = 4 samples per item. Accuracy is non-inferior when
    the lower end of the two-sided 95% CI of the score difference is strictly above
    `-margin`, else "regressed". Tokens must be lower beyond the token floor
@@ -40,6 +42,8 @@ SCREENED_OUT = "screened out"
 OUTCOMES = (*VERDICTS, SCREENED_OUT)
 MAX_MARGIN = 0.02  # 2 pp cap on every non-inferiority margin (PDR 0.3 section 8)
 K_TEST = 4  # samples per item on the test split
+MIN_Q = 0.95  # control quantile the target must beat (PDR 0.3 section 4.6)
+REQUIRED_SCREENS = frozenset({"norm", "perplexity", "kl"})
 _Z = 1.96
 ADVICE = "keep the original weights"
 
@@ -77,8 +81,9 @@ class GateInputs:
 
     `screens` are stage 1. `confirm` is the edit's paired result on the confirm split and
     `controls` the control rule on it (stage 3). `test` and `floor` are stage 4, `k_test`
-    the samples per item scored there (must be 4). `suites` maps a regression suite name
-    to its paired result and margin (stage 5). `margin` is the test benchmark's
+    the samples per item scored there (must be 4, and the floor's `k` too). `suites` maps
+    a regression suite name to its paired result, margin and margin source (stage 5).
+    `control_target` is the `PairedResult` field the control rule judged. `margin` is the test benchmark's
     non-inferiority margin in score units (0.02 = 2 pp), fixed from a pilot before the
     test was scored; `margin_source` says where it came from. Margins must lie in
     [0, 0.02].
@@ -92,7 +97,8 @@ class GateInputs:
     test: PairedResult | None = None
     floor: FloorResult | None = None
     k_test: int | None = None
-    suites: Mapping[str, tuple[PairedResult, float]] = field(default_factory=dict)
+    suites: Mapping[str, tuple[PairedResult, float, str]] = field(default_factory=dict)
+    control_target: str = "tokens_diff"
 
 
 @dataclass(frozen=True)
@@ -102,7 +108,8 @@ class GateResult:
     `outcome` is one of `OUTCOMES`. `checks` lists every check made, in stage order, and
     `reasons` the failed ones. `mde` is the test split's score MDE, or the confirm split's
     when the test was not scored (`mde_split` says which); None when screened out.
-    `advice` is None only when confirmed.
+    `advice` is None only when confirmed. `suite_margins` maps each judged suite to its
+    margin and margin source.
     """
 
     outcome: str
@@ -113,6 +120,7 @@ class GateResult:
     margin: float
     margin_source: str
     advice: str | None
+    suite_margins: Mapping[str, tuple[float, str]] = field(default_factory=dict)
 
 
 def _finite(v: object) -> bool:
@@ -154,6 +162,8 @@ def _stage1(screens: tuple[Screen, ...]) -> list[Check]:
     names = [s.name for s in screens]
     if len(set(names)) != len(names):
         raise ValueError("stage 1: duplicate screen names")
+    if missing := sorted(REQUIRED_SCREENS - set(names)):
+        raise ValueError(f"stage 1: missing screens: {', '.join(missing)}")
     for s in screens:
         if not isinstance(s.passed, bool) or not (
             _finite(s.value) and _finite(s.limit)
@@ -167,9 +177,13 @@ def _stage1(screens: tuple[Screen, ...]) -> list[Check]:
     ]
 
 
-def _stage3(c: ControlVerdict) -> list[Check]:
-    if not (_finite(c.target_quantile) and 0 < c.q < 1):
-        raise ValueError("stage 3: control quantile is NaN or q outside (0, 1)")
+def _stage3(c: ControlVerdict, target: str) -> list[Check]:
+    if not (_finite(c.target_quantile) and MIN_Q <= c.q < 1):
+        raise ValueError(f"stage 3: control quantile is NaN or q outside [{MIN_Q}, 1)")
+    if not c.side_effects:
+        raise ValueError("stage 3: controls must be scored on at least one side effect")
+    if target == "tokens_diff" and "accuracy" not in c.side_effects:
+        raise ValueError("stage 3: a token target needs an 'accuracy' side effect")
     if c.n_controls < min_controls(c.q):
         raise ValueError(f"stage 3: {c.n_controls} controls, need {min_controls(c.q)}")
     if c.passed != (c.target_beats_quantile and not c.outside):
@@ -197,10 +211,10 @@ def _stage4(inp: GateInputs, margin: float) -> list[Check]:
     test, floor = inp.test, inp.floor
     if test is None or floor is None:
         raise ValueError("stage 4: test and floor must be given together")
-    if inp.k_test != K_TEST or test.k != K_TEST:
+    if inp.k_test != K_TEST or test.k != K_TEST or floor.k != K_TEST:
         raise ValueError(
-            f"stage 4: test must be scored with K={K_TEST} "
-            f"(k_test={inp.k_test}, result k={test.k})"
+            f"stage 4: test and floor must be scored with K={K_TEST} "
+            f"(k_test={inp.k_test}, result k={test.k}, floor k={floor.k})"
         )
     if not all(
         _finite(v) for v in (test.tokens_diff, *test.tokens_ci95, test.score_mde)
@@ -220,11 +234,18 @@ def _stage4(inp: GateInputs, margin: float) -> list[Check]:
     ]
 
 
-def _stage5(suites: Mapping[str, tuple[PairedResult, float]]) -> list[Check]:
-    return [
-        _ni(5, f"suite {name}", r, _check_margin(m, f"stage 5 suite {name!r}"))
-        for name, (r, m) in suites.items()
-    ]
+def _suite_margins(
+    suites: Mapping[str, tuple[PairedResult, float, str]],
+) -> dict[str, tuple[float, str]]:
+    out = {}
+    for name, (_, m, src) in suites.items():
+        what = f"stage 5 suite {name!r}"
+        if not isinstance(src, str) or not src.strip():
+            raise ValueError(
+                f"{what}: margin source must say where the margin came from"
+            )
+        out[name] = (_check_margin(m, what), src)
+    return out
 
 
 def _outcome(checks: list[Check]) -> str:
@@ -240,8 +261,10 @@ def gate(inputs: GateInputs) -> GateResult:
 
     ValueError on inconsistent inputs: a margin missing or outside [0, 0.02], an empty
     `margin_source`, NaN in a used number, a stage missing although every earlier stage
-    passed, any stage given after a failed pre-screen, `k_test` not 4, or a confirmed
-    outcome without regression suites.
+    passed, any stage given after a failed pre-screen, a required screen missing,
+    control q below 0.95 or no side effect scored, `k_test`, the test's or the floor's K
+    not 4, an empty suite margin source, or a confirmed outcome without regression
+    suites.
     """
     margin = _check_margin(inputs.margin, "test")
     if not isinstance(inputs.margin_source, str) or not inputs.margin_source.strip():
@@ -257,7 +280,8 @@ def gate(inputs: GateInputs) -> GateResult:
         raise ValueError("stage 3: confirm result and control verdict are required")
     if not _finite(inputs.confirm.score_mde):
         raise ValueError("stage 3: confirm MDE is NaN or infinite")
-    checks += _stage3(inputs.controls)
+    suite_margins = _suite_margins(inputs.suites)
+    checks += _stage3(inputs.controls, inputs.control_target)
     if has4:
         checks += _stage4(inputs, margin)
     elif all(c.passed for c in checks):
@@ -265,16 +289,18 @@ def gate(inputs: GateInputs) -> GateResult:
     if inputs.suites:
         if not has4:
             raise ValueError("stage 5 given without stage 4")
-        checks += _stage5(inputs.suites)
+        checks += [
+            _ni(5, f"suite {n}", r, suite_margins[n][0])
+            for n, (r, _, _) in inputs.suites.items()
+        ]
     elif all(c.passed for c in checks):
         raise ValueError("stage 5 is missing although every earlier stage passed")
-    if inputs.test is not None:
-        return _result(
-            checks, inputs.test.score_mde, "test", margin, inputs.margin_source
-        )
-    return _result(
-        checks, inputs.confirm.score_mde, "confirm", margin, inputs.margin_source
+    mde, split = (
+        (inputs.test.score_mde, "test")
+        if inputs.test is not None
+        else (inputs.confirm.score_mde, "confirm")
     )
+    return _result(checks, mde, split, margin, inputs.margin_source, suite_margins)
 
 
 def _result(
@@ -283,6 +309,7 @@ def _result(
     split: str | None,
     margin: float,
     source: str,
+    suite_margins: Mapping[str, tuple[float, str]] | None = None,
 ) -> GateResult:
     outcome = _outcome(checks)
     return GateResult(
@@ -294,6 +321,7 @@ def _result(
         margin=margin,
         margin_source=source,
         advice=None if outcome == "confirmed" else ADVICE,
+        suite_margins=dict(suite_margins or {}),
     )
 
 
@@ -312,6 +340,10 @@ def format_gate(result: GateResult) -> str:
     if result.mde is not None:
         lines.append(f"MDE ({result.mde_split}): {result.mde:.4f}")
     lines.append(f"margin: {result.margin:.4f} ({result.margin_source})")
+    lines += [
+        f"suite {n} margin: {m:.4f} ({src})"
+        for n, (m, src) in result.suite_margins.items()
+    ]
     if result.advice:
         lines.append(f"advice: {result.advice}")
     return "\n".join(lines) + "\n"
