@@ -44,6 +44,7 @@ from astro_weights.eval import (
     write_jsonl,
 )
 from astro_weights.eval.gate_config import REPORT_ARMS, GateConfig, load_gate_config
+from astro_weights.eval.seal import records_sha256
 from astro_weights.eval.tasks import (
     TaskRecord,
     ToolCall,
@@ -313,8 +314,10 @@ def test_2_edit_confirmed_every_control_not(
         pool = {f.resolve() for f in c.controls.glob("*.jsonl")}
         assert len(pool) == POOL, cfg
         assert c.edit.resolve() in pool, f"{cfg}: [confirm] edit is not a control file"
-        picked.append(c.edit.resolve())
-    assert len(set(picked)) == len(picked), "two control gates share a control file"
+        picked.append(records_sha256(read_jsonl(c.edit)))
+    assert len(set(picked)) == len(picked), (
+        "two control gates share a control's records"
+    )
     for cfg in cfgs:
         code, out, err = gate(cfg, capsys=capsys)
         assert code == 1, f"{cfg}: exit {code}\n{out}{err}"
