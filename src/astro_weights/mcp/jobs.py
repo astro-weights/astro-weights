@@ -23,7 +23,7 @@ from astro_weights.mcp.budget import (
 )
 from astro_weights.mcp.handles import HandleStore, Job, _json_copy
 
-__all__ = ["JobRunner", "RunConfig", "load_run_config"]
+__all__ = ["ConfirmConfig", "JobRunner", "RunConfig", "load_run_config"]
 
 Executor = Callable[[dict[str, Any]], dict[str, Any]]
 _LIMIT_KEYS = ("forward_passes", "code_runs", "tokens", "dollars")
@@ -32,7 +32,25 @@ _DTYPES = ("auto", "float32", "bfloat16", "float16")
 _FORWARD_KEYS = ("device", "dtype", "max_new_tokens")
 _EXPORT_KEYS = ("rank", "max_rel_residual", "base_gguf", "gguf_out_type")
 _GGUF_OUT_TYPES = ("q8_0", "f16", "bf16")
+_CONFIRM_KEYS = ("items", "grader", "margin", "max_queries")
+GRADERS = ("exact", "choice", "math")
 MAX_NEW_TOKENS = 32768
+
+
+@dataclass(frozen=True)
+class ConfirmConfig:
+    """run.json's ``confirm`` object: the items the ``confirm`` tool grades on.
+
+    ``items`` is a JSONL file of ``{"item_id", "prompt", "gold"}`` read by the
+    server only; a path inside the run directory is refused. ``grader`` names an
+    ``astro_weights.eval`` grader (``grade_<grader>``). ``margin`` is in items
+    correct per item (0.02 = 2 points); ``max_queries`` caps confirm calls.
+    """
+
+    items: Path
+    grader: str
+    margin: float
+    max_queries: int
 
 
 @dataclass(frozen=True)
@@ -54,6 +72,7 @@ class RunConfig:
     export_base_gguf: Path | None = None
     export_gguf_out_type: str = "q8_0"
     kernel_allow_nested_userns: bool = False
+    confirm: ConfirmConfig | None = None
 
 
 def load_run_config(run_dir: Path) -> RunConfig:
@@ -90,6 +109,9 @@ def load_run_config(run_dir: Path) -> RunConfig:
     timeout_s, mem_gib, nested_userns = _kernel_config(path, raw.get("kernel", {}))
     device, dtype, max_new = _forward_config(path, raw.get("forward", {}))
     rank, residual, base_gguf, out_type = _export_config(path, raw.get("export", {}))
+    confirm = _confirm_config(path, Path(run_dir), raw.get("confirm"))
+    if confirm is not None and model_dir is None:
+        raise ValueError(f"{path}: confirm needs model_dir")
     return RunConfig(
         seed,
         editor,
@@ -106,6 +128,7 @@ def load_run_config(run_dir: Path) -> RunConfig:
         None if base_gguf is None else Path(run_dir) / base_gguf,
         out_type,
         nested_userns,
+        confirm,
     )
 
 
@@ -178,6 +201,34 @@ def _export_config(path: Path, export: Any) -> tuple[int, float, str | None, str
             f"{path}: export.gguf_out_type must be one of {list(_GGUF_OUT_TYPES)}"
         )
     return rank, float(residual), base_gguf, str(out_type)
+
+
+def _confirm_config(path: Path, run_dir: Path, confirm: Any) -> ConfirmConfig | None:
+    """The optional ``confirm`` object of run.json; every key is required."""
+    if confirm is None:
+        return None
+    if not isinstance(confirm, dict) or set(confirm) != set(_CONFIRM_KEYS):
+        raise ValueError(
+            f"{path}: confirm must be an object with keys {list(_CONFIRM_KEYS)}"
+        )
+    items, grader = confirm["items"], confirm["grader"]
+    margin, max_queries = confirm["margin"], confirm["max_queries"]
+    if not isinstance(items, str) or not items:
+        raise ValueError(f"{path}: confirm.items must be a non-empty string")
+    if grader not in GRADERS:
+        raise ValueError(f"{path}: confirm.grader must be one of {list(GRADERS)}")
+    number = isinstance(margin, int | float) and not isinstance(margin, bool)
+    if not number or not 0 <= margin < 1:
+        raise ValueError(f"{path}: confirm.margin must be a number from 0 below 1")
+    whole = isinstance(max_queries, int) and not isinstance(max_queries, bool)
+    if not whole or max_queries < 1:
+        raise ValueError(f"{path}: confirm.max_queries must be an int >= 1")
+    if (run_dir / items).resolve().is_relative_to(run_dir.resolve()):
+        raise ValueError(
+            f"{path}: confirm.items must be outside the run directory, where "
+            "agent code and results live"
+        )
+    return ConfirmConfig(run_dir / items, str(grader), float(margin), max_queries)
 
 
 class JobRunner:

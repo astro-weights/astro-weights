@@ -19,6 +19,10 @@ spent, always recorded), ``check_spend`` (free, no write) and ``report_refusal``
 The ledger (or the sum of the ``usage`` events) is the source of truth for spend: a
 ``report_usage`` after ``finish`` is still recorded, so ``finish.budget`` can leave
 out that last turn.
+
+With a ``confirm`` object in run.json there is an eighth tool, ``confirm``: one
+query of the stored edits against the current best on the confirm items, whose
+job result is ``{"passed": bool}`` only (rule in ``astro_weights.mcp.confirm``).
 """
 
 import argparse
@@ -47,6 +51,15 @@ from astro_weights.mcp.budget import (
     Kind,
     Ledger,
     TooManyFailures,
+)
+from astro_weights.mcp.confirm import KIND as CONFIRM
+from astro_weights.mcp.confirm import (
+    Confirmer,
+    ConfirmLimit,
+    check_grader,
+    generator,
+    pin,
+    read_items,
 )
 from astro_weights.mcp.edit_store import EditStore, export_edits
 from astro_weights.mcp.handles import HandleStore, UnknownHandle
@@ -79,9 +92,13 @@ def _model(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != "" and len(value) <= _MODEL_MAX
 
 
-def _open_record(run_dir: Path, cfg: RunConfig) -> RunRecord:
+def _open_record(
+    run_dir: Path, cfg: RunConfig, confirm: dict[str, Any] | None
+) -> RunRecord:
     path = run_dir / "record.jsonl"
-    config = {"limits": asdict(cfg.limits)}
+    config: dict[str, Any] = {"limits": asdict(cfg.limits)}
+    if confirm is not None:
+        config["confirm"] = confirm
     if path.exists() and path.stat().st_size > 0:
         record = RunRecord.open(path)
         first = record.read()[0]
@@ -134,8 +151,9 @@ Checker = Callable[[Any], dict[str, Any]]
 
 def _forward(
     run_dir: Path, cfg: RunConfig, edits: EditStore
-) -> tuple[Executor, Checker] | str:
-    """``forward`` executor and its request check, or why there are none."""
+) -> tuple[Executor, Checker, Executor] | str:
+    """``forward`` executor, its request check and the confirm generator, or why
+    there are none. They share one model."""
     if not forward.hf_available():
         return f"forward_pass is not available yet: {forward.HF_HINT}"
     backend = forward.ForwardBackend(
@@ -146,7 +164,7 @@ def _forward(
     def check(request: Any) -> dict[str, Any]:
         return forward.check_request(request, backend, edits, max_new_tokens=cap)
 
-    return forward.executor(backend, run_dir), check
+    return forward.executor(backend, run_dir), check, generator(backend, cap)
 
 
 def _base_model(model_dir: Path) -> str:
@@ -193,6 +211,26 @@ def _export(
     return {"export": summary}
 
 
+def _confirm_text(limit: int) -> str:
+    return (
+        "Start a confirm query of the stored edits; returns a handle to poll with "
+        'status. Coarse feedback only: the job result is {"passed": bool} and '
+        "nothing else. The edits pass when they beat the current best (the base "
+        "model at first, then the last edits that passed) on held-out confirm items "
+        "by more than the run's margin; a tie fails. Use it to select, not to tune: "
+        f"at most {limit} queries per run, later calls are refused."
+    )
+
+
+def _exported_shas(
+    edits: EditStore | None, exported: dict[str, Any]
+) -> dict[str, str] | None:
+    """Tensor name to edit sha256 of what ``finish`` exported, or None."""
+    if edits is None or exported.get("export") is None:
+        return None
+    return {n: r["sha256"] for n, r in edits.validate().items()}
+
+
 def build_server(
     run_dir: Path,
     executors: Mapping[str, Executor] | None = None,
@@ -205,18 +243,27 @@ def build_server(
     runs in a sandboxed kernel. Without an OS sandbox it returns an error, unless
     ``allow_unsafe_kernel`` runs the kernel unsandboxed. With no ``forward``
     executor given, ``forward_pass`` runs the model when the ``hf`` extra is
-    installed; a given ``forward`` executor gets the request unchecked.
+    installed; a given ``forward`` executor gets the request unchecked. With
+    ``confirm`` in run.json, a ``confirm`` executor (``{"arm", "prompts"}`` to
+    ``{"texts", "candidate"}``) replaces the model's greedy generation.
     """
     run_dir = Path(run_dir)
     cfg = load_run_config(run_dir)
     store = HandleStore(run_dir)
     ledger = Ledger(run_dir / "ledger.jsonl", cfg.limits)
-    record = _open_record(run_dir, cfg)
+    available = dict(executors or {})
+    confirm_gen = available.pop(CONFIRM, None)
+    # read before any record is written: a bad items file stops the start
+    items, pinned = None, None
+    if cfg.confirm is not None:
+        check_grader(cfg.confirm.grader)
+        items = read_items(cfg.confirm.items)
+        pinned = pin(cfg.confirm, items)
+    record = _open_record(run_dir, cfg, pinned)
     for job in store.list():  # a restart killed their threads; they can never finish
         if job.state in ("queued", "running"):
             job = store.fail(job.handle, "server restarted")
         forward.discard_results(run_dir, job)
-    available = dict(executors or {})
     unavailable: dict[str, tuple[str, str]] = {}  # kind -> (event, error)
     check: Checker | None = None
     if allow_unsafe_kernel:
@@ -238,8 +285,17 @@ def build_server(
             if isinstance(fwd, str):
                 unavailable["forward"] = ("tool_unavailable", fwd)
             else:
-                available["forward"], check = fwd
-    runner = JobRunner(store, ledger, available, _BUDGET_KIND)
+                available["forward"], check, made_gen = fwd
+                confirm_gen = confirm_gen or made_gen
+    confirmer: Confirmer | None = None
+    if cfg.confirm is not None and items is not None:
+        if confirm_gen is None:
+            hint = f"confirm is not available yet: {forward.HF_HINT}"
+            unavailable[CONFIRM] = ("tool_unavailable", hint)
+        else:
+            confirmer = Confirmer(cfg.confirm, items, confirm_gen, store, record)
+            available[CONFIRM] = confirm_gen
+    runner = JobRunner(store, ledger, available, _BUDGET_KIND)  # confirm: own jobs
     finish_lock = threading.Lock()
     finished = any(e["event"] == "finish" for e in record.read())
     server: MCPServer[Any] = MCPServer("astro-weights")
@@ -326,7 +382,28 @@ def build_server(
             return {"error": "unknown handle"}
         if job.state == "failed":  # e.g. refused at charge time: results unreadable
             forward.discard_results(run_dir, job)
-        return {**job.to_json(), "budget": ledger.to_json()}
+        out = {**job.to_json(), "budget": ledger.to_json()}
+        if job.kind == CONFIRM:  # how long a query took says something about it
+            del out["created"], out["updated"]
+        return out
+
+    if cfg.confirm is not None:
+
+        def confirm() -> dict[str, Any]:
+            with finish_lock:
+                stop = blocked("confirm", CONFIRM)
+                if stop is not None:
+                    return stop
+                if confirmer is None or edits is None:  # pragma: no cover - blocked
+                    return {"error": "confirm is not available yet"}
+                if not edits.edited():
+                    return refuse("confirm_no_edits", "no stored edits to confirm")
+                try:
+                    return confirmer.submit()
+                except ConfirmLimit as exc:
+                    return refuse("confirm_limit", str(exc))
+
+        server.tool(description=_confirm_text(cfg.confirm.max_queries))(confirm)
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
     def finish(summary: str) -> dict[str, Any]:
@@ -335,7 +412,9 @@ def build_server(
         Each edit is cut to rank 8 (``export.rank`` in run.json) by truncated SVD. An
         edit whose relative residual at that rank is above 0.05
         (``export.max_rel_residual``) fails the export: the result then has
-        ``export_error`` and no adapter.
+        ``export_error`` and no adapter. With confirm, store the edits that last
+        passed confirm before you finish: the export should equal the last passed
+        candidate, and the result says so in ``exported_is_best``.
         """
         nonlocal finished
         with finish_lock:
@@ -343,6 +422,8 @@ def build_server(
                 return {"error": "run already finished"}
             record.event("summary", text=summary[:_SUMMARY_MAX])
             exported = _export(run_dir, cfg, edits, record)
+            if confirmer is not None:
+                exported |= confirmer.export_check(_exported_shas(edits, exported))
             budget = ledger.to_json()
             record.finish(budget=budget, outcome="finished")
             finished = True
