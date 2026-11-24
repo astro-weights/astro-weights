@@ -2,12 +2,16 @@
 
 Agent code never writes edits itself. It sends a full edited weight, and
 `EditStore.save` checks it against the base weight and writes it. Everything on
-disk lives under `run_dir/edits`: one float32 safetensors file per edit, named by its
+disk lives under `run_dir/edits`: float32 safetensors files named by their
 sha256 (`<sha256>.safetensors`), and `manifest.json` with
-`{name: {sha256, rel_frobenius, shape}}`. The manifest is the only commit point:
-a file it does not name is an orphan, ignored and removed by `validate`. Stored
-values are already rounded to the base tensor's dtype. `validate` re-checks every
-stored edit, so a changed file or manifest is an error, never a silent drop.
+`{name: {sha256, float_sha256, rel_frobenius, shape}}`. `sha256` names the stored
+edit, rounded to the base tensor's dtype: the weight the model runs and confirm
+scores. `float_sha256` names the agent's edit as sent, cast to float32 and not
+rounded (the same file as `sha256` on an F32 base); export takes dW from it. A
+manifest written before `float_sha256` existed still loads; its export uses the
+rounded edit. The manifest is the only commit point: a file it does not name is
+an orphan, ignored and removed by `validate`. `validate` re-checks every stored
+file, so a changed file or manifest is an error, never a silent drop.
 `export_edits` turns the stored edits into a PEFT adapter and, optionally, a
 spliced GGUF.
 """
@@ -119,6 +123,17 @@ def _editable_name(key: str) -> bool:
     )
 
 
+def _is_sha(v: object) -> bool:
+    return isinstance(v, str) and _SHA.fullmatch(v) is not None
+
+
+def _shas(manifest: dict[str, Any]) -> set[str]:
+    """Every file sha a manifest names: stored edits and float edits."""
+    return {
+        r[k] for r in manifest.values() for k in ("sha256", "float_sha256") if k in r
+    }
+
+
 class EditStore:
     """Validated dense edits of a model's linear weights, kept under `run_dir/edits`."""
 
@@ -168,6 +183,7 @@ class EditStore:
             and isinstance(v, dict)
             and isinstance(v.get("sha256"), str)
             and _SHA.fullmatch(v["sha256"]) is not None
+            and _is_sha(v.get("float_sha256", v["sha256"]))
             for k, v in data.items()
         )
         if not ok:
@@ -184,14 +200,17 @@ class EditStore:
         finally:
             tmp.unlink(missing_ok=True)
 
-    def _read_edit(self, name: str, rec: dict[str, Any]) -> np.ndarray:
-        """Stored edit as float32; sha, key, dtype and shape are checked."""
-        path = self._path(rec["sha256"])
+    def _read_edit(
+        self, name: str, rec: dict[str, Any], key: str = "sha256"
+    ) -> np.ndarray:
+        """The file `rec[key]` names, as float32; sha, key, dtype and shape are checked."""
+        want = rec[key]
+        path = self._path(want)
         try:
             sha = _sha256_file(path)
         except OSError as e:
             raise ValueError(f"{name}: edit file unreadable: {e}") from e
-        if sha != rec["sha256"]:
+        if sha != want:
             raise ValueError(f"{name}: edit file sha256 does not match the manifest")
         try:
             tensors = load_file(str(path))
@@ -212,6 +231,22 @@ class EditStore:
         with self._lock:
             rec = self._manifest().get(name)
             return self.original(name) if rec is None else self._read_edit(name, rec)
+
+    def float_edit(self, name: str) -> np.ndarray | None:
+        """The agent's unrounded float32 edit, or None for a manifest from before it was kept.
+
+        Not checked against the stored edit; `validate` does that.
+        """
+        self._known(name)
+        with self._lock:
+            rec = self._manifest().get(name)
+            if rec is None:
+                raise ValueError(f"{name!r} has no edit")
+            return (
+                None
+                if "float_sha256" not in rec
+                else self._read_edit(name, rec, "float_sha256")
+            )
 
     def edited(self) -> list[str]:
         """Names with a stored edit, sorted."""
@@ -269,24 +304,42 @@ class EditStore:
         rel = self._check_stored(name, stored, w0)
         with self._lock:
             manifest = self._manifest()  # read first: a bad manifest touches nothing
-            tmp = _tmp(self.dir / "edit")
+            old = _shas(manifest)
+            new: list[str] = []
             try:
-                save_file({name: np.ascontiguousarray(stored)}, str(tmp))
-                sha = _sha256_file(tmp)
-                old = manifest.get(name, {}).get("sha256")
-                tmp.replace(self._path(sha))
-            finally:
-                tmp.unlink(missing_ok=True)
-            manifest[name] = {"sha256": sha, "rel_frobenius": rel, "shape": list(shape)}
-            try:
+                sha = self._write_tensor(name, stored, new)
+                # on an F32 base the bytes match the stored edit: one file, one sha
+                float_sha = self._write_tensor(name, narrow, new)
+                manifest[name] = {
+                    "sha256": sha,
+                    "float_sha256": float_sha,
+                    "rel_frobenius": rel,
+                    "shape": list(shape),
+                }
                 self._write_manifest(manifest)
             except BaseException:
-                if old != sha:  # the old manifest never named the new file
-                    self._path(sha).unlink(missing_ok=True)
+                for s in set(new) - old:  # the old manifest never named these files
+                    self._path(s).unlink(missing_ok=True)
                 raise
-            if old is not None and old != sha:
-                self._path(old).unlink(missing_ok=True)
+            self._unlink_unnamed(old, manifest)
         return {"name": name, "rel_frobenius": rel}
+
+    def _write_tensor(self, name: str, w: np.ndarray, new: list[str]) -> str:
+        """Write `{name: w}` to its content-addressed file; append its sha to `new`."""
+        tmp = _tmp(self.dir / "edit")
+        try:
+            save_file({name: np.ascontiguousarray(w, dtype=np.float32)}, str(tmp))
+            sha = _sha256_file(tmp)
+            new.append(sha)
+            tmp.replace(self._path(sha))
+        finally:
+            tmp.unlink(missing_ok=True)
+        return sha
+
+    def _unlink_unnamed(self, shas: set[str], manifest: dict[str, Any]) -> None:
+        """Delete the files of `shas` the committed `manifest` no longer names."""
+        for s in shas - _shas(manifest):
+            self._path(s).unlink(missing_ok=True)
 
     def drop(self, name: str) -> None:
         """Remove a stored edit; ValueError if there is none."""
@@ -295,9 +348,9 @@ class EditStore:
             manifest = self._manifest()
             if name not in manifest:
                 raise ValueError(f"{name!r} has no edit")
-            sha = manifest.pop(name)["sha256"]
+            old = _shas({name: manifest.pop(name)})
             self._write_manifest(manifest)
-            self._path(sha).unlink(missing_ok=True)
+            self._unlink_unnamed(old, manifest)
 
     def _remove_orphans(self, keep: set[str]) -> None:
         """Delete edit files and temp files the manifest does not name."""
@@ -319,14 +372,36 @@ class EditStore:
                     raise ValueError(
                         f"manifest lists non-editable tensor {name[:80]!r}"
                     )
+                dtype = self._info[name][0]
                 w = self._read_edit(name, rec)
-                if not np.array_equal(_round_to(self._info[name][0], w), w):
+                if not np.array_equal(_round_to(dtype, w), w):
                     raise ValueError(f"{name}: stored values are not in the base dtype")
                 rel = self._check_stored(name, w, self.original(name))
+                if "float_sha256" in rec:
+                    f = self._read_edit(name, rec, "float_sha256")
+                    if not np.array_equal(_round_to(dtype, f), w):
+                        raise ValueError(
+                            f"{name}: float edit does not round to the stored edit"
+                        )
                 out[name] = {**rec, "rel_frobenius": rel}
             # only after every entry checked out: a bad manifest never deletes data
-            self._remove_orphans({r["sha256"] for r in manifest.values()})
+            self._remove_orphans(_shas(manifest))
             return out
+
+
+def _low_rank(
+    store: EditStore, name: str, rank: int, max_rel_residual: float
+) -> tuple[LowRankDelta, float, str, float]:
+    """(delta, rel_residual, delta_source, replay_max_abs) of one stored edit."""
+    w0 = store.original(name)
+    stored = store.load(name)
+    w = store.float_edit(name)
+    src = stored if w is None else w
+    dw = src.astype(np.float64) - w0.astype(np.float64)
+    delta, rel = from_dense(name.removesuffix(".weight"), dw, rank, max_rel_residual)
+    replayed = _round_to(store._info[name][0], w0 + delta.dense())
+    replay = float(np.max(np.abs(replayed - stored)))
+    return delta, rel, "rounded" if w is None else "float", replay
 
 
 def export_edits(
@@ -341,15 +416,26 @@ def export_edits(
 ) -> dict[str, Any]:
     """Write the stored edits as a PEFT adapter, and a spliced GGUF if `base_gguf` is given.
 
-    Each edit becomes dW = stored - original, cut to `rank` (smaller where a
-    tensor has fewer dimensions) by truncated SVD; the cut must keep the
-    relative residual within `max_rel_residual`. Files: `out_dir/adapter` and
+    Each edit becomes dW = float edit - original: the agent's edit before it
+    was rounded to the base dtype, so bf16 rounding noise is not part of dW.
+    An edit stored before float edits were kept uses the rounded edit instead.
+    `delta_source` in the adapter meta and the result says which, per tensor
+    (`"float"` or `"rounded"`). dW is cut to `rank` (smaller where a tensor has
+    fewer dimensions) by truncated SVD; the cut must keep the relative residual
+    within `max_rel_residual`.
+
+    The model that ran and was scored is the rounded edit. The adapter merged
+    onto the base and rounded to its dtype again need not equal it bit for
+    bit: `replay_max_abs` (meta and result) is, per tensor, the max abs
+    difference between that re-rounded merge and the stored edit. Files: `out_dir/adapter` and
     `out_dir/model.gguf`. A module the GGUF export cannot map raises before
     anything is written. If the splice fails after the adapter is written, the
     adapter stays.
     """
     deltas: list[LowRankDelta] = []
     residuals: dict[str, float] = {}
+    sources: dict[str, str] = {}
+    replay: dict[str, float] = {}
     shas: dict[str, str] = {}
     # one lock hold: the adapter matches a single manifest state, no save or drop in between
     with store._lock:
@@ -357,18 +443,21 @@ def export_edits(
         if not names:
             raise ValueError("no edits to export")
         for name in names:
-            module = name.removesuffix(".weight")
-            r = min(rank, *store.shape(name))
-            dw = store.load(name) - store.original(name)
-            delta, rel = from_dense(module, dw, r, max_rel_residual)
+            delta, residuals[name], sources[name], replay[name] = _low_rank(
+                store, name, min(rank, *store.shape(name)), max_rel_residual
+            )
             deltas.append(delta)
-            residuals[name] = rel
             shas[name] = tensor_sha256(_shard(store.model_dir, name), name)
     edit = Edit.from_deltas(
         deltas,
         base_model,
         shas,
-        {"rank_requested": rank, "residuals": residuals},
+        {
+            "rank_requested": rank,
+            "residuals": residuals,
+            "delta_source": sources,
+            "replay_max_abs": replay,
+        },
     )
     gguf_names: dict[str, str] = {}
     if base_gguf is not None:
@@ -396,5 +485,7 @@ def export_edits(
         "adapter": adapter,
         "gguf": gguf_path if base_gguf is not None else None,
         "residuals": residuals,
+        "delta_source": sources,
+        "replay_max_abs": replay,
         "rank": edit.rank,
     }
