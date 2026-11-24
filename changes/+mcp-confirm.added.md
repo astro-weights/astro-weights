@@ -1,0 +1,1 @@
+MCP `confirm` tool (with a `confirm` object in run.json): the agent learns only whether its stored edits beat the current best on held-out confirm items by the margin, at most `max_queries` times, and the run record counts candidates and queries (`RunRecord.confirm_counts`).

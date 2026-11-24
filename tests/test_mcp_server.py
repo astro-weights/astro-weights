@@ -1031,6 +1031,11 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
     dir nor the kernel work dir holds a manifest, a probe id or a manifest hash; and
     the sandboxed kernel cannot open the manifest by absolute path. On Linux CI
     (bwrap installed) the sandbox is required, so that check is never skipped there.
+
+    The one allowed exception is ``confirm``: its items file sits outside the run
+    dir because the server must read it and the kernel must not. The kernel cannot
+    open it, its text reaches no file in the run dir, and a confirm job returns
+    exactly ``{"passed"}``.
     """
     import ast
     import dataclasses
@@ -1054,9 +1059,13 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
     else:
         unsafe = False
 
-    about = re.compile(r"split|manifest|dataset|seal|item|test_ids", re.IGNORECASE)
+    about = re.compile(
+        r"split|manifest|dataset|seal|item|test_ids|confirm", re.IGNORECASE
+    )
+    # confirm: the server reads its items; the kernel sandbox never sees them
+    allowed_fields = {"confirm"}
     fields = [f.name for f in dataclasses.fields(RunConfig)]
-    assert not [f for f in fields if about.search(f)], fields
+    assert not [f for f in fields if about.search(f) and f not in allowed_fields]
 
     banned = {"astro_weights.eval.splits", "astro_weights.eval.seal"}
     for py in Path(mcp_pkg.__file__).parent.rglob("*.py"):
@@ -1111,10 +1120,25 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
                 data = path.read_bytes()
                 assert salt not in data, f"{path} holds the seal salt"
                 leaked = [p for p in probes if p.encode() in data]
+                if path == run / "run.json":  # names the items file; server-only
+                    leaked = [p for p in leaked if p not in {str(secret), *paths}]
                 assert not leaked, f"{path} holds {leaked[:3]}"
 
-    run = kernel_run(tmp_path / "run")
+    items = secret / "confirm.jsonl"
+    item_text = ["leakconfirm-prompt", "leakconfirm-gold", "leakconfirm-id"]
+    items.write_text(
+        json.dumps(
+            {"item_id": item_text[2], "prompt": item_text[0], "gold": item_text[1]}
+        )
+        + "\n"
+    )
+    paths = [str(items), "confirm.jsonl"]
+    probes += [*item_text, *paths]
+    confirm = {"items": str(items), "grader": "exact", "margin": 0, "max_queries": 2}
+    run = kernel_run(tmp_path / "run", confirm=confirm)
     root = run.resolve()
+    # the only absolute paths outside the run dir: the confirm items, server-only
+    allowed_paths = {"run.json.confirm.items", "RunConfig.confirm.items"}
 
     def inside(value: object, where: str) -> None:
         if isinstance(value, dict):
@@ -1126,6 +1150,9 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
         elif dataclasses.is_dataclass(value) and not isinstance(value, type):
             inside(dataclasses.asdict(value), where)
         elif isinstance(value, str | Path) and Path(value).is_absolute():
+            if where in allowed_paths:
+                assert Path(value).resolve() == items.resolve(), where
+                return
             assert Path(value).resolve().is_relative_to(root), f"{where}={value}"
 
     inside(json.loads((run / "run.json").read_text(encoding="utf-8")), "run.json")
@@ -1134,10 +1161,32 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
     assert cfg.model_dir is not None
     assert cfg.model_dir.resolve().is_relative_to(root)
 
-    async with Client(build_server(run, allow_unsafe_kernel=unsafe)) as client:
+    def fake_confirm(params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "texts": [f"{p} {item_text[1]}" for p in params["prompts"]],
+            "candidate": "c",
+        }
+
+    executors = {"confirm": fake_confirm}
+    server = build_server(run, executors, allow_unsafe_kernel=unsafe)
+    async with Client(server) as client:
         tools = await client.list_tools()
         text = json.dumps([t.model_dump(mode="json") for t in tools.tools])
         assert "manifest" not in text.lower()
+        assert not [p for p in probes if p in text]
+        saved = await run_cell(
+            client, f"w = load({N0!r})\nsave_edit({N0!r}, w + 0.01 * w[::-1])"
+        )
+        assert saved["result"]["ok"], saved["result"]["output"]
+        seen = []
+        for _ in range(2):
+            started = await call(client, "confirm", {})
+            seen += [started, await poll(client, started["handle"])]
+            assert seen[-1]["state"] == "done"
+            assert set(seen[-1]["result"]) == {"passed"}
+        seen.append(await call(client, "confirm", {}))  # over the limit
+        assert "limit" in seen[-1]["error"]
+        assert not [p for p in probes if p in json.dumps(seen)]
         listing = await run_cell(
             client,
             "import os\nprint(sorted(os.listdir('.')), sorted(os.environ))",
@@ -1152,3 +1201,8 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
             assert not opened["result"]["ok"]
             out = opened["result"]["output"]
             assert "PermissionError" in out or "FileNotFoundError" in out, out
+            for path in (items, run / "run.json", run / "record.jsonl"):
+                opened = await run_cell(client, f"open({str(path)!r}).read()")
+                assert not opened["result"]["ok"], path
+                out = opened["result"]["output"]
+                assert "PermissionError" in out or "FileNotFoundError" in out, out

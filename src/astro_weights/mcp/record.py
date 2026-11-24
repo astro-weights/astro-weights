@@ -274,3 +274,25 @@ class RunRecord:
     def read(self) -> list[dict[str, Any]]:
         """All complete lines, in order."""
         return _split(self.path)[0]
+
+    def confirm_counts(self) -> dict[str, int]:
+        """Search counts for ``eval.verdict.Verdict``, from the confirm events.
+
+        ``confirm_queries``: accepted ``confirm`` calls (``confirm_query`` events).
+        ``candidates_tried``: distinct edit sets those queries graded.
+        ``confirm_refused``: ``confirm`` calls refused past the query limit.
+        """
+        events = self.read()
+        candidates = {
+            e["candidate"]
+            for e in events
+            if e["event"] == "confirm_result" and isinstance(e.get("candidate"), str)
+        }
+        return {
+            "candidates_tried": len(candidates),
+            "confirm_queries": sum(e["event"] == "confirm_query" for e in events),
+            "confirm_refused": sum(
+                e["event"] == "refusal" and e.get("category") == "confirm_limit"
+                for e in events
+            ),
+        }

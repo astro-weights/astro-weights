@@ -96,6 +96,7 @@ All four keys are required. 0 allows none.
 | `report_usage` | `tokens`, `dollars`, `turn`, `model` | `{"budget", "over"}` | `tokens` and `dollars` | sync, editor-only |
 | `check_spend` | `estimate` | `{"ok", "budget"}` | nothing | sync, editor-only |
 | `report_refusal` | `category`, `model`, `detail` (optional) | `{"recorded": true}` | nothing | sync, editor-only |
+| `confirm` | none | `{"handle", "state": "queued"}`; job `result` is exactly `{"passed": bool}` | nothing; at most `confirm.max_queries` per run, later calls refused | submit, then poll; only with `confirm` in `run.json` |
 
 A refusal is an ordinary tool result with an `error` key, not an MCP protocol error. Check every result for `error`.
 
