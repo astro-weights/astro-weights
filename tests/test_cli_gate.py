@@ -505,3 +505,46 @@ def test_a_seal_refusal_at_write_time_shows_nothing(
     assert out == ""
     assert "raced" in err
     assert not (cfg.parent / "verdict.json").exists()
+
+
+def test_a_bad_out_path_never_spends_the_seal(
+    build: Build, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    cfg = build()
+    code, out, _ = gate(
+        cfg, "--out", str(tmp_path / "missing" / "v.json"), capsys=capsys
+    )
+    assert code == 2
+    assert out == ""
+    seal = cfg.parent / "seal" / "seal.jsonl"
+    assert not seal.exists() or seal.read_bytes() == b""
+    assert gate(cfg, capsys=capsys)[0] == 0  # the test split is still unspent
+
+
+def test_a_report_arm_cannot_reshow_a_sealed_edit(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from dataclasses import replace
+
+    from astro_weights.edits import Edit
+    from astro_weights.eval import read_jsonl
+    from astro_weights.eval.seal import record_scoring, scoring_of, seal_salt
+    from astro_weights.eval.splits import SplitManifest
+    from astro_weights.export import load_peft
+
+    cfg = build(arms=True)
+    edit = load_peft(cfg.parent / "adapter")
+    other = Edit.from_deltas(
+        [replace(d, B=d.B * 3) for d in edit.deltas], edit.base_model
+    )
+    conf = load_gate_config(cfg)
+    manifest = SplitManifest.load(conf.manifest)
+    scripted = read_jsonl(conf.arms["scripted"])
+    seal_dir = cfg.parent / "seal"
+    record_scoring(seal_dir, scoring_of(other, manifest, scripted, seal_salt(seal_dir)))
+    before = ledger(cfg)
+    code, out, err = gate(cfg, capsys=capsys)
+    assert code == 2
+    assert out == ""
+    assert err
+    assert ledger(cfg) == before
