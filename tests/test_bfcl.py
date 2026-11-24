@@ -559,3 +559,16 @@ def test_default_chat_uses_ok_reply_shape() -> None:
             url, "m", [{"role": "user", "content": "x"}], [], max_new_tokens=4
         )
     assert r.text == "hi"
+
+
+def test_unparsable_tool_call_is_a_turn_without_a_call(
+    tasks: dict[str, BfclTask],
+) -> None:
+    body = json.dumps({"error": {"code": 500, "message": "Failed to parse tool call"}})
+    with serve(lambda b: (500, body)) as (url, _):
+        records = run_bfcl(list(tasks.values())[:1], url, "m", "a", max_new_tokens=7)
+    (r,) = records
+    assert not r.passed
+    replies = sum(t.role == "assistant" for t in r.turns)
+    assert replies >= 1
+    assert (r.tool_calls, r.output_tokens) == (0, 7 * replies)

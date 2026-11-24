@@ -31,7 +31,7 @@ from types import ModuleType
 from typing import Any
 
 from astro_weights.eval import TaskRecord, ToolCall, Turn, prompt_hash, write_tasks
-from astro_weights.runners.endpoint import ChatReply, chat_http
+from astro_weights.runners.endpoint import ChatReply, ToolCallParseError, chat_http
 
 BFCL_COMMIT = "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8"
 
@@ -560,4 +560,11 @@ def _chat_once(
     tools: list[dict[str, Any]],
     **kwargs: Any,
 ) -> ChatReply:
-    return chat_http(base_url, model, messages, tools=tools, **kwargs)
+    try:
+        return chat_http(base_url, model, messages, tools=tools, **kwargs)
+    except ToolCallParseError:
+        # the model's call was cut off or not JSON: a turn with no call (BFCL scores it
+        # so), charged the whole budget; raising would lose every record of the run
+        n = int(kwargs["max_new_tokens"])
+        message = {"role": "assistant", "content": None}
+        return ChatReply("", (), n, "error", {"completion_tokens": n}, message)
