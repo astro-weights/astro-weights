@@ -28,6 +28,7 @@ Cut on top of pi-adapted about same as on bare base (within 4.4% on every set). 
 ## What this doesn't show
 - Agent behaviour. pi-adapted is trained for pi harness; these are single-turn tasks. Terminal-Bench and SWE-bench Pro untested: they need sandboxed runs we haven't done.
 - LiveCodeBench pass@1: over half of answers hit 4,096-token cap, and shorter answers hit it less, so pass@1 there isn't clean accuracy reading.
+- Accuracy at a 4,096-token limit. On the bare base, that limit hid a 2 to 4 point accuracy loss for this adapter ([the correction](27b-accuracy-correction.md)); this stacked run hasn't been rerun.
 - One seed, greedy. New arms ran on different GPUs from reused base arms; cross-GPU noise floor not measured.
 
 Our adapter: https://huggingface.co/glitch401/qwen3.8-27B-terse. Their adapter: https://huggingface.co/harness-hub/Qwen3.8-27B-pi-adapted.

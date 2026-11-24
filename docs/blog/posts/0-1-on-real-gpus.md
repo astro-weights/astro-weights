@@ -8,7 +8,7 @@ categories:
 
 astro-weights makes small edits to open model's weights and exports them as standard LoRA adapters. Until 2026-11-15, 9B numbers came from one 3090 and quantized GGUF file; 27B numbers came from research harness, not from library. On 2026-11-15 we ran 0.1 code path on one H100 and one H200 and reran MATH-500 and GSM8K at bf16 with paired statistics, full sets where noted, and added Python code tasks.
 
-Short version. 27B adapter did what we said: about 30% fewer tokens on MATH-500 with no measured accuracy change (n=500). 9B adapter did not hold everywhere: about 10% fewer tokens on held-out MATH-500 (n=244) with no measured accuracy change there, but on full GSM8K (n=1319) it loses about 2 points and saves no tokens. Our earlier 300-item GSM8K check was too small to see that loss. Source file name sits beside every number; raw files are not public yet.
+Short version. Correction 2026-11-24: we first wrote that the 27B adapter cut tokens about 30% on MATH-500 with no measured accuracy change (n=500). With a longer answer limit it is 3 points less accurate on that set; see [the correction](27b-accuracy-correction.md). 9B adapter did not hold everywhere: about 10% fewer tokens on held-out MATH-500 (n=244) with no measured accuracy change there, but on full GSM8K (n=1319) it loses about 2 points and saves no tokens. Our earlier 300-item GSM8K check was too small to see that loss. Source file name sits beside every number; raw files are not public yet.
 
 <!-- more -->
 
@@ -34,7 +34,7 @@ Source file paths below are relative to run directory, with raw `base.jsonl` and
 
 ## What held
 
-### 27B: shorter answers, no measured accuracy change
+### 27B: shorter answers (accuracy corrected 2026-11-24)
 
 | eval | n | decoding | accuracy base / edit | accuracy diff (95% CI) | tokens | source |
 |---|---|---|---|---|---|---|
@@ -45,7 +45,7 @@ Source file paths below are relative to run directory, with raw `base.jsonl` and
 
 Limits on these rows. Held-out MATH-500 split has 244 items and cannot see loss under about 3 pp. Full GSM8K row ran greedy with cap 1024, where base model hit cap more often than edited one (cap-hit 0.027 / 0.005), so its +0.83 pp is partly cap effect (McNemar p=0.061). We read that row as "no loss", not as gain. Full GSM8K with card sampling was not run on 27B.
 
-These numbers match our earlier record for same adapter: MATH-500 held-out +0.00 pp [−1.71, +1.71] with −29.9% tokens, GSM8K held-out −0.33 pp [−2.06, +1.40] with −27.6% (`wsp/results/g27-dconf-fable27c-diffs.txt`). That record was vLLM at bf16 with same LoRA, not GGUF, so this compares two bf16 LoRA paths.
+These numbers match our earlier record for same adapter: MATH-500 held-out +0.00 pp [−1.71, +1.71] with −29.9% tokens, GSM8K held-out −0.33 pp [−2.06, +1.40] with −27.6% (`wsp/results/g27-dconf-fable27c-diffs.txt`). That record was vLLM at bf16 with same LoRA, not GGUF, so this compares two bf16 LoRA paths. Both records used a 4,096-token limit, which hid an accuracy loss; see [the correction](27b-accuracy-correction.md).
 
 ### 27B on Python code tasks
 
