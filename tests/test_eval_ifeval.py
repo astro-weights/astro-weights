@@ -126,6 +126,7 @@ def _need_punkt() -> None:
     pytest.importorskip("nltk")
     try:
         ifeval._count_sentences("a.")
+        ifeval._capital_words("A b.", capital_frequency=1, capital_relation="at least")
     except LookupError:
         pytest.skip("run: python -m nltk.downloader punkt_tab")
 
