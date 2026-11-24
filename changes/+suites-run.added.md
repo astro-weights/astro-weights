@@ -1,0 +1,1 @@
+`astro_weights.runners.suites_run.run_suites` runs the GSM8K, IFEval and MMLU-Pro regression suites for one arm (Hugging Face model or OpenAI-compatible server), grades each item with the suite grader and writes pairable records and a run header per suite.
