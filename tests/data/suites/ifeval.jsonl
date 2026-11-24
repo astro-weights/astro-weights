@@ -1,0 +1,2 @@
+{"key": 1000, "prompt": "Write a note without commas.", "instruction_id_list": ["punctuation:no_comma"], "kwargs": [{}]}
+{"key": 1001, "prompt": "Write 3 bullets and end with Done.", "instruction_id_list": ["detectable_format:number_bullet_lists", "startend:end_checker"], "kwargs": [{"num_bullets": 3}, {"end_phrase": "Done"}]}
