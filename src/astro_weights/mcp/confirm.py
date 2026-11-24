@@ -21,6 +21,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ __all__ = [
     "ConfirmLimit",
     "Confirmer",
     "candidate_id",
+    "check_grader",
     "generator",
     "passes",
     "pin",
@@ -52,8 +54,11 @@ class ConfirmLimit(Exception):
 
 
 def passes(correct: int, bar: int, n: int, margin: float) -> bool:
-    """True iff ``correct`` beats ``bar`` by more than ``margin * n`` items."""
-    return correct - bar > margin * n
+    """True iff ``correct`` beats ``bar`` by more than ``margin * n`` items.
+
+    Exact: the margin is read as its decimal text, so 0.29 * 100 is 29, a tie.
+    """
+    return correct - bar > Fraction(str(margin)) * n
 
 
 def candidate_id(applied: dict[str, str]) -> str:
@@ -143,14 +148,29 @@ def generator(backend: Any, max_new_tokens: int) -> Executor:
     return run
 
 
-def _restore(events: list[dict[str, Any]]) -> tuple[int, int | None]:
-    """(queries made, bar) from earlier record events."""
+def check_grader(name: str) -> None:
+    """ValueError naming the extra when the grader cannot run here."""
+    if name == "math":
+        try:
+            import math_verify  # noqa: F401
+        except ImportError:
+            raise ValueError(
+                "confirm.grader math needs: pip install 'astro-weights[eval]'"
+            ) from None
+
+
+def _restore(events: list[dict[str, Any]]) -> tuple[int, int | None, str | None]:
+    """(queries made, bar, best candidate) from earlier record events."""
     queries = sum(e["event"] == "confirm_query" for e in events)
-    bar = None
+    bar, best = None, None
     for e in events:
-        if e["event"] == "confirm_result" and isinstance(e.get("best"), int):
+        if e["event"] != "confirm_result":
+            continue
+        if isinstance(e.get("best"), int):
             bar = e["best"]
-    return queries, bar
+        if isinstance(e.get("best_candidate"), str):
+            best = e["best_candidate"]
+    return queries, bar, best
 
 
 class Confirmer:
@@ -172,7 +192,24 @@ class Confirmer:
         self._record = record
         self._count_lock = threading.Lock()
         self._run_lock = threading.Lock()
-        self._queries, self._bar = _restore(record.read())
+        self._queries, self._bar, self.best_candidate = _restore(record.read())
+
+    def export_check(self, exported: dict[str, str] | None) -> dict[str, Any]:
+        """Record and return whether the exported edits are the last that passed.
+
+        ``exported`` maps tensor name to edit sha256, or None when nothing was
+        exported. A test score of other edits is not the edits selection picked.
+        """
+        with self._run_lock:  # no query mid-way
+            cand = None if exported is None else candidate_id(exported)
+            out = {
+                "exported_candidate": cand,
+                "exported_is_best": cand is not None and cand == self.best_candidate,
+            }
+            self._record.event(
+                "confirm_export", best_candidate=self.best_candidate, **out
+            )
+        return out
 
     def submit(self) -> dict[str, Any]:
         """Queue one query; ConfirmLimit past ``max_queries`` (nothing queued)."""
@@ -222,6 +259,7 @@ class Confirmer:
             passed = passes(correct, self._bar, len(self._golds), self._cfg.margin)
             if passed:
                 self._bar = correct
+                self.best_candidate = fields["best_candidate"] = fields["candidate"]
         except Exception as exc:  # noqa: BLE001 - the agent sees only passed
             fields["error"] = type(exc).__name__
         self._record.event("confirm_result", passed=passed, best=self._bar, **fields)

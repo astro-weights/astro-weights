@@ -140,6 +140,10 @@ def test_passes_is_one_sided_and_strict() -> None:
     assert not passes(7, 5, 10, 0.2)  # beats by exactly the margin: fails
     assert passes(8, 5, 10, 0.2)
     assert not passes(4, 5, 10, 0.0)
+    # 0.29 * 100 is 28.999999999999996 in floats: still an exact tie
+    assert not passes(29, 0, 100, 0.29)
+    assert not passes(57, 0, 100, 0.57)
+    assert passes(30, 0, 100, 0.29)
 
 
 @pytest.mark.anyio
@@ -173,7 +177,12 @@ async def test_queries_pass_fail_and_move_the_best(tmp_path: Path) -> None:
         (3, 4, 3),
     ]
     counts = RunRecord.open(run / "record.jsonl").confirm_counts()
-    assert counts == {"candidates_tried": 4, "confirm_queries": 4, "confirm_refused": 1}
+    assert counts == {
+        "candidates_tried": 4,
+        "candidates_saved": 0,
+        "confirm_queries": 4,
+        "confirm_refused": 1,
+    }
     for text in seen:
         assert not [p for p in PROBES if p in text], text
         assert '"correct"' not in text
@@ -359,7 +368,7 @@ def test_bad_confirm_config(tmp_path: Path, confirm: Any, msg: str) -> None:
 
 
 def test_confirm_needs_model_dir(tmp_path: Path) -> None:
-    confirm = {"items": "x", "grader": "math", "margin": 0, "max_queries": 1}
+    confirm = {"items": "../x", "grader": "math", "margin": 0, "max_queries": 1}
     cfg = {"seed": 1, "editor": "e", "model": None, "limits": LIMITS}
     (tmp_path / "run.json").write_text(json.dumps({**cfg, "confirm": confirm}))
     with pytest.raises(ValueError, match="confirm needs model_dir"):
@@ -419,8 +428,11 @@ def test_counts_round_trip_through_the_record(tmp_path: Path) -> None:
     rec.event("confirm_result", query=2, passed=False, best=1, error="OSError")
     rec.refusal(category="confirm_limit", editor="e", model=None)
     rec.refusal(category="budget", editor="e", model=None)
+    rec.event("edit_saved", tensor="t", rel_frobenius=0.1)
+    rec.event("edit_saved", tensor="t", rel_frobenius=0.2)
     assert RunRecord.open(path).confirm_counts() == {
         "candidates_tried": 1,
+        "candidates_saved": 2,
         "confirm_queries": 2,
         "confirm_refused": 1,
     }
@@ -448,3 +460,79 @@ def test_generator_runs_the_tiny_model(tmp_path: Path) -> None:
     sha = json.loads(store.manifest_path.read_text())[name]["sha256"]
     assert edited["candidate"] == candidate_id({name: sha})
     assert gen({"arm": "base", "prompts": ["w1 w2"]})["texts"] == base["texts"][:1]
+
+
+@pytest.mark.parametrize("items", ["items.jsonl", "kernel/items.jsonl", "../run/x"])
+def test_items_inside_the_run_dir_are_refused(tmp_path: Path, items: str) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    confirm = {"items": items, "grader": "exact", "margin": 0, "max_queries": 1}
+    cfg = {"seed": 1, "editor": "e", "model": None, "limits": LIMITS}
+    body = {**cfg, "model_dir": "m", "confirm": confirm}
+    (run / "run.json").write_text(json.dumps(body))
+    with pytest.raises(ValueError, match="outside the run directory"):
+        load_run_config(run)
+
+
+def test_math_grader_without_the_extra_stops_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    run = confirm_run(tmp_path, grader="math")
+    monkeypatch.setitem(sys.modules, "math_verify", None)  # import raises
+    with pytest.raises(ValueError, match=r"astro-weights\[eval\]"):
+        build_server(run, {"confirm": FakeModel(run, 0, [])})
+    assert not (run / "record.jsonl").exists()
+
+
+def test_math_grader_with_the_extra_starts(tmp_path: Path) -> None:
+    pytest.importorskip("math_verify")
+    run = confirm_run(tmp_path, grader="math")
+    build_server(run, {"confirm": FakeModel(run, 0, [])})
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("keep_best", [True, False])
+async def test_finish_says_whether_the_export_is_the_best(
+    tmp_path: Path, keep_best: bool
+) -> None:
+    run = confirm_run(tmp_path, margin=0.0)
+    model = FakeModel(run, base=0, script=[2, 1])
+    save_edit(run, 0.2)
+    async with Client(build_server(run, {"confirm": model})) as client:
+        assert (await query(client, []))["result"] == {"passed": True}
+        save_edit(run, 0.3)
+        assert (await query(client, []))["result"] == {"passed": False}
+        if keep_best:
+            save_edit(run, 0.2)  # back to the edits that passed
+        out = await call(client, "finish", {"summary": "done"})
+    assert out["export"] is not None, out
+    assert out["exported_is_best"] is keep_best
+    (first, _) = events(run, "confirm_result")
+    assert first["best_candidate"] == first["candidate"]
+    (check,) = events(run, "confirm_export")
+    assert check["best_candidate"] == first["candidate"]
+    assert check["exported_is_best"] is keep_best
+    assert (check["exported_candidate"] == first["candidate"]) is keep_best
+    assert out["exported_candidate"] == check["exported_candidate"]
+
+
+@pytest.mark.anyio
+async def test_finish_with_nothing_exported_is_not_the_best(tmp_path: Path) -> None:
+    run = confirm_run(tmp_path)
+    async with Client(build_server(run, {"confirm": FakeModel(run, 0, [])})) as c:
+        out = await call(c, "finish", {"summary": "done"})
+    assert out["exported_candidate"] is None
+    assert out["exported_is_best"] is False
+
+
+@pytest.mark.anyio
+async def test_best_candidate_survives_a_restart(tmp_path: Path) -> None:
+    run = confirm_run(tmp_path, margin=0.0)
+    save_edit(run, 0.2)
+    async with Client(build_server(run, {"confirm": FakeModel(run, 0, [1])})) as c:
+        assert (await query(c, []))["result"] == {"passed": True}
+    async with Client(build_server(run, {"confirm": FakeModel(run, 0, [])})) as c:
+        out = await call(c, "finish", {"summary": "done"})
+    assert out["exported_is_best"] is True

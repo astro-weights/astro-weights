@@ -42,7 +42,7 @@ class ConfirmConfig:
     """run.json's ``confirm`` object: the items the ``confirm`` tool grades on.
 
     ``items`` is a JSONL file of ``{"item_id", "prompt", "gold"}`` read by the
-    server only; keep it outside the run directory. ``grader`` names an
+    server only; a path inside the run directory is refused. ``grader`` names an
     ``astro_weights.eval`` grader (``grade_<grader>``). ``margin`` is in items
     correct per item (0.02 = 2 points); ``max_queries`` caps confirm calls.
     """
@@ -223,6 +223,11 @@ def _confirm_config(path: Path, run_dir: Path, confirm: Any) -> ConfirmConfig | 
     whole = isinstance(max_queries, int) and not isinstance(max_queries, bool)
     if not whole or max_queries < 1:
         raise ValueError(f"{path}: confirm.max_queries must be an int >= 1")
+    if (run_dir / items).resolve().is_relative_to(run_dir.resolve()):
+        raise ValueError(
+            f"{path}: confirm.items must be outside the run directory, where "
+            "agent code and results live"
+        )
     return ConfirmConfig(run_dir / items, str(grader), float(margin), max_queries)
 
 

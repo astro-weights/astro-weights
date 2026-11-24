@@ -56,6 +56,7 @@ from astro_weights.mcp.confirm import KIND as CONFIRM
 from astro_weights.mcp.confirm import (
     Confirmer,
     ConfirmLimit,
+    check_grader,
     generator,
     pin,
     read_items,
@@ -221,6 +222,15 @@ def _confirm_text(limit: int) -> str:
     )
 
 
+def _exported_shas(
+    edits: EditStore | None, exported: dict[str, Any]
+) -> dict[str, str] | None:
+    """Tensor name to edit sha256 of what ``finish`` exported, or None."""
+    if edits is None or exported.get("export") is None:
+        return None
+    return {n: r["sha256"] for n, r in edits.validate().items()}
+
+
 def build_server(
     run_dir: Path,
     executors: Mapping[str, Executor] | None = None,
@@ -246,6 +256,7 @@ def build_server(
     # read before any record is written: a bad items file stops the start
     items, pinned = None, None
     if cfg.confirm is not None:
+        check_grader(cfg.confirm.grader)
         items = read_items(cfg.confirm.items)
         pinned = pin(cfg.confirm, items)
     record = _open_record(run_dir, cfg, pinned)
@@ -401,7 +412,9 @@ def build_server(
         Each edit is cut to rank 8 (``export.rank`` in run.json) by truncated SVD. An
         edit whose relative residual at that rank is above 0.05
         (``export.max_rel_residual``) fails the export: the result then has
-        ``export_error`` and no adapter.
+        ``export_error`` and no adapter. With confirm, store the edits that last
+        passed confirm before you finish: the export should equal the last passed
+        candidate, and the result says so in ``exported_is_best``.
         """
         nonlocal finished
         with finish_lock:
@@ -409,6 +422,8 @@ def build_server(
                 return {"error": "run already finished"}
             record.event("summary", text=summary[:_SUMMARY_MAX])
             exported = _export(run_dir, cfg, edits, record)
+            if confirmer is not None:
+                exported |= confirmer.export_check(_exported_shas(edits, exported))
             budget = ledger.to_json()
             record.finish(budget=budget, outcome="finished")
             finished = True

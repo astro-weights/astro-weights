@@ -279,7 +279,10 @@ class RunRecord:
         """Search counts for ``eval.verdict.Verdict``, from the confirm events.
 
         ``confirm_queries``: accepted ``confirm`` calls (``confirm_query`` events).
-        ``candidates_tried``: distinct edit sets those queries graded.
+        ``candidates_tried``: distinct edit sets those queries graded; edits never
+        sent to confirm are not in it. ``candidates_saved``: ``edit_saved`` events,
+        one per accepted ``save_edit``: an upper bound on the edit sets the search
+        made on dev (saves of the same values count again).
         ``confirm_refused``: ``confirm`` calls refused past the query limit.
         """
         events = self.read()
@@ -290,6 +293,7 @@ class RunRecord:
         }
         return {
             "candidates_tried": len(candidates),
+            "candidates_saved": sum(e["event"] == "edit_saved" for e in events),
             "confirm_queries": sum(e["event"] == "confirm_query" for e in events),
             "confirm_refused": sum(
                 e["event"] == "refusal" and e.get("category") == "confirm_limit"
