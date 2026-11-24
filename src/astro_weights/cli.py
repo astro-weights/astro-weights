@@ -492,6 +492,7 @@ class _TestStage:
     k: int
     config_hash: str
     infra_errors: int
+    report: list[tuple[Path, list[Record]]]
 
 
 def _test_stage(cfg: GateConfig, confirm_base: Path, unseal: bool) -> _TestStage:
@@ -525,7 +526,8 @@ def _test_stage(cfg: GateConfig, confirm_base: Path, unseal: bool) -> _TestStage
     compared = compare_arms(base, arms, kinds, n_boot=cfg.boot, seed=cfg.seed)
     infra = _infra_errors(t.base, t.edit)
     named = [(t.base, base), (t.edit, edit)]
-    return _TestStage(named, compared, floor, suites, manifest.k, key, infra)
+    report = [(p, arms[n]) for n, p in shown.items()]
+    return _TestStage(named, compared, floor, suites, manifest.k, key, infra, report)
 
 
 def _open_seal(cfg: GateConfig, stage: _TestStage, unseal: bool) -> _Seal:
@@ -535,6 +537,25 @@ def _open_seal(cfg: GateConfig, stage: _TestStage, unseal: bool) -> _Seal:
     seal = _check_split(split, stage.named)
     if not isinstance(seal, _Seal):
         raise _Refused  # printed by _check_split
+    if not stage.report:
+        return seal
+    # Report arms print test-split results too: same split checks, and their
+    # records count as shown, so a sealed edit's records can't be re-shown here.
+    manifest = SplitManifest.load(cfg.manifest)
+    for path, records in stage.report:
+        try:
+            manifest.check_records(records, "test", complete=True)
+            manifest.check_seeds(records)
+        except ValueError as e:
+            raise ValueError(f"{path}: {e}") from e
+    extra = tuple(records_sha256(r) for _, r in stage.report)
+    seal = replace(seal, shown=seal.shown + extra)
+    if not seal.unseal:
+        try:
+            check_unsealed(seal.directory, seal.scoring, seal.shown)
+        except SealedError as e:
+            print(f"error: {e}", file=sys.stderr)
+            raise _Refused from e
     return seal
 
 
@@ -619,13 +640,19 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
         stage.infra_errors if stage else _infra_errors(c.base, c.edit),
         dict(cfg.footprint),
     )
-    if stage is not None:
-        seal = _open_seal(cfg, stage, unseal)
-        t = cfg.test
-        if _record_seal(seal, t.base, t.edit, stage.arms.results["edit"]):
-            raise _Refused  # printed by _record_seal
     written = out or config.parent / "verdict.json"
-    written.write_text(verdict.to_json(), encoding="utf-8")
+    # Write first, rename after sealing: a bad --out never spends the test split.
+    tmp = written.with_name(f".{written.name}.tmp")
+    tmp.write_text(verdict.to_json(), encoding="utf-8")
+    try:
+        if stage is not None:
+            seal = _open_seal(cfg, stage, unseal)
+            t = cfg.test
+            if _record_seal(seal, t.base, t.edit, stage.arms.results["edit"]):
+                raise _Refused  # printed by _record_seal
+        tmp.replace(written)
+    finally:
+        tmp.unlink(missing_ok=True)
     _gate_output(
         result, counts, confirm, stage.arms if stage else None, written, as_json
     )
