@@ -22,6 +22,7 @@ from astro_weights.eval import (
     write_header,
     write_jsonl,
 )
+from astro_weights.eval.header import system_header
 from astro_weights.eval.splits import SplitManifest
 from astro_weights.export import save_peft
 from astro_weights.mcp.record import RunRecord
@@ -30,6 +31,7 @@ N_ITEMS = 200
 N_CONTROLS = 20
 N_SUITE = 120
 CUT = 40  # tokens the edit saves per answer when `tokens_cut`
+SYSTEM = "Answer in as few words as you can."  # the prompt arms' instruction
 MODULE = "model.layers.1.mlp.down_proj"
 
 
@@ -143,7 +145,10 @@ def build(dst: Path, **knobs: object) -> Path:
     if k.arms:
         for name, cut in (("scripted", 5), ("prompt", 10), ("edit_prompt", 50)):
             _write_arm(
-                test / f"{name}.jsonl", _arm(test_rows, name, cut=cut), k.manifest_k
+                test / f"{name}.jsonl",
+                _arm(test_rows, name, cut=cut),
+                k.manifest_k,
+                **(system_header(SYSTEM) if name != "scripted" else {}),
             )
 
     suites = {}

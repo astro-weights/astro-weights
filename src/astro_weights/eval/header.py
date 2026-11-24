@@ -43,6 +43,8 @@ CONFIG_KEYS = frozenset(
         "training",
         "chat_template_sha256",
         "sampling",
+        "system",  # system prompt text, only on an arm that was given one
+        "system_sha256",
         "extra_body",  # minus the declared arm keys, see `check_headers`
         "k",  # samples per item
         "concurrency",
@@ -162,6 +164,21 @@ def config_hash(header: Mapping[str, Any], arm_keys: Collection[str] = ()) -> st
         allow_nan=False,
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def system_header(system: str | None) -> dict[str, str]:
+    """Header keys for a system prompt: `system` and `system_sha256`; empty for None.
+
+    Raises ValueError for an empty or non-string `system`.
+    """
+    if system is None:
+        return {}
+    if not isinstance(system, str) or not system:
+        raise ValueError(f"system must be a non-empty string or None, got {system!r}")
+    return {
+        "system": system,
+        "system_sha256": hashlib.sha256(system.encode("utf-8")).hexdigest(),
+    }
 
 
 def library_version() -> str | None:

@@ -79,7 +79,7 @@ Refused with exit 2, nothing sealed: bad or unknown `GATE.toml` key; a records f
 | `[confirm]` | table | `base`, `edit` (confirm-split records), `controls` (a directory: every `*.jsonl` in it is one control arm, 20 or more), `target` (`tokens_diff`, better lower, or `diff`, better higher), `q` (default 0.95, at least 0.95), `side_effects` (names; `accuracy` is the `diff` of the confirm records, any other name needs a `[confirm.side.NAME]` table with `base`, `edit`, `controls`) |
 | `[test]` | table | `base`, `edit` (test-split records, K = 4), `seal_dir` (ledger directory), `adapter` (the edit's PEFT directory, keyed by content), `floor` (directory of stored noise floors, `floor-<config_hash>.json`) |
 | `[suites.NAME]` | tables | regression suite: `base`, `edit`, `margin`, `source` (the suite's own margin and where it came from) |
-| `[arms]` | table, optional | extra test-split arms for the report: `prompt`, `scripted`, `edit_prompt` (shown as `edit+prompt`) |
+| `[arms]` | table, optional | extra test-split arms for the report: `prompt`, `scripted`, `edit_prompt` (shown as `edit+prompt`). The `prompt` and `edit_prompt` headers must carry a `system` prompt (made with `run_suites(..., system=...)`) that base, edit and scripted lack; every other header key must equal base's |
 
 Every records file `X.jsonl` needs its `X.header.json`.
 
