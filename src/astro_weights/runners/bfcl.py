@@ -372,7 +372,7 @@ class _Env:
 def _model_call(env: _Env, call: ToolCall) -> str:
     try:
         kwargs = json.loads(call.arguments)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:  # RecursionError: absurdly deep nesting
         return f"Error during execution: arguments are not valid JSON: {e}"
     if not isinstance(kwargs, dict):
         return "Error during execution: arguments must be a JSON object"
@@ -418,8 +418,9 @@ def run_task(
 
     Per user turn the model calls tools, each step's results going back to it, until
     it answers without a call. More than `max_steps_per_turn` steps with calls in one
-    turn stops the task as failed (BFCL's `MAXIMUM_STEP_LIMIT` is 20, `count > limit`
-    in `base_handler.py`). Calls are dispatched only to the public methods the task's
+    turn force-quits (BFCL's `MAXIMUM_STEP_LIMIT` is 20, `count > limit` in
+    `base_handler.py`): before the last turn the task fails and the rest is not run; on
+    the last turn the responses so far are scored as usual, as BFCL does. Calls are dispatched only to the public methods the task's
     function docs name; an unknown name, bad arguments or an exception becomes the
     tool result `Error during execution: ...` and is still a counted call. The model's
     text is never evaluated.
@@ -438,10 +439,12 @@ def run_task(
     turns: list[Turn] = []
     results: list[str] = []
     passed = True
-    for question, wanted in zip(task.turns, task.ground_truth, strict=True):
+    for turn, (question, wanted) in enumerate(
+        zip(task.turns, task.ground_truth, strict=True)
+    ):
         messages.append({"role": "user", "content": question})
         turns.append(Turn("user", question))
-        steps, acted = 0, False
+        steps, acted, forced = 0, False, False
         while True:
             reply = chat(messages, tools)
             messages.append(reply.message)
@@ -460,9 +463,10 @@ def run_task(
                 turns.append(Turn("tool", out))
             steps += 1
             if steps > max_steps_per_turn:
-                passed = False  # force-quit: BFCL fails the entry and stops
+                forced = True
                 break
-        if not passed:
+        if forced and turn < len(task.turns) - 1:
+            passed = False  # BFCL force-quit: the rest of the task is not run
             break
         expected = [truth.call(n, a, k) for n, a, k in wanted]
         if wanted and not (

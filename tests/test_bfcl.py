@@ -250,6 +250,53 @@ def test_step_cap_stops_the_task(tasks: dict[str, BfclTask]) -> None:
     assert model.replies == []
 
 
+def test_step_cap_on_the_last_turn_is_scored_normally(
+    tasks: dict[str, BfclTask],
+) -> None:
+    # toy_2 has one turn: the cap is hit there, the right call was made, BFCL passes it
+    model = Script(*[reply(("add", {"a": 1, "b": 1})) for _ in range(2)])
+    rec = run_task(tasks["toy_2"], model, max_steps_per_turn=1)
+    assert rec.passed
+    assert rec.tool_calls == 2
+    assert rec.turns[-1].role == "tool"
+    # and a wrong state on that turn still fails
+    model = Script(*[reply(("add", {"a": 2, "b": 2})) for _ in range(2)])
+    assert not run_task(tasks["toy_2"], model, max_steps_per_turn=1).passed
+
+
+def test_deeply_nested_arguments_are_a_tool_error(tasks: dict[str, BfclTask]) -> None:
+    deep = "[" * 400_000
+    model = Script(reply(("post_tweet", deep)), done(), done(), done())
+    rec = run_task(tasks["toy_0"], model)
+    assert rec.turns[2].text.startswith(
+        "Error during execution: arguments are not valid"
+    )
+    assert not rec.passed
+
+
+def test_long_context_restored_when_exec_fails_after_the_import(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = root / SRC / "posting_api.py"
+    _edit(src, src.read_text() + "\nraise RuntimeError('boom')\n")
+    ts = load_bfcl(root, verify=False)
+    name = bfcl._LONG_CONTEXT_NAME
+    before = set(sys.modules)
+    sys.modules.pop(name, None)
+    with pytest.raises(RuntimeError, match="boom"):
+        bfcl._Env(ts[0])
+    assert name not in sys.modules
+    sentinel = type(sys)("sentinel")
+    monkeypatch.setitem(sys.modules, name, sentinel)
+    with pytest.raises(RuntimeError, match="boom"):
+        bfcl._Env(ts[0])
+    assert sys.modules[name] is sentinel
+    left = {
+        m for m in set(sys.modules) - before if m.startswith("astro_weights_bfcl_env")
+    }
+    assert all("posting_api" not in m for m in left)
+
+
 def test_long_context_import_is_ours_and_restored(
     tasks: dict[str, BfclTask], monkeypatch: pytest.MonkeyPatch
 ) -> None:
