@@ -25,6 +25,7 @@ from astro_weights.eval.header import (
     read_header,
     write_header,
 )
+from astro_weights.eval.ifeval import IFEVAL_IDS, check_ifeval, grade_ifeval
 from astro_weights.eval.paired import (
     PairedResult,
     StratumResult,
@@ -35,6 +36,14 @@ from astro_weights.eval.paired import (
     pair,
 )
 from astro_weights.eval.records import Record, prompt_hash, read_jsonl, write_jsonl
+from astro_weights.eval.suites import (
+    PINS,
+    SUITES,
+    Pin,
+    SuiteData,
+    load_suite,
+    suite_grader,
+)
 from astro_weights.eval.tasks import (
     TaskComparison,
     TaskDiff,
@@ -50,13 +59,18 @@ from astro_weights.eval.verdict import Verdict
 
 __all__ = [
     "CONFIG_KEYS",
+    "IFEVAL_IDS",
+    "PINS",
     "PROVENANCE_KEYS",
+    "SUITES",
     "ArmsResult",
     "ControlVerdict",
     "FloorResult",
     "PairedResult",
+    "Pin",
     "Record",
     "StratumResult",
+    "SuiteData",
     "TaskComparison",
     "TaskDiff",
     "TaskRecord",
@@ -66,6 +80,7 @@ __all__ = [
     "answer_part",
     "arms_dict",
     "check_headers",
+    "check_ifeval",
     "compare",
     "compare_arms",
     "compare_tasks",
@@ -78,11 +93,13 @@ __all__ = [
     "format_tasks",
     "grade_choice",
     "grade_exact",
+    "grade_ifeval",
     "grade_math",
     "header_path",
     "is_loop",
     "last_boxed",
     "load_floor",
+    "load_suite",
     "min_controls",
     "pair",
     "prompt_hash",
@@ -90,6 +107,7 @@ __all__ = [
     "read_jsonl",
     "read_tasks",
     "save_floor",
+    "suite_grader",
     "tokens_beyond_floor",
     "write_header",
     "write_jsonl",
