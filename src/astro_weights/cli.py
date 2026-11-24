@@ -14,7 +14,8 @@ import numpy as np
 from safetensors import SafetensorError
 
 from astro_weights import __version__
-from astro_weights.edits import Edit, LowRankDelta, build_edit, compose, load_recipe
+from astro_weights.edits import Edit, build_edit, compose, load_recipe
+from astro_weights.edits.norms import delta_norm
 from astro_weights.eval import (
     PairedResult,
     Record,
@@ -75,11 +76,6 @@ def _emit(obj: dict[str, object]) -> None:
     print(json.dumps(_clean(obj), allow_nan=False))
 
 
-def _norm_ba(d: LowRankDelta) -> float:
-    """|BA|_F without the dense matrix: sqrt(trace((B^T B)(A A^T)))."""
-    return float(np.sqrt(max(np.sum((d.B.T @ d.B) * (d.A @ d.A.T)), 0.0)))
-
-
 def _inspect(directory: Path, as_json: bool) -> int:
     if not directory.is_dir():
         print(f"error: not a directory: {directory}", file=sys.stderr)
@@ -105,7 +101,7 @@ def _inspect(directory: Path, as_json: bool) -> int:
                         "rank": d.rank,
                         "norm_B": float(np.linalg.norm(d.B)),
                         "norm_A": float(np.linalg.norm(d.A)),
-                        "norm_BA": _norm_ba(d),
+                        "norm_BA": delta_norm(d),
                     }
                     for d in deltas
                 ],
@@ -131,7 +127,7 @@ def _inspect(directory: Path, as_json: bool) -> int:
         nb, na = np.linalg.norm(d.B), np.linalg.norm(d.A)
         print(
             f"{d.module:<{w}}  {f'{d.shape[0]}x{d.shape[1]}':<11}  "
-            f"{nb:>8.3g}  {na:>8.3g}  {_norm_ba(d):>8.3g}"
+            f"{nb:>8.3g}  {na:>8.3g}  {delta_norm(d):>8.3g}"
         )
     print("manifest: ok" if (directory / MANIFEST).exists() else "manifest: none")
     return 0
