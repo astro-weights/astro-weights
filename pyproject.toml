@@ -96,7 +96,7 @@ addopts = ["-ra", "--strict-markers"]
 filterwarnings = ["error::EncodingWarning:astro_weights"]
 markers = [
     "gpu: needs a CUDA GPU; skipped in CI, run by hand before release",
-    "realdata: needs the real 9B files under $ASTRO_REALDATA; skipped without it",
+    "realdata: needs real files under $ASTRO_REALDATA (0.1 exit test) or $ASTRO_EXIT_DATA (0.3 exit test); skipped without them",
 ]
 
 [tool.importlinter]
