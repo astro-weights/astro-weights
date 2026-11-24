@@ -1,0 +1,1 @@
+`gate` turns pre-screens, random controls, the K=4 test split and regression suites into one constraint-style outcome (confirmed, not significant, regressed or screened out) with every check, the MDE, the recorded non-inferiority margin (capped at 2 pp) and keep-original advice; `format_gate` prints it.
