@@ -31,7 +31,12 @@ from types import ModuleType
 from typing import Any
 
 from astro_weights.eval import TaskRecord, ToolCall, Turn, prompt_hash, write_tasks
-from astro_weights.runners.endpoint import ChatReply, chat_http
+from astro_weights.runners.endpoint import (
+    ChatReply,
+    ContextOverflowError,
+    ToolCallParseError,
+    chat_http,
+)
 
 BFCL_COMMIT = "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8"
 
@@ -420,7 +425,9 @@ def run_task(
     it answers without a call. More than `max_steps_per_turn` steps with calls in one
     turn force-quits (BFCL's `MAXIMUM_STEP_LIMIT` is 20, `count > limit` in
     `base_handler.py`): before the last turn the task fails and the rest is not run; on
-    the last turn the responses so far are scored as usual, as BFCL does. Calls are dispatched only to the public methods the task's
+    the last turn the responses so far are scored as usual, as BFCL does. A reply the
+    server refuses because the conversation no longer fits its context
+    (`ContextOverflowError`) ends the task as failed. Calls are dispatched only to the public methods the task's
     function docs name; an unknown name, bad arguments or an exception becomes the
     tool result `Error during execution: ...` and is still a counted call. The model's
     text is never evaluated.
@@ -444,9 +451,13 @@ def run_task(
     ):
         messages.append({"role": "user", "content": question})
         turns.append(Turn("user", question))
-        steps, acted, forced = 0, False, False
+        steps, acted, forced, overflow = 0, False, False, False
         while True:
-            reply = chat(messages, tools)
+            try:
+                reply = chat(messages, tools)
+            except ContextOverflowError:
+                overflow = True  # the conversation no longer fits: it ends here, failed
+                break
             messages.append(reply.message)
             turns.append(
                 Turn("assistant", reply.text, reply.tool_calls, reply.output_tokens)
@@ -465,6 +476,9 @@ def run_task(
             if steps > max_steps_per_turn:
                 forced = True
                 break
+        if overflow:
+            passed = False
+            break
         if forced and turn < len(task.turns) - 1:
             passed = False  # BFCL force-quit: the rest of the task is not run
             break
@@ -560,4 +574,11 @@ def _chat_once(
     tools: list[dict[str, Any]],
     **kwargs: Any,
 ) -> ChatReply:
-    return chat_http(base_url, model, messages, tools=tools, **kwargs)
+    try:
+        return chat_http(base_url, model, messages, tools=tools, **kwargs)
+    except ToolCallParseError:
+        # the model's call was cut off or not JSON: a turn with no call (BFCL scores it
+        # so), charged the whole budget; raising would lose every record of the run
+        n = int(kwargs["max_new_tokens"])
+        message = {"role": "assistant", "content": None}
+        return ChatReply("", (), n, "error", {"completion_tokens": n}, message)

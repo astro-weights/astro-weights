@@ -559,3 +559,28 @@ def test_default_chat_uses_ok_reply_shape() -> None:
             url, "m", [{"role": "user", "content": "x"}], [], max_new_tokens=4
         )
     assert r.text == "hi"
+
+
+def test_unparsable_tool_call_is_a_turn_without_a_call(
+    tasks: dict[str, BfclTask],
+) -> None:
+    body = json.dumps({"error": {"code": 500, "message": "Failed to parse tool call"}})
+    with serve(lambda b: (500, body)) as (url, _):
+        records = run_bfcl(list(tasks.values())[:1], url, "m", "a", max_new_tokens=7)
+    (r,) = records
+    assert not r.passed
+    replies = sum(t.role == "assistant" for t in r.turns)
+    assert replies >= 1
+    assert (r.tool_calls, r.output_tokens) == (0, 7 * replies)
+
+
+def test_context_overflow_ends_the_task_as_failed_and_the_run_goes_on(
+    tasks: dict[str, BfclTask],
+) -> None:
+    body = json.dumps({"error": {"type": "exceed_context_size_error", "message": "x"}})
+    ts = list(tasks.values())[:2]
+    with serve(lambda b: (400, body)) as (url, s):
+        records = run_bfcl(ts, url, "m", "a", max_new_tokens=7)
+    assert [r.task_id for r in records] == [t.task_id for t in ts]
+    assert not any(r.passed for r in records)
+    assert len(s.requests) == 2  # one request per task, no retry, no later turn
