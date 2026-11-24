@@ -235,13 +235,14 @@ for arm in ("base", "edit"):
         BASE_URL,
         arm,
         arm,
-        trials=1,
+        trials=4,  # K=4 per task (PDR 0.3 section 4.7); the pilot may use 1
         max_new_tokens=1024,
         out=f"exit/bfcl/{arm}.jsonl",
     )
 ```
 
-Pilot first with `tasks[:10]`, then the full 200. Serve base and edit with the same
+Pilot first with `tasks[:10]` and `trials=1` to measure time per task, then the full
+200 with `trials=4` (200 tasks x 4 trials x 2 arms = 1600 conversations). Serve base and edit with the same
 settings; the files must have the same tasks and trials (`compare_tasks` refuses
 otherwise).
 
