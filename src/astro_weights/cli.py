@@ -650,7 +650,7 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
             t = cfg.test
             if _record_seal(seal, t.base, t.edit, stage.arms.results["edit"]):
                 raise _Refused  # printed by _record_seal
-        os.replace(tmp, written)
+        tmp.replace(written)
     finally:
         tmp.unlink(missing_ok=True)
     _gate_output(
