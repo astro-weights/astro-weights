@@ -1,0 +1,1 @@
+`runners.endpoint.chat_http` makes one tool-calling chat request, and `runners.bfcl` (`load_bfcl`, `run_task`, `run_bfcl`) runs BFCL `multi_turn_base` tasks from a pinned local checkout against an OpenAI-compatible server and scores them with BFCL's state and response checks into `TaskRecord`s.
