@@ -205,6 +205,8 @@ def _export(
         "adapter": str(out["adapter"]),
         "gguf": None if out["gguf"] is None else str(out["gguf"]),
         "residuals": dict(out["residuals"]),
+        "delta_source": dict(out["delta_source"]),
+        "replay_max_abs": dict(out["replay_max_abs"]),
         "rank": out["rank"],
     }
     record.event("export", **summary)
