@@ -70,12 +70,14 @@ def _generate(
     max_new_tokens: int,
     seed: int,
     resume: bool,
+    system: str | None,
 ) -> list[Record]:
     if isinstance(backend, HttpBackend):
         return generate_records_http(
             backend.base_url, backend.model, items, arm, _placeholder, max_new_tokens,
             seed=seed, api_key=backend.api_key, extra_body=backend.extra_body,
             out=path, concurrency=backend.concurrency, resume=resume, header=header,
+            system=system,
         )  # fmt: skip
     from astro_weights.runners.generate import generate_records
 
@@ -86,22 +88,27 @@ def _generate(
     return generate_records(
         backend.model, backend.tokenizer, items, arm, _placeholder, max_new_tokens,
         seed, backend.chat, out=path, resume=resume, batch_size=backend.batch_size,
+        system=system,
     )  # fmt: skip
 
 
 def _header(
-    backend: HFBackend | HttpBackend, max_new_tokens: int, seed: int
+    backend: HFBackend | HttpBackend,
+    max_new_tokens: int,
+    seed: int,
+    system: str | None,
 ) -> dict[str, Any]:
     if isinstance(backend, HttpBackend):
         return run_header_http(
             backend.base_url, backend.model, max_new_tokens, seed, backend.extra_body,
             api_key=backend.api_key, concurrency=backend.concurrency,
+            system=system,
         )  # fmt: skip
     from astro_weights.runners.generate import run_header
 
     return run_header(
         backend.model, backend.tokenizer, max_new_tokens, seed, backend.chat,
-        batch_size=backend.batch_size,
+        batch_size=backend.batch_size, system=system,
     )  # fmt: skip
 
 
@@ -117,6 +124,7 @@ def run_suites(
     cache_dir: str | os.PathLike[str] | None = None,
     suite_paths: Mapping[str, str | os.PathLike[str]] | None = None,
     resume: bool = True,
+    system: str | None = None,
 ) -> dict[str, Path]:
     """Run each suite in `names` for one arm; returns `{suite: records path}`.
 
@@ -141,6 +149,12 @@ def run_suites(
     (the default) a partly written file continues without duplicates; its header
     must have the same `config_hash`, else `ValueError`. With `resume=False` a
     non-empty file raises `FileExistsError`.
+
+    `system` makes the arm a prompt arm: the text is sent as a system message and
+    recorded in the header (`system`, `system_sha256`), so the records still pair
+    with a base arm run without it (the prompt hash covers the item alone) and a
+    resume under another `system` raises. Run the `prompt` arm with the base backend
+    and the `edit+prompt` arm with the edited one, both with the same `system`.
     """
     if not names or len(set(names)) != len(names):
         raise ValueError("names must be a non-empty list without repeats")
@@ -159,7 +173,7 @@ def run_suites(
         path = Path(out_dir) / name / f"{arm}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         header = {
-            **_header(backend, max_new_tokens, seed),
+            **_header(backend, max_new_tokens, seed, system),
             "suite": name,
             "suite_source": data.source,
             "suite_sha256": data.sha256,
@@ -168,7 +182,7 @@ def run_suites(
             "grader": f"suite_grader:{name}",
         }
         records = _generate(
-            backend, items, arm, path, header, max_new_tokens, seed, resume
+            backend, items, arm, path, header, max_new_tokens, seed, resume, system
         )
         grade = suite_grader(name)
         graded = [

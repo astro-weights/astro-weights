@@ -548,3 +548,72 @@ def test_a_report_arm_cannot_reshow_a_sealed_edit(
     assert out == ""
     assert err
     assert ledger(cfg) == before
+
+
+def _edit_header(cfg: Path, name: str, **change: Any) -> None:
+    path = cfg.parent / "test" / f"{name}.header.json"
+    h = json.loads(path.read_text())
+    path.write_text(json.dumps({**h, **change}))
+
+
+def test_prompt_arms_made_with_a_system_prompt_pass(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build(arms=True)
+    h = json.loads((cfg.parent / "test" / "prompt.header.json").read_text())
+    assert h["system"] == fixture.SYSTEM
+    assert "system" not in json.loads(
+        (cfg.parent / "test" / "scripted.header.json").read_text()
+    )
+    code, out, _ = gate(cfg, capsys=capsys)
+    assert code == 0
+    assert "prompt" in out
+    assert "edit+prompt" in out
+
+
+@pytest.mark.parametrize("arm", ["prompt", "edit_prompt"])
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"system": None, "system_sha256": None}, "needs a system prompt"),
+        ({"system": "", "system_sha256": ""}, "needs a system prompt"),
+        ({"system": "other"}, "system_sha256 does not match"),
+    ],
+)
+def test_prompt_arm_needs_a_system_prompt(
+    build: Build,
+    capsys: pytest.CaptureFixture[str],
+    arm: str,
+    change: dict[str, Any],
+    message: str,
+) -> None:
+    cfg = build(arms=True)
+    path = cfg.parent / "test" / f"{arm}.header.json"
+    h = {**json.loads(path.read_text()), **change}  # None drops the key below
+    path.write_text(json.dumps({k: v for k, v in h.items() if v is not None}))
+    code, _, err = gate(cfg, capsys=capsys)
+    assert code == 2
+    assert message in err
+    assert not (cfg.parent / "seal").exists()
+
+
+def test_a_prompt_arm_differing_elsewhere_is_refused(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build(arms=True)
+    _edit_header(cfg, "prompt", dtype="bfloat16")
+    code, _, err = gate(cfg, capsys=capsys)
+    assert code == 2
+    assert "dtype" in err
+
+
+@pytest.mark.parametrize("arm", ["base", "edit", "scripted"])
+def test_only_prompt_arms_may_have_a_system_prompt(
+    build: Build, capsys: pytest.CaptureFixture[str], arm: str
+) -> None:
+    cfg = build(arms=True)
+    _edit_header(cfg, arm, system="x", system_sha256="y")
+    code, _, err = gate(cfg, capsys=capsys)
+    assert code == 2
+    assert "system" in err
+    assert not (cfg.parent / "seal").exists()

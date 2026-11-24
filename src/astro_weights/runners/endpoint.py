@@ -25,6 +25,7 @@ from astro_weights.eval.header import (
     header_path,
     read_header,
     run_identity,
+    system_header,
     write_header,
 )
 
@@ -381,6 +382,7 @@ def generate_records_http(
     concurrency: int = 1,
     resume: bool = False,
     header: Mapping[str, Any] | None = None,
+    system: str | None = None,
 ) -> list[Record]:
     """Generate and score each item over `{base_url}/v1/chat/completions`.
 
@@ -411,8 +413,14 @@ def generate_records_http(
     written for it, so a resume asks again. The header file's `infra_errors`
     (provenance) counts the retries and the items that ran out of attempts, added
     up across resumes.
+
+    `system` is sent as the first message, role "system" (an empty string is
+    refused). `prompt_hash` still hashes the user message alone, so an arm run with
+    a system prompt pairs with one run without. It is checked against the header's
+    `system` like the other call settings, so a resume under another `system` raises.
     """
     _validate(items)
+    system_header(system)
     root = _root(base_url)
     _check_key(api_key)
     if (
@@ -428,6 +436,7 @@ def generate_records_http(
         "seed": seed,
         "extra_body": json.loads(json.dumps(dict(extra_body or {}))),
         "concurrency": concurrency,
+        "system": system,
     }
     if header is not None:
         _check_call(header, call, "header")
@@ -454,7 +463,10 @@ def generate_records_http(
 
     def fetch(item: Mapping[str, Any]) -> tuple[str, int, bool]:
         item_id = str(item["item_id"])
-        body = _body(model, messages[item_id], max_new_tokens, seed, extra_body)
+        sent = messages[item_id]
+        if system is not None:
+            sent = [{"role": "system", "content": system}, *sent]
+        body = _body(model, sent, max_new_tokens, seed, extra_body)
         try:
             obj = _chat(url, body, api_key, timeout, counts)
             seen = _scrub(json.dumps(obj), api_key)[:_BODY_CHARS]
@@ -610,6 +622,7 @@ def run_header_http(
     concurrency: int = 1,
     serving_flags: Mapping[str, str] | None = None,
     model_id: str | None = None,
+    system: str | None = None,
 ) -> dict[str, Any]:
     """Settings that decide the outputs, plus what the server reports, for the run log.
 
@@ -626,11 +639,13 @@ def run_header_http(
     (random when not given), the library version and commit, and the numpy version.
     The server's answers are best effort: left out when the server does not give them.
     `/props` and `/version` are asked once, with a timeout of at most 5 seconds.
-    The api key is never recorded.
+    The api key is never recorded. `system` (as given to `generate_records_http`) is
+    recorded under `system` and `system_sha256` (CONFIG) only when given.
     """
     root = _root(base_url)
     _check_key(api_key)
     header: dict[str, Any] = {
+        **system_header(system),
         "base_url": root,
         "served_model": model,
         "max_new_tokens": max_new_tokens,

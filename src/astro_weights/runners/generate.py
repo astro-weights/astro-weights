@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from astro_weights.eval import Record, prompt_hash, read_jsonl
-from astro_weights.eval.header import run_identity
+from astro_weights.eval.header import run_identity, system_header
 
 try:
     import peft
@@ -81,15 +81,26 @@ def _gen_kwargs(sampling: Mapping[str, float] | None, lead: Any) -> dict[str, An
     return kwargs
 
 
-def _prompt_text(tokenizer: Any, prompt: str, chat: bool) -> tuple[str, bool]:
-    """Prompt text and whether a chat template (which carries its own specials) ran."""
+def _prompt_text(
+    tokenizer: Any, prompt: str, chat: bool, system: str | None = None
+) -> tuple[str, bool]:
+    """Prompt text and whether a chat template (which carries its own specials) ran.
+
+    `system` becomes a system message; without a chat template there is no
+    format for it, so that is a ValueError.
+    """
     if chat and getattr(tokenizer, "chat_template", None):
+        messages = [{"role": "user", "content": prompt}]
+        if system is not None:
+            messages.insert(0, {"role": "system", "content": system})
         text = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            messages,
             tokenize=False,
             add_generation_prompt=True,
         )
         return str(text), True
+    if system is not None:
+        raise ValueError("system needs chat=True and a tokenizer with a chat template")
     return prompt, False
 
 
@@ -184,6 +195,7 @@ def generate_records(
     resume: bool = False,
     batch_size: int = 1,
     sampling: Mapping[str, float] | None = None,
+    system: str | None = None,
 ) -> list[Record]:
     """Generate and score each item; items carry `item_id`, `prompt`, `gold`.
 
@@ -222,8 +234,16 @@ def generate_records(
     `batch_size`, also across a resume: each batch is reseeded from `seed` and
     its position in `items`. Both arms of a paired comparison need the same
     `sampling`.
+
+    `system` is sent as a system message through the chat template (it needs
+    `chat=True` and a template, else `ValueError`; an empty string is refused).
+    `prompt_hash` still hashes the prompt rendered without it, so an arm run with a
+    system prompt pairs with one run without. A resume of a file made under another
+    `system` is not caught here (the records do not carry it); `run_header`
+    records it and `run_suites` compares headers.
     """
     _check_sampling(sampling)
+    system_header(system)
     _check_items(items)
     if (
         isinstance(batch_size, bool)
@@ -238,10 +258,13 @@ def generate_records(
             "batch_size > 1 needs a pad token and the tokenizer has none. "
             "Set one, e.g. tokenizer.pad_token = tokenizer.eos_token"
         )
-    prompts = [_prompt_text(tokenizer, item["prompt"], chat) for item in items]
+    prompts = [_prompt_text(tokenizer, item["prompt"], chat, system) for item in items]
+    bare = prompts if system is None else [
+        _prompt_text(tokenizer, item["prompt"], chat) for item in items
+    ]  # fmt: skip
     hashes = {
         str(item["item_id"]): prompt_hash(text)
-        for item, (text, _) in zip(items, prompts, strict=True)
+        for item, (text, _) in zip(items, bare, strict=True)
     }
     path = None if out is None else Path(out)
     done = _load_done(path, resume, hashes, arm, seed)
@@ -255,7 +278,7 @@ def generate_records(
         with path.open("a", encoding="utf-8") if path else nullcontext() as sink:
             for rec in _generate(
                 model, tokenizer, entries, set(done), arm, scorer,
-                max_new_tokens, seed, batch_size, sampling,
+                max_new_tokens, seed, batch_size, sampling, hashes,
             ):  # fmt: skip
                 done[rec.item_id] = rec
                 if sink is not None:
@@ -277,6 +300,7 @@ def _generate(
     seed: int,
     batch_size: int,
     sampling: Mapping[str, float] | None,
+    hashes: Mapping[str, str],
 ) -> Iterator[Record]:
     torch.manual_seed(seed)
     eos = model.generation_config.eos_token_id
@@ -314,13 +338,13 @@ def _generate(
                 item_id=str(item["item_id"]),
                 seed=seed,
                 arm=arm,
-                prompt_hash=prompt_hash(text),
+                prompt_hash=hashes[str(item["item_id"])],
                 output=output,
                 score=float(scorer(item["gold"], output)),
                 n_output_tokens=n,
                 hit_cap=hit_cap,
             )
-            for (item, text, _), (output, n, hit_cap) in zip(chunk, rows, strict=True)
+            for (item, _, _), (output, n, hit_cap) in zip(chunk, rows, strict=True)
         ]
         yield from records
 
@@ -401,6 +425,7 @@ def run_header(
     run_id: str | None = None,
     k: int = 1,
     concurrency: int = 1,
+    system: str | None = None,
 ) -> dict[str, Any]:
     """Settings that decide the outputs, plus where the run happened, for the run log.
 
@@ -418,6 +443,10 @@ def run_header(
     arms sampled differently. Greedy is the default and a stress condition; for
     the headline number use the model card's recommended sampling settings, on
     both arms.
+
+    Pass the same `system` as to `generate_records`. It is recorded under "system"
+    and "system_sha256" (CONFIG keys) only when given, so an arm run with a system
+    prompt differs from one without in exactly those keys.
     """
     _check_sampling(sampling)
     template = getattr(tokenizer, "chat_template", None)
@@ -451,4 +480,4 @@ def run_header(
         header["gpu_count"] = torch.cuda.device_count()
     if sampling is not None:
         header["sampling"] = dict(sorted(sampling.items()))
-    return header
+    return {**header, **system_header(system)}
