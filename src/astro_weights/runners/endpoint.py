@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from astro_weights.eval import Record, prompt_hash, read_jsonl
+from astro_weights.eval import Record, ToolCall, prompt_hash, read_jsonl
 from astro_weights.eval.header import (
     config_hash,
     header_path,
@@ -204,10 +204,11 @@ def _tokens(obj: dict[str, Any], status_text: str) -> int:
 
 def _body(
     model: str,
-    messages: list[dict[str, str]],
+    messages: Sequence[Mapping[str, Any]],
     max_new_tokens: int,
     seed: int,
     extra_body: Mapping[str, Any] | None,
+    tools: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
@@ -216,6 +217,8 @@ def _body(
         "max_tokens": max_new_tokens,
         "seed": seed,
     }
+    if tools:
+        body["tools"] = tools
     body.update(extra_body or {})
     return body
 
@@ -497,6 +500,100 @@ def generate_records_http(
             sink.close()
         save_header()
     return [done[str(item["item_id"])] for item in items]
+
+
+@dataclass(frozen=True)
+class ChatReply:
+    """One chat completion: the reply text, its tool calls and what it cost.
+
+    `message` is the assistant message to append to the history before the tool
+    results (every call has an `id`; one is made up when the server sends none).
+    `finish_reason` is the server's, None when it gave none. `usage` is the
+    server's `usage` object as sent.
+    """
+
+    text: str
+    tool_calls: tuple[ToolCall, ...]
+    output_tokens: int
+    finish_reason: str | None
+    usage: dict[str, Any]
+    message: dict[str, Any]
+
+
+def _reply_calls(obj: dict[str, Any], seen: str) -> list[tuple[str, ToolCall]]:
+    """(id, call) for each of `message.tool_calls`; ValueError when one is malformed."""
+    raw = obj["choices"][0].get("message", {}).get("tool_calls")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"message.tool_calls is not a list: {seen}")  # noqa: TRY004
+    made: list[tuple[str, ToolCall]] = []
+    for i, c in enumerate(raw):
+        fn = c.get("function") if isinstance(c, dict) else None
+        name = fn.get("name") if isinstance(fn, dict) else None
+        args = fn.get("arguments") if isinstance(fn, dict) else None
+        if isinstance(args, dict):  # some servers send the object, not its JSON text
+            args = json.dumps(args)
+        if args is None:
+            args = "{}"
+        if not isinstance(name, str) or not isinstance(args, str):
+            raise ValueError(f"malformed tool call {i}: {seen}")  # noqa: TRY004
+        cid = c.get("id")
+        made.append(
+            (cid if isinstance(cid, str) and cid else f"call_{i}", ToolCall(name, args))
+        )
+    return made
+
+
+def chat_http(
+    base_url: str,
+    model: str,
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    tools: Sequence[Mapping[str, Any]] | None = None,
+    max_new_tokens: int,
+    seed: int = 0,
+    api_key: str | None = None,
+    extra_body: Mapping[str, Any] | None = None,
+    timeout: float = 120.0,
+) -> ChatReply:
+    """One chat turn over `{base_url}/v1/chat/completions`, with optional tools.
+
+    Temperature 0 and `seed`; `extra_body` is merged last, as in
+    `generate_records_http`. `messages` are OpenAI chat messages (tool results are
+    `{"role": "tool", "tool_call_id": ..., "content": ...}`); `tools` are OpenAI
+    function tools. Connection errors, timeouts, 429 and 5xx are retried twice with
+    backoff; what is still wrong raises `RuntimeError` with the api key scrubbed.
+    A reply without `usage.completion_tokens` or with malformed tool calls raises
+    `ValueError`.
+    """
+    root = _root(base_url)
+    _check_key(api_key)
+    body = _body(model, messages, max_new_tokens, seed, extra_body, tools)
+    obj = _chat(f"{root}/v1/chat/completions", body, api_key, timeout)
+    seen = _scrub(json.dumps(obj), api_key)[:_BODY_CHARS]
+    text = _content(obj, seen)
+    n = _tokens(obj, seen)
+    made = _reply_calls(obj, seen)
+    message: dict[str, Any] = {"role": "assistant", "content": text or None}
+    if made:
+        message["tool_calls"] = [
+            {
+                "id": cid,
+                "type": "function",
+                "function": {"name": c.name, "arguments": c.arguments},
+            }
+            for cid, c in made
+        ]
+    finish = obj["choices"][0].get("finish_reason")
+    return ChatReply(
+        text,
+        tuple(c for _, c in made),
+        n,
+        finish if isinstance(finish, str) else None,
+        dict(obj["usage"]),
+        message,
+    )
 
 
 def run_header_http(

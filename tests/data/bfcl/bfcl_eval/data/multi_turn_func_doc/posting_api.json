@@ -1,0 +1,3 @@
+{"name": "post_tweet", "description": "Post a tweet.", "parameters": {"type": "dict", "properties": {"content": {"type": "string", "description": "The text."}}, "required": ["content"]}, "response": {"type": "dict", "properties": {}}}
+{"name": "list_tweets", "description": "List the tweets.", "parameters": {"type": "dict", "properties": {}, "required": []}, "response": {"type": "dict", "properties": {}}}
+{"name": "delete_tweet", "description": "Delete a tweet.", "parameters": {"type": "dict", "properties": {"index": {"type": "integer", "description": "Which one."}}, "required": ["index"]}, "response": {"type": "dict", "properties": {}}}
