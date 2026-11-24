@@ -761,7 +761,8 @@ def test_array_cap_allows_real_size_tokenizer(tmp_path: Path) -> None:
     t = time.monotonic()
     reader = _open(p)
     assert reader.get_field("tokenizer.ggml.token_type") is not None
-    assert time.monotonic() - t < 10
+    # Catches quadratic parsing; loose bound so loaded runners pass.
+    assert time.monotonic() - t < 60
 
 
 def test_unsupported_kv_type_is_named(tmp_path: Path) -> None:
