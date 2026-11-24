@@ -1,1 +1,0 @@
-Runners take a `system` prompt (`generate_records`, `generate_records_http`, `run_suites`; recorded in the run header as `system` and `system_sha256`) so the gate's `prompt` and `edit+prompt` arms pair with base on the item prompt, and `astro-weights gate` accepts those arms only when their header carries a system prompt that base, edit and scripted lack.

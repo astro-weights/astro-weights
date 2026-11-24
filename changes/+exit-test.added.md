@@ -1,1 +1,0 @@
-Added the 0.3 exit test (`tests/test_exit_0_3.py`, `ASTRO_EXIT_DATA`, layout and commands in `tests/exit_0_3/README.md`): criteria 2 to 8 of PDR 0.3 on recorded files, plus a synthetic variant for CI.

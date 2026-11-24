@@ -1,1 +1,0 @@
-`compare` and `astro-weights eval` add the 0.3 paired statistics: `k` samples per item with an exact sign test on per-item means, a paired bootstrap CI for the score difference, Wilson and Newcombe intervals for binary scores, per-stratum rows (`strata=`), and the minimum detectable difference on every result line.

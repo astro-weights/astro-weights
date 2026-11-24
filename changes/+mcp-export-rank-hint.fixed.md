@@ -1,1 +1,0 @@
-The `exec_python` and `finish` tool descriptions now say that `finish` exports each edit at rank `export.rank` (default 8) and fails above `export.max_rel_residual` (default 0.05), so MCP clients such as Codex keep edits low rank.
