@@ -47,6 +47,7 @@ class Knobs:
     floor: bool = True
     manifest_k: int = 4
     arms: bool = False  # also write scripted, prompt and edit+prompt arms
+    n_controls: int = N_CONTROLS  # control files written to confirm/controls
 
 
 def _header(k: int, run_id: str) -> dict[str, object]:
@@ -122,7 +123,7 @@ def build(dst: Path, **knobs: object) -> Path:
         1,
     )
     (conf / "controls").mkdir(exist_ok=True)
-    for j in range(N_CONTROLS):  # accuracy moves both ways around the edit's 0
+    for j in range(k.n_controls):  # accuracy moves both ways around the edit's 0
         flips = {"drop": j % 3 if j < 10 else 0, "gain": j % 3 if j >= 10 else 0}
         rows = _arm(confirm_rows, f"control-{j:02d}", cut=j % 9, **flips)
         _write_arm(conf / "controls" / f"control-{j:02d}.jsonl", rows, 1)
