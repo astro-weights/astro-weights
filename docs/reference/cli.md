@@ -1,7 +1,7 @@
 # CLI
 
 ```text
-astro-weights [--version] {build,compose,eval,export,inspect,mcp,run} ...
+astro-weights [--version] {build,compose,eval,export,gate,inspect,mcp,run} ...
 ```
 
 | Command | Does |
@@ -11,6 +11,7 @@ astro-weights [--version] {build,compose,eval,export,inspect,mcp,run} ...
 | `build RECIPE.json --base MODEL_DIR --out DIR [--card LICENSE] [--force]` | build a PEFT adapter from a recipe file and the base model weights; print one line per module (`out x in`, rank), then `wrote DIR`; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) |
 | `compose ADAPTER ADAPTER [ADAPTER...] -o OUT_DIR [--base-model NAME] [--force]` | combine two or more PEFT adapters on the same base model into one adapter whose change is exactly their sum; print the module count and rank, then `wrote OUT_DIR` |
 | `export DIR [--gguf OUT.gguf --arch ARCH] [--card LICENSE] [--splice BASE.gguf --base-model DIR --merged OUT.gguf [--out-type TYPE]] [--force]` | verify the adapter in `DIR`, then write a GGUF LoRA adapter, a merged GGUF, a model card or any mix of them; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) and [How-to: use with Ollama](../how-to/use-with-ollama.md) |
+| `gate GATE.toml [--out FILE] [--unseal] [--json]` | run the 0.3 gate end to end from recorded files: pre-screens, random controls on confirm, the sealed K=4 test split, regression suites; print the outcome with every check and arm, and write `verdict.json`; see [gate](#gate) |
 | `mcp RUN_DIR [--unsafe-kernel]` | serve the agent tools over stdio MCP for the run in `RUN_DIR`; see [mcp](#mcp) and [How-to: Claude Code](../how-to/agent-claude-code.md). New in 0.2 |
 | `run CONFIG.toml [--resume \| --status] [--json]` | start a run from a TOML config: write `RUN_DIR/run.json`, then run the chosen editor, which starts the server; see [run](#run) and [Tutorial: first agent run](../tutorials/first-agent-run.md). New in 0.2 |
 
@@ -47,6 +48,45 @@ Every command except `mcp` takes `--json`, which prints one JSON object on stdou
 - When the adapter records base weight hashes, a weight in `--base-model` that does not match is an error.
 - An existing `OUT.gguf` or `DIR/README.md` is refused unless `--force` is given. An `OUT.gguf` that names one of the adapter's own files is refused even with `--force`.
 - An adapter with hash problems is an error, and nothing is written.
+
+## gate
+
+`astro-weights gate GATE.toml` judges one edit from files that earlier runs wrote. It runs no model. The stages and rules are those of `eval.gate` (constraint style, no blended score); the command adds the file reading, the checks that arms are comparable, the sealed test scoring and `verdict.json`.
+
+Order of work:
+
+1. The run record must say the exported edits are the last that passed confirm (`exported_is_best` on its last `confirm_export` event). Missing or false: exit 2, nothing sealed.
+2. `screens`: any failed pre-screen gives outcome `screened out`: exit 3, the test split is never read or scored, the seal ledger is not touched, and no `verdict.json` is written (the verdict schema has no screened-out value; the outcome is on stdout).
+3. Confirm: the edit and every control against the base on the confirm split, then the control rule (target beats the controls' `q` quantile, each side effect inside the controls' range). If it fails, the test split is **not** scored: the outcome is `not significant` (target) or `regressed` (side effect), the MDE is the confirm split's, and the seal is untouched.
+4. Test: only when stages 1 and 3 passed. Floor by `config_hash` of the test base arm's header, regression suites, and the whole gate are computed first; only then the seal is checked and written, through the same code as `eval --split test` (a second scoring of the same edit or records is refused unless `--unseal`, which the ledger records). The result is shown after the ledger line is written.
+
+Refused with exit 2, nothing sealed: bad or unknown `GATE.toml` key; a records file that is unreadable, outside its split or incomplete; arms whose run headers disagree on any config key (a missing header counts; confirm and test arms may differ in `k` only); `k` of the manifest not 4; no stored floor for the test base arm's `config_hash`; fewer than 20 controls at `q = 0.95`; a seal refusal.
+
+`GATE.toml` (paths are relative to the file's directory; every key is checked and an unknown key is an error):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `margin` | number | non-inferiority margin of the test benchmark, in score units, at most 0.02 |
+| `margin_source` | string | where the margin came from (a pilot); required |
+| `backend`, `build` | strings | serving engine and its version; go into `verdict.json` |
+| `screens` | path | JSON list of `{"name", "passed", "value", "limit"}`; must hold `norm`, `perplexity` and `kl` |
+| `run_record` | path | the agent run's `record.jsonl`; gives `candidates_tried`, `confirm_queries` and `exported_is_best` |
+| `manifest` | path | split manifest; confirm and test records must lie in its splits; its `k` must be 4 |
+| `boot`, `seed` | int | bootstrap resamples (default 10000) and seed (default 0) for every comparison |
+| `arm_keys` | list of strings | `extra_body` keys allowed to differ between arms, as `eval --arm-key` |
+| `[footprint]` | table | name to number, copied to `verdict.json` |
+| `[confirm]` | table | `base`, `edit` (confirm-split records), `controls` (a directory: every `*.jsonl` in it is one control arm, 20 or more), `target` (`tokens_diff`, better lower, or `diff`, better higher), `q` (default 0.95, at least 0.95), `side_effects` (names; `accuracy` is the `diff` of the confirm records, any other name needs a `[confirm.side.NAME]` table with `base`, `edit`, `controls`) |
+| `[test]` | table | `base`, `edit` (test-split records, K = 4), `seal_dir` (ledger directory), `adapter` (the edit's PEFT directory, keyed by content), `floor` (directory of stored noise floors, `floor-<config_hash>.json`) |
+| `[suites.NAME]` | tables | regression suite: `base`, `edit`, `margin`, `source` (the suite's own margin and where it came from) |
+| `[arms]` | table, optional | extra test-split arms for the report: `prompt`, `scripted`, `edit_prompt` (shown as `edit+prompt`) |
+
+Every records file `X.jsonl` needs its `X.header.json`.
+
+Output: the `format_gate` report (outcome, every check, MDE and its split, margin and sources, keep-original advice), `candidates tried` and `confirm queries`, then `format_arms` for the confirm split (the edit, with the controls summarised) and, when the test was scored, the test split (the edit plus any `[arms]`). Every row carries its MDE.
+
+`verdict.json` (default: beside `GATE.toml`; `--out FILE` moves it) is the `eval.verdict.Verdict` record: verdict, backend, build, `config_hash` (of the test base arm's header, or of the confirm base arm's when the test was not scored), manifest sha256, candidates tried, confirm queries, `infra_errors` (the `retries` plus `failed` counts the HTTP runner wrote into the test base and edit headers; for a failed confirm, the confirm arms') and footprint. It holds no timestamp, so the same files give the same bytes. `--json` prints one object: the `GateResult` fields (`outcome`, `checks`, `reasons`, `mde`, `mde_split`, `margin`, `margin_source`, `advice`, `suite_margins`), `candidates_tried`, `confirm_queries`, `verdict_file` (or `null`) and `arms` (`confirm` and `test`, each `null` or the `arms_dict` form).
+
+Exit codes: 0 confirmed, 1 regressed or not significant, 3 screened out, 2 bad input or refused.
 
 ## mcp
 
@@ -127,6 +167,7 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 | `inspect` | `base_model`, `rank`, `modules` (each `module`, `shape`, `rank`, `norm_B`, `norm_A`, `norm_BA`), `manifest` (bool), `problems` |
 | `eval` | see [eval](#eval) |
 | `compose` | `written` (the output directory), `rank`, `modules` (sorted names) and `sources` (the input directories, in order) |
+| `gate` | see [gate](#gate) |
 | `build`, `export` | `written`: the list of paths written. `export --splice` adds `replaced` (the GGUF tensor names changed) and `out_type` |
 
 ## Exit codes
@@ -134,5 +175,6 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 - All commands: 0 means ok, 1 means problems were found or a check failed, 2 means a usage error or unreadable input. No command at all is a usage error (exit 2).
 - `inspect` exits 1 on hash problems (`problem:` lines on stderr, also with `--json`).
 - `eval` exits 1 when the run headers differ, and 2 on an unreadable file or arms that do not pair.
+- `gate` exits 0 when confirmed, 1 when regressed or not significant, 3 when screened out, and 2 on bad input or a refusal (see [gate](#gate)).
 - `build`, `compose` and `export` exit 0 on success and 2 on any error.
 - Errors go to stderr as a line starting with `error:`; read and parse errors name the file.

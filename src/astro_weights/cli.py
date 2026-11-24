@@ -17,15 +17,36 @@ from astro_weights import __version__
 from astro_weights.edits import Edit, build_edit, compose, load_recipe
 from astro_weights.edits.norms import delta_norm
 from astro_weights.eval import (
+    ArmsResult,
+    ControlVerdict,
+    FloorResult,
+    GateInputs,
+    GateResult,
     PairedResult,
     Record,
+    Screen,
+    Verdict,
+    arms_dict,
     check_headers,
     compare,
+    compare_arms,
+    config_hash,
+    control_rule,
     exceeds_floor,
+    format_arms,
+    format_gate,
     format_report,
+    gate,
     header_path,
+    load_floor,
     read_header,
     read_jsonl,
+)
+from astro_weights.eval.gate import K_TEST, SCREENED_OUT
+from astro_weights.eval.gate_config import (
+    REPORT_ARMS,
+    GateConfig,
+    load_gate_config,
 )
 from astro_weights.eval.seal import (
     Scoring,
@@ -344,6 +365,280 @@ def _eval(
     else:
         print(format_report(result, floor_result))
     return 0
+
+
+class _Refused(Exception):
+    """A helper already printed why the gate run is refused."""
+
+
+# gate outcome -> exit code; refusals and bad input are 2
+_GATE_EXIT = {"confirmed": 0, "not significant": 1, "regressed": 1, SCREENED_OUT: 3}
+
+
+def _records(path: Path) -> list[Record]:
+    try:
+        return read_jsonl(path)
+    except (ValueError, OSError) as e:
+        raise ValueError(f"{path}: {e}") from None
+
+
+def _header(path: Path) -> dict[str, object]:
+    return read_header(header_path(path))
+
+
+def _same_settings(
+    base: Path, other: Path, arm_keys: tuple[str, ...], ignore: tuple[str, ...] = ()
+) -> None:
+    """ValueError unless both arms have a run header and agree on every config key."""
+    try:
+        check_headers(_header(base), _header(other), ignore=ignore, arm_keys=arm_keys)
+    except ValueError as e:
+        raise ValueError(f"{other} vs {base}: {e}") from None
+
+
+def _read_screens(path: Path) -> tuple[Screen, ...]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise ValueError(f"{path}: {e}") from None
+    keys = {"name", "passed", "value", "limit"}
+    if not isinstance(raw, list) or not all(
+        isinstance(r, dict) and set(r) == keys for r in raw
+    ):
+        raise ValueError(f"{path}: must be a JSON list of {sorted(keys)} objects")
+    return tuple(Screen(r["name"], r["passed"], r["value"], r["limit"]) for r in raw)
+
+
+def _search_counts(path: Path) -> tuple[int, int]:
+    """(candidates tried, confirm queries) from the agent run record.
+
+    ValueError unless the record's last `confirm_export` says the exported edits are
+    the last that passed confirm.
+    """
+    from astro_weights.mcp.record import RunRecord
+
+    record = RunRecord.open(path)
+    exports = [e for e in record.read() if e["event"] == "confirm_export"]
+    if not exports or exports[-1].get("exported_is_best") is not True:
+        raise ValueError(
+            f"{path}: exported_is_best is not true (no finished run with confirm, or "
+            "the exported edits are not the last that passed confirm)"
+        )
+    counts = record.confirm_counts()
+    return counts["candidates_tried"], counts["confirm_queries"]
+
+
+def _confirm_arms(
+    cfg: GateConfig, base: Path, edit: Path, controls: Path
+) -> ArmsResult:
+    """The edit and every control in `controls` against `base` on the confirm split."""
+    if not controls.is_dir():
+        raise ValueError(f"{controls}: not a directory of control arm files")
+    files = sorted(controls.glob("*.jsonl"))
+    if "edit" in {p.stem for p in files}:
+        raise ValueError(f"{controls}: a control file cannot be named edit.jsonl")
+    for p in (edit, *files):
+        _same_settings(base, p, cfg.arm_keys)
+    named = [(p, _records(p)) for p in (base, edit, *files)]
+    split = _SplitArgs("confirm", cfg.manifest, None, None, False)
+    if _check_split(split, named) is not None:
+        raise _Refused
+    arms = {"edit": named[1][1], **{p.stem: r for p, r in named[2:]}}
+    kinds = {p.stem: "control" for p in files}
+    return compare_arms(named[0][1], arms, kinds, n_boot=cfg.boot, seed=cfg.seed)
+
+
+def _controls(cfg: GateConfig, arms: ArmsResult) -> ControlVerdict:
+    """The control rule on the confirm split, with every named side effect."""
+    c = cfg.confirm
+    sides = {}
+    for name in c.side_effects:
+        if name == "accuracy":
+            sides[name] = (arms.results["edit"], list(arms.controls().values()))
+        else:
+            f = c.side[name]
+            s = _confirm_arms(cfg, f.base, f.edit, f.controls)
+            sides[name] = (s.results["edit"], list(s.controls().values()))
+    return control_rule(
+        arms.results["edit"],
+        list(arms.controls().values()),
+        target=c.target,
+        direction=c.direction,  # type: ignore[arg-type]
+        side_effects=sides,
+        q=c.q,
+    )
+
+
+def _infra_errors(*paths: Path) -> int:
+    """Failed and retried requests the HTTP runner recorded in these arms' headers."""
+    total = 0
+    for p in paths:
+        counts = _header(p).get("infra_errors")
+        if isinstance(counts, dict):
+            total += sum(
+                v
+                for v in (counts.get("retries"), counts.get("failed"))
+                if isinstance(v, int) and not isinstance(v, bool)
+            )
+    return total
+
+
+@dataclass(frozen=True)
+class _TestStage:
+    named: list[tuple[Path, list[Record]]]
+    arms: ArmsResult
+    floor: FloorResult
+    suites: dict[str, tuple[PairedResult, float, str]]
+    k: int
+    config_hash: str
+    infra_errors: int
+
+
+def _test_stage(cfg: GateConfig, confirm_base: Path, unseal: bool) -> _TestStage:
+    """Read and check everything the test stage needs; nothing is sealed yet."""
+    t = cfg.test
+    manifest = SplitManifest.load(cfg.manifest)
+    if manifest.k != K_TEST:
+        raise ValueError(
+            f"{cfg.manifest}: k is {manifest.k}, the test needs K={K_TEST}"
+        )
+    shown = {
+        name: cfg.arms[key] for key, (name, _) in REPORT_ARMS.items() if key in cfg.arms
+    }
+    for p in (t.edit, *shown.values()):
+        _same_settings(t.base, p, cfg.arm_keys)
+    _same_settings(confirm_base, t.base, cfg.arm_keys, ignore=("k",))
+    key = config_hash(_header(t.base))
+    floor = load_floor(t.floor, key)
+    if floor is None:
+        raise ValueError(f"{t.floor}: no floor for config_hash {key}; measure it first")
+    suites = {}
+    for name, s in cfg.suites.items():
+        _same_settings(s.base, s.edit, cfg.arm_keys)
+        edit_vs_base = compare_arms(
+            _records(s.base), {"edit": _records(s.edit)}, n_boot=cfg.boot, seed=cfg.seed
+        )
+        suites[name] = (edit_vs_base.results["edit"], s.margin, s.margin_source)
+    base, edit = _records(t.base), _records(t.edit)
+    arms = {"edit": edit} | {n: _records(p) for n, p in shown.items()}
+    kinds = {n: REPORT_ARMS[k][1] for k, (n, _) in REPORT_ARMS.items() if n in shown}
+    compared = compare_arms(base, arms, kinds, n_boot=cfg.boot, seed=cfg.seed)
+    infra = _infra_errors(t.base, t.edit)
+    named = [(t.base, base), (t.edit, edit)]
+    return _TestStage(named, compared, floor, suites, manifest.k, key, infra)
+
+
+def _open_seal(cfg: GateConfig, stage: _TestStage, unseal: bool) -> _Seal:
+    """The seal for the test scoring: the same checks as `eval --split test`."""
+    t = cfg.test
+    split = _SplitArgs("test", cfg.manifest, t.seal_dir, t.adapter, unseal)
+    seal = _check_split(split, stage.named)
+    if not isinstance(seal, _Seal):
+        raise _Refused  # printed by _check_split
+    return seal
+
+
+def _screens_failed(cfg: GateConfig, screens: tuple[Screen, ...]) -> GateResult | None:
+    """The screened-out result when any pre-screen failed, else None."""
+    if all(s.passed for s in screens):
+        return None
+    return gate(GateInputs(screens, cfg.margin, cfg.margin_source))
+
+
+def _gate_output(
+    result: GateResult,
+    counts: tuple[int, int],
+    confirm: ArmsResult | None,
+    test: ArmsResult | None,
+    written: Path | None,
+    as_json: bool,
+) -> None:
+    searched = {"candidates_tried": counts[0], "confirm_queries": counts[1]}
+    if as_json:
+        _emit(
+            {
+                **asdict(result),
+                **searched,
+                "verdict_file": None if written is None else str(written),
+                "arms": {
+                    "confirm": None if confirm is None else arms_dict(confirm),
+                    "test": None if test is None else arms_dict(test),
+                },
+            }
+        )
+        return
+    print(format_gate(result), end="")
+    print(f"candidates tried: {counts[0]}  confirm queries: {counts[1]}")
+    if confirm is not None:
+        print("\narms on the confirm split, each against base:")
+        print(format_arms(confirm))
+    if test is not None:
+        print("\narms on the test split, each against base:")
+        print(format_arms(test))
+    print(f"verdict file: {written}" if written else "no verdict file written")
+
+
+def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> int:
+    cfg = load_gate_config(config)
+    counts = _search_counts(cfg.run_record)
+    screens = _read_screens(cfg.screens)
+    if (screened := _screens_failed(cfg, screens)) is not None:
+        _gate_output(screened, counts, None, None, None, as_json)
+        return _GATE_EXIT[screened.outcome]
+    c = cfg.confirm
+    confirm = _confirm_arms(cfg, c.base, c.edit, c.controls)
+    controls = _controls(cfg, confirm)
+    inputs = GateInputs(
+        screens,
+        cfg.margin,
+        cfg.margin_source,
+        confirm=confirm.results["edit"],
+        controls=controls,
+        control_target=c.target,
+    )
+    stage = None
+    if controls.passed:  # a failed confirm never spends the sealed test split
+        stage = _test_stage(cfg, c.base, unseal)
+        inputs = replace(
+            inputs,
+            test=stage.arms.results["edit"],
+            floor=stage.floor,
+            k_test=stage.k,
+            suites=stage.suites,
+        )
+    result = gate(inputs)  # pure; every input is judged before the seal is touched
+    key = stage.config_hash if stage else config_hash(_header(c.base))
+    verdict = Verdict(
+        result.outcome,
+        cfg.backend,
+        cfg.build,
+        key,
+        SplitManifest.load(cfg.manifest).manifest_sha256,
+        counts[0],
+        counts[1],
+        stage.infra_errors if stage else _infra_errors(c.base, c.edit),
+        dict(cfg.footprint),
+    )
+    if stage is not None:
+        seal = _open_seal(cfg, stage, unseal)
+        t = cfg.test
+        if _record_seal(seal, t.base, t.edit, stage.arms.results["edit"]):
+            raise _Refused  # printed by _record_seal
+    written = out or config.parent / "verdict.json"
+    written.write_text(verdict.to_json(), encoding="utf-8")
+    _gate_output(
+        result, counts, confirm, stage.arms if stage else None, written, as_json
+    )
+    return _GATE_EXIT[result.outcome]
+
+
+def _gate(config: Path, as_json: bool, unseal: bool, out: Path | None) -> int:
+    try:
+        return _gate_run(config, as_json, unseal, out)
+    except _Refused:
+        return 2
+    except _ERRORS as e:
+        return _error(str(e))
 
 
 def _error(msg: str) -> int:
@@ -670,13 +965,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="astro-weights",
         epilog="exit codes: 0 ok, 1 problems found or check failed, "
-        "2 usage error or unreadable input",
+        "2 usage error or unreadable input; gate: 1 regressed or not significant, "
+        "3 screened out",
     )
     parser.add_argument(
         "--version", action="version", version=f"astro-weights {__version__}"
     )
     sub = parser.add_subparsers(
-        dest="command", metavar="{build,compose,eval,export,inspect,mcp,run,self-test}"
+        dest="command",
+        metavar="{build,compose,eval,export,gate,inspect,mcp,run,self-test}",
     )
     p = sub.add_parser("inspect", help="summarize and verify a saved PEFT adapter")
     p.add_argument("directory", metavar="DIR", type=Path, help="adapter directory")
@@ -824,6 +1121,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--force", action="store_true", help="overwrite existing outputs")
     _json_flag(p)
+    p = sub.add_parser(
+        "gate",
+        help="run the 0.3 gate end to end from recorded files; seals the test split",
+    )
+    p.add_argument("config", metavar="GATE.toml", type=Path, help="gate config file")
+    p.add_argument(
+        "--out",
+        metavar="FILE",
+        type=Path,
+        help="where to write verdict.json (default: beside GATE.toml)",
+    )
+    p.add_argument(
+        "--unseal",
+        action="store_true",
+        help="score an edit on the test split again; the ledger records it",
+    )
+    _json_flag(p)
     p = sub.add_parser("mcp", help="serve the agent tools over stdio MCP")
     p.add_argument(
         "run_dir", metavar="RUN_DIR", type=Path, help="run directory with run.json"
@@ -903,6 +1217,8 @@ def main(argv: list[str] | None = None) -> int:
             args.merged,
             args.out_type,
         )
+    if args.command == "gate":
+        return _gate(args.config, args.json, args.unseal, args.out)
     if args.command == "mcp":
         return _mcp(args.run_dir, args.unsafe_kernel)
     if args.command == "run":
