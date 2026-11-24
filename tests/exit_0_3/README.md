@@ -25,6 +25,7 @@ files below may be shared between gates. Every records file `X.jsonl` needs
 exit/
   gate/
     edit/GATE.toml            the 27B edit, full gate
+    edit/verdict.json         the verdict the first (real) gate run wrote and Research published
     controls/00/GATE.toml     the 20 random controls, each gated as if it were the edit
     controls/01/GATE.toml     ...
     controls/19/GATE.toml
@@ -45,12 +46,12 @@ What each test reads, and what it expects:
 
 | Test | Criterion | Reads | Expects |
 |---|---|---|---|
-| `test_2_edit_confirmed_every_control_not` | 2 | `gate/edit`, `gate/controls/*` | exit 0 and `outcome: confirmed` for the edit; for each of exactly 20 controls exit 1 and `outcome: not significant` or `regressed` (never `screened out`: the whole gate must have run) |
-| `test_3_floor_zero_flips_deterministic_default_reported` | 3 | `floor/*`, `gate/edit` | deterministic `flip_rate == 0.0` and zero deltas; default floor printed; its `config_hash` equals the edit's test base arm; the floor stored in `gate/edit`'s `[test] floor` directory equals it; the gate's tokens check ran |
+| `test_2_edit_confirmed_every_control_not` | 2 | `gate/edit`, `gate/controls/*` | exit 0 and `outcome: confirmed` for the edit; for each of exactly 20 controls exit 1 and `outcome: not significant` or `regressed` (never `screened out`: the whole gate must have run). Each control gate's `[confirm] edit` is one of the 20 files in `[confirm] controls`, and no two gates use the same file |
+| `test_3_floor_zero_flips_deterministic_default_reported` | 3 | `floor/*`, `gate/edit` | deterministic `flip_rate == 0.0` and zero deltas, from two distinct runs (different `run_id`) whose headers declare `serving_flags` that differ from the default floor's; default floor printed; its `config_hash` equals the edit's test base arm; the floor stored in `gate/edit`'s `[test] floor` directory equals it; the gate's tokens check ran |
 | `test_4_second_scoring_refused_unseal_recorded` | 4 | `gate/edit` | second `gate` exits 2 with `already scored`, ledger unchanged; `--unseal` exits 0 and the ledger holds `unseal: false` then `true` |
-| `test_5_report_has_mde_candidates_and_every_arm` | 5 | `gate/edit` | the report holds `MDE (test)`, `candidates tried: N`, `confirm queries: M` (equal to `verdict.json`, from the run record), the confirm and test arm tables, the controls row, and every `[arms]` arm of `GATE.toml` |
-| `test_6_bfcl_paired_run_prints_tokens_and_tool_calls` | 6 | `bfcl/*.jsonl` | the `format_tasks` rows `pass rate`, `tokens/task`, `tool calls/task`, `turns/task`. No assertion on the outcome: the numbers are published whatever they show |
-| `test_7_rerun_from_copied_files_gives_identical_verdict` | 7 | all of `gate/edit`, `run/record.jsonl` | two copies give byte-identical `verdict.json`; `run_record` points at `run/record.jsonl` |
+| `test_5_report_has_mde_candidates_and_every_arm` | 5 | `gate/edit` | the report holds `MDE (test)`, `candidates tried: N`, `confirm queries: M` (equal to `verdict.json`, from the run record), the confirm and test arm tables, the controls row, and exactly the arms `prompt`, `scripted`, `edit+prompt` (a line each) |
+| `test_6_bfcl_paired_run_prints_tokens_and_tool_calls` | 6 | `bfcl/*.jsonl` | the full run (200 tasks, ids `multi_turn_base_*`, not the 10-task pilot) and the `format_tasks` rows `pass rate`, `tokens/task`, `tool calls/task`, `turns/task`. No assertion on the outcome: the numbers are published whatever they show |
+| `test_7_rerun_from_copied_files_gives_identical_verdict` | 7 | all of `gate/edit` (with its recorded `verdict.json`), `run/record.jsonl` | a rerun on two copies gives `verdict.json` bytes equal to each other and to the recorded one; `run_record` points at `run/record.jsonl` |
 | `test_8_planted_bad_edit_screened_out_or_regressed` | 8 | `gate/bad`, `gate/edit` | suite base and edit records exist (non-empty, with headers) for both; the bad edit is `screened out` (exit 3) or `regressed` (exit 1), with the keep-the-original-weights advice |
 
 `-s` shows the floors and the BFCL report. Expected tail: `7 passed` (plus the 2
@@ -63,7 +64,7 @@ for HF use the `runners.hf` path of the how-to `run-eval`). Both arms of a compa
 must run under identical settings; `check_headers` refuses any arm whose header
 differs (`gate` runs it). Names below: `BASE_URL`, `base` (served base), `edit` (served
 edit with its LoRA), `SAMPLING` (the `extra_body` of the K = 4 runs, fixed once per PDR
-0.3 section 4).
+0.3 section 4), `BASE_MODEL_ID` (one fixed id for the base weights, for example the HF repo and revision; the edit and the controls are LoRAs on it, so they share it).
 
 ### 1. Splits, edit, controls
 
@@ -97,13 +98,30 @@ for the base and the edit only, once per seed 0 to 3, then the four files are jo
 into one `test/base.jsonl` and one `test/edit.jsonl` (`header["k"] == 4`).
 
 ```python
-from astro_weights.eval import header_path, read_jsonl, write_jsonl
+from astro_weights.eval import (
+    header_path,
+    read_header,
+    read_jsonl,
+    write_header,
+    write_jsonl,
+)
 from astro_weights.runners.endpoint import generate_records_http, run_header_http
 
 
-def run(model, arm, items, out, seed=0, k=1, extra_body=None):
+def run(model, arm, items, out, seed=0, k=1, extra_body=None, serving_flags=None):
+    # model_id: vLLM has no /props, so without it the header takes the served name
+    # ("base", "edit", "control-NN"). model_id is a CONFIG key: arms that differ in it
+    # are refused by check_headers, and the gate would refuse every pair.
     header = run_header_http(
-        BASE_URL, model, MAX_NEW_TOKENS, seed, extra_body, k=k, concurrency=8
+        BASE_URL,
+        model,
+        MAX_NEW_TOKENS,
+        seed,
+        extra_body,
+        k=k,
+        concurrency=8,
+        serving_flags=serving_flags,
+        model_id=BASE_MODEL_ID,
     )
     return generate_records_http(
         BASE_URL,
@@ -120,6 +138,19 @@ def run(model, arm, items, out, seed=0, k=1, extra_body=None):
     )
 
 
+def run_k4(model, arm, items, stem, extra_body=SAMPLING, serving_flags=None):
+    """One K = 4 arm: seeds 0 to 3, joined into `stem.jsonl` with a k = 4 header."""
+    for s in range(4):
+        run(model, arm, items, f"{stem}.s{s}.jsonl", s, 4, extra_body, serving_flags)
+    write_jsonl(
+        f"{stem}.jsonl",
+        [r for s in range(4) for r in read_jsonl(f"{stem}.s{s}.jsonl")],
+    )
+    write_header(  # seed 0's header: k = 4, the same config for the four seeds
+        header_path(f"{stem}.jsonl"), read_header(header_path(f"{stem}.s0.jsonl"))
+    )
+
+
 run("base", "base", confirm_items, "exit/gate/confirm/base.jsonl")
 run("edit", "edit", confirm_items, "exit/gate/confirm/edit.jsonl")
 for i in range(20):
@@ -129,41 +160,38 @@ for i in range(20):
         confirm_items,
         f"exit/gate/confirm/controls/control-{i:02d}.jsonl",
     )
-for arm in ("base", "edit"):
-    for s in range(4):
-        run(
-            arm,
-            arm,
-            test_items,
-            f"exit/gate/test/{arm}.s{s}.jsonl",
-            seed=s,
-            k=4,
-            extra_body=SAMPLING,
-        )
-    write_jsonl(
-        f"exit/gate/test/{arm}.jsonl",
-        [r for s in range(4) for r in read_jsonl(f"exit/gate/test/{arm}.s{s}.jsonl")],
-    )
-    # header: copy exit/gate/test/{arm}.s0.header.json to {arm}.header.json
+run_k4("base", "base", test_items, "exit/gate/test/base")
+run_k4("edit", "edit", test_items, "exit/gate/test/edit")
 ```
 
 The run headers must agree on every config key across base, edit and controls
-(`served_model` and `base_url` are provenance and may differ). Confirm and test may
-differ in `k` only.
+(`served_model` and `base_url` are provenance and may differ; `model_id`,
+`serving_flags` and `extra_body` are config). Confirm and test may differ in `k` only.
+If the server's flags are declared (`serving_flags`), declare the same on every arm
+served under them.
 
 ### 3. Noise floors
 
 Under the same server and settings as the test base arm, run the base twice more.
+Each floor run is a full K = 4 run (seeds 0 to 3 joined into one file with a `k = 4`
+header, like `test/base.jsonl`): `floor_from_records` takes `k` from the number of
+paired seeds, and the gate refuses a floor that was not scored with K = 4.
 
 ```python
 from pathlib import Path
 from astro_weights.eval import floor_from_records, read_header, save_floor
 
-# deterministic serving (the server's batch-invariant mode): exit/floor/deterministic/run{1,2}.jsonl
-# default serving (the settings of exit/gate/test/base.jsonl):  exit/floor/default/run{1,2}.jsonl
-# each run is `run("base", "base", test_items, ..., seed=s, k=4, extra_body=SAMPLING)` under its own
-# out path, so each has a header; for `default`, run1 may be copied from test/base.jsonl
-# (+ header) and run2 is a new run.
+# default serving (the settings of exit/gate/test/base.jsonl): two new runs, or run1
+# copied from test/base.jsonl (+ header) and run2 new. Each run has its own run_id.
+run_k4("base", "base", test_items, "exit/floor/default/run1")
+run_k4("base", "base", test_items, "exit/floor/default/run2")
+
+# deterministic serving (restart the server in its batch-invariant mode) and declare
+# it, so the header shows that mode: two runs, headers differ from the default floor's.
+BI = {"VLLM_BATCH_INVARIANT": "1"}
+run_k4("base", "base", test_items, "exit/floor/deterministic/run1", serving_flags=BI)
+run_k4("base", "base", test_items, "exit/floor/deterministic/run2", serving_flags=BI)
+
 d = Path("exit/floor/default")
 header = read_header(d / "run1.header.json")
 floor = floor_from_records(
@@ -175,9 +203,11 @@ save_floor(
 print(floor.to_json())
 ```
 
-`floor/default/run1.header.json` must hash to the test base arm's header
-(`config_hash`), otherwise the gate finds no floor. Check the server's batch
-invariance first: `astro-weights self-test --base-url BASE_URL --model base`.
+The default floor's runs must hash to the test base arm's header (`config_hash`),
+otherwise the gate finds no floor: serve and declare them exactly like `test/base`.
+The deterministic runs differ from it in `serving_flags` (and so are not the default
+floor's config). Check the server's batch invariance first:
+`astro-weights self-test --base-url BASE_URL --model base`.
 
 ### 4. Screens, run record, adapter
 

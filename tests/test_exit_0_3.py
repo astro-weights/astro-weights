@@ -10,8 +10,10 @@ Every test copies the data to `tmp_path` first: a gate run writes a seal ledger 
 covered by tests/test_eval_gate.py. Floors and the BFCL report are printed (`pytest -s`); a failed gate test shows its output.
 """
 
+import contextlib
 import dataclasses
 import importlib.util
+import io
 import json
 import os
 import re
@@ -27,6 +29,7 @@ from astro_weights.cli import main
 from astro_weights.eval import (
     FloorResult,
     Verdict,
+    check_headers,
     config_hash,
     floor_from_records,
     format_tasks,
@@ -51,7 +54,10 @@ from astro_weights.eval.tasks import (
 from astro_weights.mcp.record import RunRecord
 
 REAL_CONTROLS = 20
-SYNTHETIC_CONTROLS = 3  # the real run has 20; the synthetic one only needs more than 1
+SYNTHETIC_CONTROLS = 3  # control gates; the real run has 20. Every gate's pool holds 20
+POOL = 20  # control files in each gate's `[confirm] controls`
+REAL_BFCL_TASKS = 200  # the full multi_turn_base run, not the 10-task pilot
+SYNTHETIC_BFCL_TASKS = 12
 NOT_CONFIRMED = ("not significant", "regressed")
 
 
@@ -85,6 +91,18 @@ def _share_record(gate_dir: Path, shared: Path) -> None:
     )
 
 
+def _as_control(gate_dir: Path, i: int) -> None:
+    """Gate `gate_dir` as control `i`: its `[confirm] edit` is its file in the pool."""
+    toml = gate_dir / "GATE.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            'edit = "confirm/edit.jsonl"',
+            f'edit = "confirm/controls/control-{i:02d}.jsonl"',
+        ),
+        encoding="utf-8",
+    )
+
+
 def _floor_runs(edit_dir: Path, floor: Path) -> None:
     """Two base runs under the edit's test config; the stored floor is the default one."""
     src = edit_dir / "test" / "base.jsonl"
@@ -102,12 +120,14 @@ def _floor_runs(edit_dir: Path, floor: Path) -> None:
         )
         for n, r in enumerate(run1)
     ]
+    flags = {"deterministic": {"serving_flags": {"VLLM_BATCH_INVARIANT": "1"}}}
     for name, second in (("deterministic", deterministic), ("default", default)):
         d = floor / name
         d.mkdir(parents=True)
         for stem, records in (("run1", run1), ("run2", second)):
+            h = {**header, **flags.get(name, {}), "run_id": f"floor-{name}-{stem}"}
             write_jsonl(d / f"{stem}.jsonl", records)
-            write_header(d / f"{stem}.header.json", header)
+            write_header(d / f"{stem}.header.json", h)
     save_floor(
         edit_dir / "floors",
         floor_from_records(
@@ -123,7 +143,7 @@ def _bfcl(path: Path) -> None:
     path.mkdir(parents=True)
     for arm, cut in (("base", 0), ("edit", 25)):
         records = []
-        for t in range(12):
+        for t in range(SYNTHETIC_BFCL_TASKS):
             for trial in range(2):
                 calls = tuple(ToolCall("ls", "{}") for _ in range(1 + t % 3))
                 turns = [
@@ -159,10 +179,18 @@ def make_synthetic(root: Path) -> None:
     for i in range(SYNTHETIC_CONTROLS):  # every control fails the confirm stage
         c = fixture.build(root / "gate" / "controls" / f"{i:02d}", controls_beat=False)
         _share_record(c.parent, record)
+        _as_control(c.parent, i)
     bad = fixture.build(root / "gate" / "bad", screens_fail="norm")
     _share_record(bad.parent, record)
     _floor_runs(edit.parent, root / "floor")
     _bfcl(root / "bfcl")
+    # the verdict a first run "recorded"; the seal it spent is not kept
+    with (
+        contextlib.redirect_stdout(io.StringIO()),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
+        assert main(["gate", str(edit)]) == 0
+    shutil.rmtree(load_gate_config(edit).test.seal_dir)
 
 
 # ------------------------------------------------------------------------- data
@@ -170,10 +198,11 @@ def make_synthetic(root: Path) -> None:
 
 @dataclass(frozen=True)
 class Data:
-    """A data directory copied to `tmp_path`, with the control count it must hold."""
+    """A data directory copied to `tmp_path`, with the counts it must hold."""
 
     root: Path
-    controls: int
+    controls: int  # control gates
+    bfcl_tasks: int  # tasks in the BFCL files
 
     @property
     def edit(self) -> Path:
@@ -189,7 +218,7 @@ class Data:
     def copy(self, dst: Path) -> "Data":
         """Copy the tree to `dst`; refuse a gate whose seal would land outside it."""
         shutil.copytree(self.root, dst)
-        data = Data(dst, self.controls)
+        data = dataclasses.replace(self, root=dst)
         configs = [data.edit, data.bad, *data.control_configs()]
         for cfg in configs:
             seal = load_gate_config(cfg).test.seal_dir.resolve()
@@ -207,7 +236,7 @@ class Data:
 def synthetic(tmp_path_factory: pytest.TempPathFactory) -> Data:
     root = tmp_path_factory.mktemp("exit_0_3")
     make_synthetic(root)
-    return Data(root, SYNTHETIC_CONTROLS)
+    return Data(root, SYNTHETIC_CONTROLS, SYNTHETIC_BFCL_TASKS)
 
 
 @pytest.fixture(
@@ -220,7 +249,7 @@ def source(request: pytest.FixtureRequest, synthetic: Data) -> Data:
     env = os.environ.get("ASTRO_EXIT_DATA")
     if not env or not Path(env).is_dir():
         pytest.skip("ASTRO_EXIT_DATA not set to a directory (tests/exit_0_3/README.md)")
-    return Data(Path(env), REAL_CONTROLS)
+    return Data(Path(env), REAL_CONTROLS, REAL_BFCL_TASKS)
 
 
 @pytest.fixture
@@ -275,6 +304,17 @@ def test_2_edit_confirmed_every_control_not(
     assert (code, outcome(out)) == (0, "confirmed")
     cfgs = data.control_configs()
     assert len(cfgs) == data.controls
+    assert len(list(load_gate_config(data.edit).confirm.controls.glob("*.jsonl"))) == (
+        POOL
+    )
+    picked = []
+    for cfg in cfgs:  # each control gate is tied to its own control file
+        c = load_gate_config(cfg).confirm
+        pool = {f.resolve() for f in c.controls.glob("*.jsonl")}
+        assert len(pool) == POOL, cfg
+        assert c.edit.resolve() in pool, f"{cfg}: [confirm] edit is not a control file"
+        picked.append(c.edit.resolve())
+    assert len(set(picked)) == len(picked), "two control gates share a control file"
     for cfg in cfgs:
         code, out, err = gate(cfg, capsys=capsys)
         assert code == 1, f"{cfg}: exit {code}\n{out}{err}"
@@ -293,9 +333,17 @@ def test_3_floor_zero_flips_deterministic_default_reported(
     headers = {}
     for name in ("deterministic", "default"):
         run1, run2 = (read_jsonl(floor / name / f"{s}.jsonl") for s in ("run1", "run2"))
-        header = read_header(header_path(floor / name / "run1.jsonl"))
+        header, other = (
+            read_header(header_path(floor / name / f"{s}.jsonl"))
+            for s in ("run1", "run2")
+        )
+        check_headers(header, other)  # one config
+        assert header["run_id"] != other["run_id"], f"{name}: run2 is a copy of run1"
         floors[name], headers[name] = floor_from_records(run1, run2, header), header
         print(f"{name} floor: {floors[name].to_json()}")
+    flags = headers["deterministic"].get("serving_flags")
+    assert flags, "deterministic floor declares no serving_flags (batch-invariant mode)"
+    assert flags != headers["default"].get("serving_flags")
     det, default = floors["deterministic"], floors["default"]
     assert det.flip_rate == 0.0
     assert (det.accuracy_delta, det.tokens_delta) == (0.0, 0.0)
@@ -362,8 +410,10 @@ def test_5_report_has_mde_candidates_and_every_arm(
         assert f"arms on the {split} split" in out
     assert re.search(r"^controls: n=\d+", out, re.MULTILINE)
     assert re.search(r"^edit +edit ", out, re.MULTILINE)
+    assert set(cfg.arms) == set(REPORT_ARMS), "the edit gate needs every [arms] arm"
     for key in cfg.arms:
-        assert REPORT_ARMS[key][0] in out
+        name = re.escape(REPORT_ARMS[key][0])
+        assert re.search(rf"^{name} +", out, re.MULTILINE), key
     assert out.count("MDE") >= 4  # one column per arm table, plus the gate line
 
 
@@ -379,7 +429,8 @@ def test_6_bfcl_paired_run_prints_tokens_and_tool_calls(data: Data) -> None:
     cmp = compare_tasks(base, edit, n_boot=2000)
     text = format_tasks(cmp)
     print(text)
-    assert cmp.n_tasks == len({t.task_id for t in base})
+    assert cmp.n_tasks == len({t.task_id for t in base}) == data.bfcl_tasks
+    assert all(t.task_id.startswith("multi_turn_base_") for t in base)
     for row in ("pass rate:", "tokens/task:", "tool calls/task:", "turns/task:"):
         assert row in text
 
@@ -390,9 +441,10 @@ def test_6_bfcl_paired_run_prints_tokens_and_tool_calls(data: Data) -> None:
 def test_7_rerun_from_copied_files_gives_identical_verdict(
     source: Data, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    recorded = (source.edit.parent / "verdict.json").read_bytes()  # as published
     a, b = (source.copy(tmp_path / n) for n in ("a", "b"))
     assert gate(a.edit, capsys=capsys)[0] == gate(b.edit, capsys=capsys)[0] == 0
-    assert verdict_bytes(a.edit) == verdict_bytes(b.edit)
+    assert verdict_bytes(a.edit) == verdict_bytes(b.edit) == recorded
     assert (a.root / "run" / "record.jsonl").read_bytes() == (
         source.root / "run" / "record.jsonl"
     ).read_bytes()  # the run record was not touched by the gate
@@ -434,7 +486,7 @@ def test_a_seal_outside_the_copy_is_refused(synthetic: Data, tmp_path: Path) -> 
         encoding="utf-8",
     )
     with pytest.raises(AssertionError, match="outside the data dir"):
-        Data(src, source.controls).copy(tmp_path / "dst")
+        dataclasses.replace(source, root=src).copy(tmp_path / "dst")
     assert not (tmp_path / "elsewhere").exists()
 
 
@@ -446,5 +498,5 @@ def test_a_leftover_seal_is_not_spent(
     assert (
         gate(src / "gate" / "edit" / "GATE.toml", capsys=capsys)[0] == 0
     )  # spends src's seal
-    copy = Data(src, source.controls).copy(tmp_path / "dst")
+    copy = dataclasses.replace(source, root=src).copy(tmp_path / "dst")
     assert gate(copy.edit, capsys=capsys)[0] == 0
