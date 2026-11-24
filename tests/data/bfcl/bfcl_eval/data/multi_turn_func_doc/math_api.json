@@ -1,0 +1,1 @@
+{"name": "add", "description": "Add two numbers.", "parameters": {"type": "dict", "properties": {"a": {"type": "float", "description": "First."}, "b": {"type": "float", "description": "Second."}}, "required": ["a", "b"]}, "response": {"type": "dict", "properties": {}}}

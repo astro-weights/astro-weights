@@ -1,0 +1,3 @@
+{"id": "toy_0", "question": [[{"role": "user", "content": "Post 'hello'."}], [{"role": "user", "content": "Show the tweets."}]], "initial_config": {"TwitterAPI": {"tweets": ["first"], "username": "ann"}}, "path": [], "involved_classes": ["TwitterAPI"]}
+{"id": "toy_1", "question": [[{"role": "user", "content": "Add 2 and 3, then post the sum."}], [{"role": "user", "content": "Thanks."}]], "initial_config": {"TwitterAPI": {}}, "path": [], "involved_classes": ["TwitterAPI", "MathAPI"]}
+{"id": "toy_2", "question": [[{"role": "user", "content": "Add 1 and 1."}]], "initial_config": {}, "path": [], "involved_classes": ["MathAPI"]}
