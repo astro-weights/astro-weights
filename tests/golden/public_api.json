@@ -192,7 +192,7 @@
  },
  "astro_weights.mcp.run": {
   "RunError": null,
-  "RunSpec": "(source: pathlib.Path, run_dir: pathlib.Path, seed: int, model_dir: pathlib.Path | None, limits: astro_weights.mcp.budget.Limits, editor: str, options: collections.abc.Mapping[str, Any], kernel: collections.abc.Mapping[str, Any], forward: collections.abc.Mapping[str, Any], export: collections.abc.Mapping[str, Any] = <factory>, unsafe_kernel: bool = False, text: str = '') -> None",
+  "RunSpec": "(source: pathlib.Path, run_dir: pathlib.Path, seed: int, model_dir: pathlib.Path | None, limits: astro_weights.mcp.budget.Limits, editor: str, options: collections.abc.Mapping[str, Any], kernel: collections.abc.Mapping[str, Any], forward: collections.abc.Mapping[str, Any], export: collections.abc.Mapping[str, Any] = <factory>, confirm: collections.abc.Mapping[str, Any] = <factory>, unsafe_kernel: bool = False, text: str = '') -> None",
   "format_status": "(info: collections.abc.Mapping[str, Any]) -> str",
   "load_config": "(path: pathlib.Path) -> astro_weights.mcp.run.RunSpec",
   "start": "(spec: astro_weights.mcp.run.RunSpec, *, resume: bool = False) -> int",
