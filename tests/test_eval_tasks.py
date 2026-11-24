@@ -142,7 +142,7 @@ def _line(**kw: object) -> str:
         ('{"output_tokens": NaN}', "NaN is not allowed"),
         ("[1]", "expected a JSON object"),
         ("{", "invalid JSON"),
-        ("[" * 100000, "nested too deeply"),
+        ("[" * 100000, "nested too deeply|invalid JSON"),  # 3.14 builds differ
     ],
 )
 def test_bad_lines_refused(tmp_path: Path, line: str, msg: str) -> None:
