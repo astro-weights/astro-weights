@@ -21,6 +21,7 @@ The config names the run directory, the budget, the editor and its options::
     [kernel]                  # optional: timeout_s, mem_gib, unsafe, allow_nested_userns
     [forward]                 # optional: device, dtype, max_new_tokens
     [export]                  # optional: rank, max_rel_residual, base_gguf, gguf_out_type
+    [confirm]                 # optional, needs model_dir: items, grader, margin, max_queries
 
 ``start`` writes ``RUN_DIR/run.json`` and a copy of the config (``config.toml``),
 then runs the editor's ``main`` on the run directory; the editor starts the server.
@@ -64,7 +65,7 @@ _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _ABORTED = frozenset({"run.json", CONFIG_COPY})
 # any of these in a run directory means a server ran there: never overwrite it
 _STARTED = ("record.jsonl", "ledger.jsonl", "jobs", "edits")
-_SAME_ON_RESUME = ("seed", "model_dir", "editor", "model", "limits")
+_SAME_ON_RESUME = ("seed", "model_dir", "editor", "model", "limits", "confirm")
 _REQUIRED = object()
 
 # key -> (type, default); _REQUIRED marks a key that must be given, None an unset option
@@ -97,6 +98,12 @@ _EXPORT: _Fields = {
     "base_gguf": ("path", None),
     "gguf_out_type": ("str", None),
 }
+_CONFIRM: _Fields = {
+    "items": ("path", _REQUIRED),
+    "grader": ("str", _REQUIRED),
+    "margin": ("number", _REQUIRED),
+    "max_queries": ("positive", _REQUIRED),
+}
 # editor options map one to one onto the editor's command-line flags
 _EDITORS: dict[str, _Fields] = {
     "scripted": {},
@@ -117,7 +124,7 @@ _EDITORS: dict[str, _Fields] = {
         "no_fallback": ("bool", False),
     },
 }
-_TABLES = ("run", "limits", "editor", "kernel", "forward", "export")
+_TABLES = ("run", "limits", "editor", "kernel", "forward", "export", "confirm")
 _TYPE_TEXT = {
     "path": "a non-empty string",
     "str": "a non-empty string",
@@ -210,6 +217,7 @@ class RunSpec:
     kernel: Mapping[str, Any]
     forward: Mapping[str, Any]
     export: Mapping[str, Any] = field(default_factory=dict)
+    confirm: Mapping[str, Any] = field(default_factory=dict)
     unsafe_kernel: bool = False
     text: str = field(default="", repr=False)  # the config as read, copied to the run
 
@@ -232,6 +240,8 @@ class RunSpec:
         }
         if self.model_dir is not None:
             out["model_dir"] = str(self.model_dir)
+        if self.confirm:
+            out["confirm"] = dict(self.confirm)
         return out
 
     def editor_argv(self) -> list[str]:
@@ -291,16 +301,24 @@ def _parse(where: str, raw: dict[str, Any], base: Path, text: str) -> RunSpec:
     }
     if "base_gguf" in export:
         export["base_gguf"] = str(_path(base, export["base_gguf"]))
+    run_dir = _path(base, run["dir"])
+    confirm: dict[str, Any] = {}
+    if "confirm" in raw:
+        confirm = _table(where, raw["confirm"], _CONFIRM, "confirm")
+        confirm["items"] = str(_path(base, confirm["items"]))
+        if run["model_dir"] is None:
+            raise RunError(f"{where}: [confirm] needs [run] model_dir")
     try:  # the server's own checks, so run.json is valid when written
         timeout_s, mem_gib, nested = jobs._kernel_config(Path(where), kernel)
         device, dtype, max_new = jobs._forward_config(Path(where), fwd)
         rank, residual, _gguf, out_type = jobs._export_config(Path(where), export)
+        jobs._confirm_config(Path(where), run_dir, confirm or None)
     except ValueError as exc:
         raise RunError(str(exc)) from None
     export.update(rank=rank, max_rel_residual=residual, gguf_out_type=out_type)
     return RunSpec(
         source=Path(where),
-        run_dir=_path(base, run["dir"]),
+        run_dir=run_dir,
         seed=run["seed"],
         model_dir=None if run["model_dir"] is None else _path(base, run["model_dir"]),
         limits=Limits(**limits),
@@ -310,6 +328,7 @@ def _parse(where: str, raw: dict[str, Any], base: Path, text: str) -> RunSpec:
         | ({"allow_nested_userns": True} if nested else {}),
         forward={"device": device, "dtype": dtype, "max_new_tokens": max_new},
         export=export,
+        confirm=confirm,
         unsafe_kernel=unsafe,
         text=text,
     )

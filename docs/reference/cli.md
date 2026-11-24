@@ -150,6 +150,10 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 | | `max_rel_residual` | number >= 0 | 0.05 |
 | | `base_gguf` | path to the base model's GGUF; also write a merged GGUF | absent: adapter only |
 | | `gguf_out_type` | `q8_0`, `f16` or `bf16` | `q8_0` |
+| `[confirm]` | `items` | path to the confirm items, JSONL of `{"item_id", "prompt", "gold"}`, outside the run directory | the table is optional; with it, all four keys are required and `model_dir` is too |
+| | `grader` | `exact`, `choice` or `math` | |
+| | `margin` | number from 0 below 1 | |
+| | `max_queries` | int >= 1 | |
 
 - `run CONFIG.toml` checks the config, the run directory, the extras the editor needs (`mcp`; `hf` with `model_dir`; `gguf` with `base_gguf`; `hosted` for `hosted`), that `model_dir` and `base_gguf` exist and that the key variable (`api_key_env`; `ANTHROPIC_API_KEY` for `hosted`) is set and not empty. Only then does it write `RUN_DIR/run.json` and `RUN_DIR/config.toml` (a copy of the config) and run the editor, which starts the server. The exit code is the editor's; any check that fails exits 2 and writes nothing.
 - A key value given in place of a variable name in `api_key_env` is refused and never printed.

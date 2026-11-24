@@ -197,6 +197,47 @@ def test_export_options(tmp_path: Path) -> None:
     assert (cfg.export_rank, cfg.export_gguf_out_type) == (4, "f16")
 
 
+def test_confirm_table_reaches_run_json(tmp_path: Path) -> None:
+    confirm = {"items": "items.jsonl", "grader": "exact", "margin": 0, "max_queries": 3}
+    spec = load_config(write_config(tmp_path, run={"model_dir": "m"}, confirm=confirm))
+    items = str((tmp_path / "cfg" / "items.jsonl").resolve())
+    assert spec.run_json()["confirm"] == {**confirm, "items": items}
+    spec.run_dir.mkdir(parents=True)
+    (spec.run_dir / "run.json").write_text(json.dumps(spec.run_json()))
+    got = load_run_config(spec.run_dir).confirm
+    assert got is not None
+    assert (str(got.items), got.grader, got.margin, got.max_queries) == (
+        items,
+        "exact",
+        0.0,
+        3,
+    )
+    assert "confirm" not in load_config(write_config(tmp_path)).run_json()
+
+
+@pytest.mark.parametrize(
+    ("tables", "message"),
+    [
+        ({"confirm": {"items": DEL}}, r"\[confirm\] items is missing"),
+        ({"confirm": {"x": 1}}, r"unknown key \[confirm\] x"),
+        ({"confirm": {"grader": "bleu"}}, r"confirm.grader must be one of"),
+        ({"confirm": {"margin": 1}}, r"confirm.margin must be a number"),
+        ({"confirm": {"max_queries": 0}}, r"\[confirm\] max_queries must be an int"),
+        ({"run": {"model_dir": DEL}}, r"\[confirm\] needs \[run\] model_dir"),
+        ({"confirm": {"items": "run/items.jsonl"}}, r"outside the run directory"),
+    ],
+)
+def test_confirm_table_errors(
+    tmp_path: Path, tables: dict[str, Any], message: str
+) -> None:
+    base = {"items": "items.jsonl", "grader": "exact", "margin": 0, "max_queries": 3}
+    given: dict[str, dict[str, Any]] = {"run": {"model_dir": "m"}, "confirm": base}
+    for name, table in tables.items():
+        given[name] = {**given.get(name, {}), **table}
+    with pytest.raises(RunError, match=message):
+        load_config(write_config(tmp_path, **given))
+
+
 def test_local_options_become_flags(tmp_path: Path) -> None:
     editor = {
         "kind": "local",
