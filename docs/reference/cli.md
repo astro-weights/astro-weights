@@ -1,7 +1,7 @@
 # CLI
 
 ```text
-astro-weights [--version] {build,compose,eval,export,gate,inspect,mcp,run} ...
+astro-weights [--version] {build,compose,eval,export,gate,inspect,mcp,run,self-test} ...
 ```
 
 | Command | Does |
@@ -11,9 +11,10 @@ astro-weights [--version] {build,compose,eval,export,gate,inspect,mcp,run} ...
 | `build RECIPE.json --base MODEL_DIR --out DIR [--card LICENSE] [--force]` | build a PEFT adapter from a recipe file and the base model weights; print one line per module (`out x in`, rank), then `wrote DIR`; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) |
 | `compose ADAPTER ADAPTER [ADAPTER...] -o OUT_DIR [--base-model NAME] [--force]` | combine two or more PEFT adapters on the same base model into one adapter whose change is exactly their sum; print the module count and rank, then `wrote OUT_DIR` |
 | `export DIR [--gguf OUT.gguf --arch ARCH] [--card LICENSE] [--splice BASE.gguf --base-model DIR --merged OUT.gguf [--out-type TYPE]] [--force]` | verify the adapter in `DIR`, then write a GGUF LoRA adapter, a merged GGUF, a model card or any mix of them; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) and [How-to: use with Ollama](../how-to/use-with-ollama.md) |
-| `gate GATE.toml [--out FILE] [--unseal] [--json]` | run the 0.3 gate end to end from recorded files: pre-screens, random controls on confirm, the sealed K=4 test split, regression suites; print the outcome with every check and arm, and write `verdict.json`; see [gate](#gate) |
+| `gate GATE.toml [--out FILE] [--unseal] [--json]` | run the 0.3 gate end to end from recorded files: pre-screens, random controls on confirm, the sealed K=4 test split, regression suites; print the outcome with every check and arm, and write `verdict.json`; see [gate](#gate) and [How-to: run the 0.3 gate](../how-to/run-gate.md) |
 | `mcp RUN_DIR [--unsafe-kernel]` | serve the agent tools over stdio MCP for the run in `RUN_DIR`; see [mcp](#mcp) and [How-to: Claude Code](../how-to/agent-claude-code.md). New in 0.2 |
 | `run CONFIG.toml [--resume \| --status] [--json]` | start a run from a TOML config: write `RUN_DIR/run.json`, then run the chosen editor, which starts the server; see [run](#run) and [Tutorial: first agent run](../tutorials/first-agent-run.md). New in 0.2 |
+| `self-test --base-url URL --model NAME [--prompt TEXT] [--api-key-env VAR] [--json]` | send one prompt at temperature 0 under varied batch sizes (1, 4, 8) and shared-prefix fillers (0, 256, 1024 tokens) to an OpenAI-compatible server; print each output and whether all match; see [How-to: run the 0.3 gate](../how-to/run-gate.md#serving-self-test-and-noise-floor) |
 
 Every command except `mcp` takes `--json`, which prints one JSON object on stdout instead of text. Run without a command, `astro-weights` prints the help and exits 2. `python -m astro_weights` runs the same command line, for example `python -m astro_weights inspect DIR`.
 
@@ -78,7 +79,7 @@ Refused with exit 2, nothing sealed: bad or unknown `GATE.toml` key; a records f
 | `[confirm]` | table | `base`, `edit` (confirm-split records), `controls` (a directory: every `*.jsonl` in it is one control arm, 20 or more), `target` (`tokens_diff`, better lower, or `diff`, better higher), `q` (default 0.95, at least 0.95), `side_effects` (names; `accuracy` is the `diff` of the confirm records, any other name needs a `[confirm.side.NAME]` table with `base`, `edit`, `controls`) |
 | `[test]` | table | `base`, `edit` (test-split records, K = 4), `seal_dir` (ledger directory), `adapter` (the edit's PEFT directory, keyed by content), `floor` (directory of stored noise floors, `floor-<config_hash>.json`) |
 | `[suites.NAME]` | tables | regression suite: `base`, `edit`, `margin`, `source` (the suite's own margin and where it came from) |
-| `[arms]` | table, optional | extra test-split arms for the report: `prompt`, `scripted`, `edit_prompt` (shown as `edit+prompt`) |
+| `[arms]` | table, optional | extra test-split arms for the report: `prompt`, `scripted`, `edit_prompt` (shown as `edit+prompt`). The `prompt` and `edit_prompt` headers must carry a `system` prompt (made with `run_suites(..., system=...)`) that base, edit and scripted lack; every other header key must equal base's |
 
 Every records file `X.jsonl` needs its `X.header.json`.
 
@@ -179,6 +180,7 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 - All commands: 0 means ok, 1 means problems were found or a check failed, 2 means a usage error or unreadable input. No command at all is a usage error (exit 2).
 - `inspect` exits 1 on hash problems (`problem:` lines on stderr, also with `--json`).
 - `eval` exits 1 when the run headers differ, and 2 on an unreadable file or arms that do not pair.
+- `self-test` exits 0 when every output matches, 1 when they differ, and 2 on a bad argument, an unset `--api-key-env` variable or a server error.
 - `gate` exits 0 when confirmed, 1 when regressed or not significant, 3 when screened out, and 2 on bad input or a refusal (see [gate](#gate)).
 - `build`, `compose` and `export` exit 0 on success and 2 on any error.
 - Errors go to stderr as a line starting with `error:`; read and parse errors name the file.

@@ -239,3 +239,30 @@ def test_hf_two_arms_resume_and_header(
         check_headers(
             read_header(header_path(base[name])), read_header(header_path(edit[name]))
         )
+
+
+def test_http_system_arm_pairs_with_base_and_resume_checks_it(tmp_path: Path) -> None:
+    sys_text = "Be brief."
+    with serve(_answer) as (url, state):
+        _props(state)
+
+        def run(arm: str, **kw: Any) -> Path:
+            return run_suites(
+                ["ifeval"], arm, tmp_path, backend=_http("base", url=url),
+                max_new_tokens=16, suite_paths=PATHS, **kw,
+            )["ifeval"]  # fmt: skip
+
+        base = run("base")
+        prompt = run("prompt", system=sys_text)
+        assert [
+            r["body"]["messages"][0]["role"] for r in state.requests if "body" in r
+        ][-2:] == ["system", "system"]
+        b, p = read_jsonl(base), read_jsonl(prompt)
+        assert len(pair(b, p)) == len(b)
+        hb, hp = read_header(header_path(base)), read_header(header_path(prompt))
+        assert hp["system"] == sys_text
+        assert "system" not in hb
+        check_headers(hb, hp, ignore=("system", "system_sha256"))
+        assert run("prompt", system=sys_text) == prompt  # same system resumes
+        with pytest.raises(ValueError, match=r"does not match|config_hash"):
+            run("prompt", system="Be long.")

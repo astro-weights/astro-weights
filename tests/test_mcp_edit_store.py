@@ -63,6 +63,19 @@ def edit_file(store: EditStore, name: str) -> Path:
     return store.dir / f"{sha}.safetensors"
 
 
+def float_file(store: EditStore, name: str) -> Path:
+    """Where the manifest says the unrounded float edit of `name` lives."""
+    sha = json.loads(store.manifest_path.read_text())[name]["float_sha256"]
+    return store.dir / f"{sha}.safetensors"
+
+
+def edit_files(store: EditStore, name: str) -> list[str]:
+    """Sorted file names of `name`'s stored and float edit, plus the manifest."""
+    return sorted(
+        {edit_file(store, name).name, float_file(store, name).name, "manifest.json"}
+    )
+
+
 def files(store: EditStore) -> list[str]:
     return sorted(p.name for p in store.dir.iterdir())
 
@@ -124,7 +137,7 @@ def test_save_load_drop_edited(store: EditStore) -> None:
     assert np.array_equal(_round_bf16(got), got)  # stored values are bf16-exact
     manifest = json.loads(store.manifest_path.read_text())
     assert manifest[O0]["shape"] == [32, 32]
-    assert set(manifest[O0]) == {"sha256", "rel_frobenius", "shape"}
+    assert set(manifest[O0]) == {"sha256", "float_sha256", "rel_frobenius", "shape"}
     store.drop(O0)
     assert store.edited() == []
     assert files(store) == ["manifest.json"]
@@ -280,7 +293,7 @@ def test_failed_save_keeps_old_edit(store: EditStore) -> None:
     with pytest.raises(ValueError, match="scalar multiple"):
         store.save(Q0, store.original(Q0) * 2)
     assert edit_file(store, Q0).read_bytes() == before
-    assert files(store) == sorted([edit_file(store, Q0).name, "manifest.json"])
+    assert files(store) == edit_files(store, Q0)
 
 
 def test_f16_overflow(tmp_path: Path) -> None:
@@ -389,7 +402,7 @@ def test_tamper_manifest(store: EditStore) -> None:
     store.manifest_path.write_text(json.dumps({Q0: {**m[Q0], "sha256": "0" * 64}}))
     with pytest.raises(ValueError, match="unreadable"):
         store.validate()
-    assert len(files(store)) == 2  # the real edit file was not deleted as an orphan
+    assert len(files(store)) == 3  # the real edit files were not deleted as orphans
     # a sha that is not 64 hex digits never becomes a path
     for bad_sha in ("../x", "A" * 64, "0" * 63):
         store.manifest_path.write_text(json.dumps({Q0: {**m[Q0], "sha256": bad_sha}}))
@@ -502,7 +515,7 @@ def test_export_adapter(store: EditStore, tmp_path: Path) -> None:
     assert set(res["residuals"]) == {O0, D0}
     for d in edit.deltas:
         name = d.module + ".weight"
-        dw = store.load(name) - store.original(name)
+        dw = store.float_edit(name) - store.original(name)
         got = np.linalg.norm(dw - d.dense()) / np.linalg.norm(dw)
         assert got == pytest.approx(res["residuals"][name], abs=1e-4)
         assert got < 0.9
@@ -540,7 +553,7 @@ def test_export_mixed_ranks_padded(store: EditStore, tmp_path: Path) -> None:
     assert {d.rank for d in edit.deltas} == {20}
     k = next(d for d in edit.deltas if d.module.endswith("k_proj"))
     assert np.linalg.matrix_rank(k.dense()) <= 16
-    dw = store.load(K0) - store.original(K0)
+    dw = store.float_edit(K0) - store.original(K0)
     assert np.linalg.norm(dw - k.dense()) / np.linalg.norm(dw) < 1e-4
 
 
@@ -734,9 +747,9 @@ def test_resave_replaces_file_and_unlinks_old(store: EditStore) -> None:
     store.save(O0, edit_of(store, O0, seed=2))
     assert edit_file(store, O0) != first
     assert not first.exists()
-    assert files(store) == sorted([edit_file(store, O0).name, "manifest.json"])
-    store.save(O0, edit_of(store, O0, seed=2))  # same content: same file
-    assert len(files(store)) == 2
+    assert files(store) == edit_files(store, O0)
+    store.save(O0, edit_of(store, O0, seed=2))  # same content: same files
+    assert len(files(store)) == 3
 
 
 def test_validate_removes_orphans_only(store: EditStore) -> None:

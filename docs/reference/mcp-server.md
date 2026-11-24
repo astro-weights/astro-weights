@@ -69,7 +69,7 @@ Per client: [Claude Code](../how-to/agent-claude-code.md), [Codex](../how-to/age
 | `kernel` | object: `timeout_s` (number > 0), `mem_gib` (int >= 1, Linux only), `allow_nested_userns` (bool: sandbox with bwrap older than 0.8) | `600.0`, `16`, `false` |
 | `forward` | object: `device` (`auto`, `cpu`, `cuda`, `mps`; `auto` picks `cuda`, then `mps`, then `cpu`), `dtype` (`auto`, `float32`, `bfloat16`, `float16`), `max_new_tokens` (int from 1 to 32768) | `auto`, `auto`, `4096` |
 | `export` | object: `rank` (int >= 1), `max_rel_residual` (finite number >= 0), `base_gguf` (path, relative to `RUN_DIR` or absolute), `gguf_out_type` (`q8_0`, `f16`, `bf16`) | `8`, `0.05`, absent, `q8_0` |
-| `confirm` | object with exactly `items` (JSONL of `{"item_id", "prompt", "gold"}`, path outside `RUN_DIR`), `grader` (`exact`, `choice`, `math`), `margin` (number from 0 below 1) and `max_queries` (int >= 1); needs `model_dir` | absent: no `confirm` tool |
+| `confirm` | object: `items` (JSONL of `item_id`, `prompt`, `gold`; outside `RUN_DIR`), `grader` (`exact`, `choice`, `math`), `margin` (number from 0 below 1, in items correct per item), `max_queries` (int >= 1); every key required, and `model_dir` too | absent: no `confirm` tool |
 
 An unknown key inside `kernel`, `forward` or `export` is an error.
 

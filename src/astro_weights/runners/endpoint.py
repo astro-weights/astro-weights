@@ -25,6 +25,7 @@ from astro_weights.eval.header import (
     header_path,
     read_header,
     run_identity,
+    system_header,
     write_header,
 )
 
@@ -117,6 +118,39 @@ class _Counts:
             self.failed += failed
 
 
+class ToolCallParseError(RuntimeError):
+    """The server refused the model's own reply: it could not parse a tool call.
+
+    llama-server answers HTTP 500 "Failed to parse tool call arguments as JSON"
+    when the model's call is cut off by `max_tokens` or is not JSON. The same
+    prompt gives the same reply, so it is not retried, and it is not an infra error.
+    """
+
+
+class ContextOverflowError(RuntimeError):
+    """The server refused the request because the conversation no longer fits its context.
+
+    HTTP 400 `exceed_context_size_error` (llama-server) or `context_length_exceeded` /
+    "maximum context length" (OpenAI-compatible servers). It is the task's size, not an
+    outage: not retried, and a multi-turn runner ends that conversation.
+    """
+
+
+_OVERFLOW = (
+    "exceed_context_size_error",
+    "context_length_exceeded",
+    "maximum context length",
+)
+
+
+def _overflow(status: int, text: str) -> bool:
+    return status == 400 and any(m in text for m in _OVERFLOW)
+
+
+def _unparsable(status: int, text: str) -> bool:
+    return status == 500 and "Failed to parse" in text
+
+
 def _infra(status: int) -> bool:
     """A status worth retrying: the server is overloaded or failing, not refusing."""
     return status == 429 or status >= 500
@@ -146,7 +180,7 @@ def _ask(
         except (OSError, http.client.HTTPException) as e:
             reply, last = None, f"{type(e).__name__}: {_scrub(str(e), api_key)}"
             continue
-        if not _infra(reply[0]):
+        if not _infra(reply[0]) or _unparsable(*reply):
             return reply
     counts.add(failed=1)
     if reply is None:
@@ -169,6 +203,10 @@ def _chat(
 ) -> dict[str, Any]:
     """POST one chat completion and return the parsed response object."""
     status, text = _ask(url, body, api_key, timeout, counts)
+    if _unparsable(status, text):
+        raise ToolCallParseError(_fail("server error", status, text, api_key).args[0])
+    if _overflow(status, text):
+        raise ContextOverflowError(_fail("server error", status, text, api_key).args[0])
     if status >= 400:
         tries = f" after {_RETRIES + 1} attempts" if _infra(status) else ""
         raise _fail(f"server error{tries}", status, text, api_key)
@@ -381,6 +419,7 @@ def generate_records_http(
     concurrency: int = 1,
     resume: bool = False,
     header: Mapping[str, Any] | None = None,
+    system: str | None = None,
 ) -> list[Record]:
     """Generate and score each item over `{base_url}/v1/chat/completions`.
 
@@ -411,8 +450,14 @@ def generate_records_http(
     written for it, so a resume asks again. The header file's `infra_errors`
     (provenance) counts the retries and the items that ran out of attempts, added
     up across resumes.
+
+    `system` is sent as the first message, role "system" (an empty string is
+    refused). `prompt_hash` still hashes the user message alone, so an arm run with
+    a system prompt pairs with one run without. It is checked against the header's
+    `system` like the other call settings, so a resume under another `system` raises.
     """
     _validate(items)
+    system_header(system)
     root = _root(base_url)
     _check_key(api_key)
     if (
@@ -428,6 +473,7 @@ def generate_records_http(
         "seed": seed,
         "extra_body": json.loads(json.dumps(dict(extra_body or {}))),
         "concurrency": concurrency,
+        "system": system,
     }
     if header is not None:
         _check_call(header, call, "header")
@@ -454,7 +500,10 @@ def generate_records_http(
 
     def fetch(item: Mapping[str, Any]) -> tuple[str, int, bool]:
         item_id = str(item["item_id"])
-        body = _body(model, messages[item_id], max_new_tokens, seed, extra_body)
+        sent = messages[item_id]
+        if system is not None:
+            sent = [{"role": "system", "content": system}, *sent]
+        body = _body(model, sent, max_new_tokens, seed, extra_body)
         try:
             obj = _chat(url, body, api_key, timeout, counts)
             seen = _scrub(json.dumps(obj), api_key)[:_BODY_CHARS]
@@ -564,6 +613,9 @@ def chat_http(
     `{"role": "tool", "tool_call_id": ..., "content": ...}`); `tools` are OpenAI
     function tools. Connection errors, timeouts, 429 and 5xx are retried twice with
     backoff; what is still wrong raises `RuntimeError` with the api key scrubbed.
+    Two refusals are the conversation's own and are never retried: a model reply the
+    server cannot parse as a tool call raises `ToolCallParseError`, a conversation that
+    no longer fits the context raises `ContextOverflowError` (both `RuntimeError`).
     A reply without `usage.completion_tokens` or with malformed tool calls raises
     `ValueError`.
     """
@@ -610,6 +662,7 @@ def run_header_http(
     concurrency: int = 1,
     serving_flags: Mapping[str, str] | None = None,
     model_id: str | None = None,
+    system: str | None = None,
 ) -> dict[str, Any]:
     """Settings that decide the outputs, plus what the server reports, for the run log.
 
@@ -626,11 +679,13 @@ def run_header_http(
     (random when not given), the library version and commit, and the numpy version.
     The server's answers are best effort: left out when the server does not give them.
     `/props` and `/version` are asked once, with a timeout of at most 5 seconds.
-    The api key is never recorded.
+    The api key is never recorded. `system` (as given to `generate_records_http`) is
+    recorded under `system` and `system_sha256` (CONFIG) only when given.
     """
     root = _root(base_url)
     _check_key(api_key)
     header: dict[str, Any] = {
+        **system_header(system),
         "base_url": root,
         "served_model": model,
         "max_new_tokens": max_new_tokens,

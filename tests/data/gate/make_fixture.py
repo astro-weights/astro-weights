@@ -22,6 +22,7 @@ from astro_weights.eval import (
     write_header,
     write_jsonl,
 )
+from astro_weights.eval.header import system_header
 from astro_weights.eval.splits import SplitManifest
 from astro_weights.export import save_peft
 from astro_weights.mcp.record import RunRecord
@@ -30,6 +31,7 @@ N_ITEMS = 200
 N_CONTROLS = 20
 N_SUITE = 120
 CUT = 40  # tokens the edit saves per answer when `tokens_cut`
+SYSTEM = "Answer in as few words as you can."  # the prompt arms' instruction
 MODULE = "model.layers.1.mlp.down_proj"
 
 
@@ -45,6 +47,7 @@ class Knobs:
     floor: bool = True
     manifest_k: int = 4
     arms: bool = False  # also write scripted, prompt and edit+prompt arms
+    n_controls: int = N_CONTROLS  # control files written to confirm/controls
 
 
 def _header(k: int, run_id: str) -> dict[str, object]:
@@ -120,7 +123,7 @@ def build(dst: Path, **knobs: object) -> Path:
         1,
     )
     (conf / "controls").mkdir(exist_ok=True)
-    for j in range(N_CONTROLS):  # accuracy moves both ways around the edit's 0
+    for j in range(k.n_controls):  # accuracy moves both ways around the edit's 0
         flips = {"drop": j % 3 if j < 10 else 0, "gain": j % 3 if j >= 10 else 0}
         rows = _arm(confirm_rows, f"control-{j:02d}", cut=j % 9, **flips)
         _write_arm(conf / "controls" / f"control-{j:02d}.jsonl", rows, 1)
@@ -143,7 +146,10 @@ def build(dst: Path, **knobs: object) -> Path:
     if k.arms:
         for name, cut in (("scripted", 5), ("prompt", 10), ("edit_prompt", 50)):
             _write_arm(
-                test / f"{name}.jsonl", _arm(test_rows, name, cut=cut), k.manifest_k
+                test / f"{name}.jsonl",
+                _arm(test_rows, name, cut=cut),
+                k.manifest_k,
+                **(system_header(SYSTEM) if name != "scripted" else {}),
             )
 
     suites = {}

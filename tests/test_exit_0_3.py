@@ -54,9 +54,13 @@ from astro_weights.eval.tasks import (
 )
 from astro_weights.mcp.record import RunRecord
 
-REAL_CONTROLS = 20
-SYNTHETIC_CONTROLS = 3  # control gates; the real run has 20. Every gate's pool holds 20
+N_CONTROLS = 21  # control-00 .. control-20, random_controls(edit, n=21)
+REAL_CONTROLS = N_CONTROLS  # control gates in the real run
+SYNTHETIC_CONTROLS = (
+    3  # control gates in the synthetic run; the pools are the real ones
+)
 POOL = 20  # control files in each gate's `[confirm] controls`
+CONTROL_NAMES = [f"control-{i:02d}" for i in range(N_CONTROLS)]
 REAL_BFCL_TASKS = 200  # the full multi_turn_base run, not the 10-task pilot
 SYNTHETIC_BFCL_TASKS = 12
 NOT_CONFIRMED = ("not significant", "regressed")
@@ -93,12 +97,33 @@ def _share_record(gate_dir: Path, shared: Path) -> None:
 
 
 def _as_control(gate_dir: Path, i: int) -> None:
-    """Gate `gate_dir` as control `i`: its `[confirm] edit` is its file in the pool."""
+    """Gate `gate_dir` as control `i`: its `[confirm] edit` is control `i`'s records."""
     toml = gate_dir / "GATE.toml"
     toml.write_text(
         toml.read_text(encoding="utf-8").replace(
             'edit = "confirm/edit.jsonl"',
             f'edit = "confirm/controls/control-{i:02d}.jsonl"',
+        ),
+        encoding="utf-8",
+    )
+
+
+def _pool(gate_dir: Path, exclude: int) -> None:
+    """Point `gate_dir/GATE.toml` at a pool of the 20 controls other than `exclude`.
+
+    `confirm/controls` holds all 21 control files; the pool is a copy of 20 of them
+    (records and headers) in `confirm/pool`. The edit gate (and the planted bad edit's)
+    excludes control-00, control `i` excludes itself.
+    """
+    pool = gate_dir / "confirm" / "pool"
+    pool.mkdir()
+    for f in sorted((gate_dir / "confirm" / "controls").glob("control-*")):
+        if not f.name.startswith(f"control-{exclude:02d}."):
+            shutil.copy(f, pool / f.name)
+    toml = gate_dir / "GATE.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            'controls = "confirm/controls"', 'controls = "confirm/pool"'
         ),
         encoding="utf-8",
     )
@@ -168,7 +193,8 @@ def _bfcl(path: Path) -> None:
 
 def make_synthetic(root: Path) -> None:
     record = root / "run" / "record.jsonl"
-    edit = fixture.build(root / "gate" / "edit", arms=True)
+    edit = fixture.build(root / "gate" / "edit", arms=True, n_controls=N_CONTROLS)
+    _pool(edit.parent, 0)
     record.parent.mkdir(parents=True)
     shutil.move(edit.parent / "record.jsonl", record)
     edit.write_text(
@@ -178,11 +204,19 @@ def make_synthetic(root: Path) -> None:
         encoding="utf-8",
     )
     for i in range(SYNTHETIC_CONTROLS):  # every control fails the confirm stage
-        c = fixture.build(root / "gate" / "controls" / f"{i:02d}", controls_beat=False)
+        c = fixture.build(
+            root / "gate" / "controls" / f"{i:02d}",
+            controls_beat=False,
+            n_controls=N_CONTROLS,
+        )
         _share_record(c.parent, record)
         _as_control(c.parent, i)
-    bad = fixture.build(root / "gate" / "bad", screens_fail="norm")
+        _pool(c.parent, i)
+    bad = fixture.build(
+        root / "gate" / "bad", screens_fail="norm", n_controls=N_CONTROLS
+    )
     _share_record(bad.parent, record)
+    _pool(bad.parent, 0)
     _floor_runs(edit.parent, root / "floor")
     _bfcl(root / "bfcl")
     # the verdict a first run "recorded"; the seal it spent is not kept
@@ -289,6 +323,53 @@ def _suites_present(cfg: GateConfig) -> None:
             assert header_path(arm).is_file(), f"suite {name}: no header for {arm}"
 
 
+def _pool_files(cfg: Path) -> dict[str, str]:
+    """`{file stem: records sha256}` of a gate's `[confirm] controls` directory."""
+    pool = load_gate_config(cfg).confirm.controls
+    return {f.stem: records_sha256(read_jsonl(f)) for f in sorted(pool.glob("*.jsonl"))}
+
+
+def check_pools(data: Data) -> None:
+    """Every gate's pool is 20 distinct controls that do not contain the gated arm.
+
+    The edit's pool is control-01..control-20 and the edit's records are in no pool.
+    Control `i` is gated against the other 20 of control-00..control-20: a pool that
+    holds the gated control lets the pool's best control beat the second best (itself
+    excluded) by construction and always pass stage 3.
+    """
+    edit = load_gate_config(data.edit).confirm
+    edit_sha = records_sha256(read_jsonl(edit.edit))
+    pool = _pool_files(data.edit)
+    assert sorted(pool) == CONTROL_NAMES[1:], f"edit pool: {sorted(pool)}"
+    assert len(set(pool.values())) == POOL, "edit pool: two controls share records"
+    assert edit_sha not in pool.values(), "the edit's records are in the edit pool"
+    cfgs = data.control_configs()
+    assert len(cfgs) == data.controls
+    picked = []
+    for cfg in [data.bad, *cfgs]:
+        c = load_gate_config(cfg).confirm
+        got = _pool_files(cfg)
+        assert len(got) == POOL, f"{cfg}: pool has {len(got)} files, not {POOL}"
+        assert len(set(got.values())) == POOL, f"{cfg}: pool files share records"
+        assert edit_sha not in got.values(), (
+            f"{cfg}: the edit's records are in the pool"
+        )
+        if cfg == data.bad:
+            assert sorted(got) == CONTROL_NAMES[1:], f"{cfg}: pool {sorted(got)}"
+            continue
+        sha = records_sha256(read_jsonl(c.edit))
+        assert c.edit.stem in CONTROL_NAMES, f"{cfg}: [confirm] edit is no control"
+        assert c.edit.stem not in got, f"{cfg}: pool contains itself ({c.edit.stem})"
+        assert sha not in got.values(), f"{cfg}: pool contains itself (same records)"
+        assert sorted([*got, c.edit.stem]) == CONTROL_NAMES, (
+            f"{cfg}: pool is not the other 20 controls: {sorted(got)}"
+        )
+        picked.append(sha)
+    assert len(set(picked)) == len(picked), (
+        "two control gates share a control's records"
+    )
+
+
 # ------------------------------------------------------------------- criterion 2
 
 
@@ -297,28 +378,14 @@ def test_2_edit_confirmed_every_control_not(
 ) -> None:
     """Gate confirms the edit; the full gate confirms none of the controls.
 
-    Each control is gated as if it were the edit, against the same pool of 20 controls
-    (itself among them). A control stopped at stage 1 would not prove the gate rejects
+    Each control is gated as if it were the edit, against the other 20 controls (never
+    a pool it is part of). A control stopped at stage 1 would not prove the gate rejects
     it, so the outcome must be "not significant" or "regressed".
     """
+    check_pools(data)
     code, out, _ = gate(data.edit, capsys=capsys)
     assert (code, outcome(out)) == (0, "confirmed")
-    cfgs = data.control_configs()
-    assert len(cfgs) == data.controls
-    assert len(list(load_gate_config(data.edit).confirm.controls.glob("*.jsonl"))) == (
-        POOL
-    )
-    picked = []
-    for cfg in cfgs:  # each control gate is tied to its own control file
-        c = load_gate_config(cfg).confirm
-        pool = {f.resolve() for f in c.controls.glob("*.jsonl")}
-        assert len(pool) == POOL, cfg
-        assert c.edit.resolve() in pool, f"{cfg}: [confirm] edit is not a control file"
-        picked.append(records_sha256(read_jsonl(c.edit)))
-    assert len(set(picked)) == len(picked), (
-        "two control gates share a control's records"
-    )
-    for cfg in cfgs:
+    for cfg in data.control_configs():
         code, out, err = gate(cfg, capsys=capsys)
         assert code == 1, f"{cfg}: exit {code}\n{out}{err}"
         assert outcome(out) in NOT_CONFIRMED, cfg
@@ -503,3 +570,40 @@ def test_a_leftover_seal_is_not_spent(
     )  # spends src's seal
     copy = dataclasses.replace(source, root=src).copy(tmp_path / "dst")
     assert gate(copy.edit, capsys=capsys)[0] == 0
+
+
+def test_a_pool_that_holds_the_gated_control_is_refused(
+    synthetic: Data, tmp_path: Path
+) -> None:
+    data = synthetic.copy(tmp_path / "data")
+    check_pools(data)
+    cfg = data.control_configs()[1]  # control-01 against the edit's pool, which has it
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8").replace(
+            'controls = "confirm/pool"', 'controls = "../../edit/confirm/pool"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="pool contains itself"):
+        check_pools(data)
+
+
+def test_a_pool_that_holds_the_edit_or_a_copy_is_refused(
+    synthetic: Data, tmp_path: Path
+) -> None:
+    data = synthetic.copy(tmp_path / "data")
+    pool = load_gate_config(data.edit).confirm.controls
+    victim = pool / "control-20.jsonl"
+    edit = load_gate_config(data.edit).confirm.edit
+    for src, dst in ((edit, victim), (header_path(edit), header_path(victim))):
+        shutil.copy(src, dst)
+    with pytest.raises(AssertionError, match="edit's records are in"):
+        check_pools(data)
+
+
+def test_a_short_or_duplicated_pool_is_refused(synthetic: Data, tmp_path: Path) -> None:
+    data = synthetic.copy(tmp_path / "data")
+    pool = load_gate_config(data.edit).confirm.controls
+    (pool / "control-20.jsonl").unlink()
+    with pytest.raises(AssertionError, match="edit pool"):
+        check_pools(data)

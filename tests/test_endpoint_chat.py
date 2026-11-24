@@ -7,7 +7,12 @@ from fake_endpoint import serve, tool_reply
 
 from astro_weights.eval import ToolCall
 from astro_weights.runners import endpoint
-from astro_weights.runners.endpoint import ChatReply, chat_http
+from astro_weights.runners.endpoint import (
+    ChatReply,
+    ContextOverflowError,
+    ToolCallParseError,
+    chat_http,
+)
 
 KEY = "sk-secret-key-123"
 MSGS = [{"role": "user", "content": "hi"}]
@@ -120,3 +125,36 @@ def test_bad_url_and_key() -> None:
         chat_http("ftp://x", "m", MSGS, max_new_tokens=1)
     with pytest.raises(ValueError, match="api_key"):
         chat_http("http://127.0.0.1:1", "m", MSGS, max_new_tokens=1, api_key="a b")
+
+
+def test_unparsable_tool_call_is_one_request_and_its_own_error() -> None:
+    body = json.dumps({"error": {"code": 500, "message": "Failed to parse tool call"}})
+    with (
+        serve(lambda b: (500, body)) as (u, s),
+        pytest.raises(ToolCallParseError, match="Failed to parse"),
+    ):
+        _chat(u, tools=TOOLS)
+    assert len(s.requests) == 1  # a 500 that is the model's output is not retried
+    with serve(lambda b: (500, "boom")) as (u, s), pytest.raises(RuntimeError) as e:
+        _chat(u)
+    assert not isinstance(e.value, ToolCallParseError)
+    assert len(s.requests) == 3  # any other 500 still is
+
+
+@pytest.mark.parametrize(
+    "marker", ["exceed_context_size_error", "context_length_exceeded"]
+)
+def test_context_overflow_is_one_request_and_its_own_error(marker: str) -> None:
+    body = json.dumps({"error": {"code": 400, "type": marker, "message": "too long"}})
+    with (
+        serve(lambda b: (400, body)) as (u, s),
+        pytest.raises(ContextOverflowError, match="too long"),
+    ):
+        _chat(u)
+    assert len(s.requests) == 1
+    with (
+        serve(lambda b: (400, "bad request")) as (u, _),
+        pytest.raises(RuntimeError) as e,
+    ):
+        _chat(u)
+    assert not isinstance(e.value, ContextOverflowError)

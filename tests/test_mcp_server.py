@@ -877,6 +877,8 @@ async def test_finish_exports_the_stored_edits(tmp_path: Path) -> None:
     assert export["gguf"] is None
     assert export["rank"] == 2
     assert export["residuals"][N0] < 0.05
+    assert export["delta_source"] == {N0: "float"}
+    assert set(export["replay_max_abs"]) == {N0}
     edit = load_peft(export["adapter"])
     assert [d.module for d in edit.deltas] == [N0.removesuffix(".weight")]
     assert edit.base_model == str(run / "model")
@@ -994,6 +996,8 @@ async def test_finish_passes_the_gguf_options_to_the_export(
             "adapter": out_dir / "adapter",
             "gguf": out_dir / "model.gguf",
             "residuals": {N0: 0.01},
+            "delta_source": {N0: "float"},
+            "replay_max_abs": {N0: 0.0},
             "rank": 3,
         }
 

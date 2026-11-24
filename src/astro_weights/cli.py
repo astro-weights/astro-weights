@@ -7,6 +7,7 @@ import math
 import os
 import secrets
 import sys
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -396,6 +397,35 @@ def _same_settings(
         raise ValueError(f"{other} vs {base}: {e}") from None
 
 
+_SYSTEM_ARMS = ("prompt", "edit+prompt")  # report arms made with a system prompt
+_SYSTEM_KEYS = ("system", "system_sha256")
+
+
+def _check_system(path: Path) -> None:
+    """ValueError unless the header at `path` records a non-empty system and its hash."""
+    h = _header(path)
+    system = h.get("system")
+    if not isinstance(system, str) or not system:
+        raise ValueError(f"{path}: a prompt arm needs a system prompt in its header")
+    if h.get("system_sha256") != hashlib.sha256(system.encode("utf-8")).hexdigest():
+        raise ValueError(f"{path}: system_sha256 does not match system")
+
+
+def _same_settings_test(cfg: GateConfig, shown: Mapping[str, Path]) -> None:
+    """Test-split arms agree with base on every config key. The prompt arms differ in
+    the system prompt, which they must have; base, edit and scripted must not."""
+    t = cfg.test
+    if "system" in _header(t.base):
+        raise ValueError(f"{t.base}: the base arm must run without a system prompt")
+    _same_settings(t.base, t.edit, cfg.arm_keys)
+    for name, p in shown.items():
+        if name in _SYSTEM_ARMS:
+            _check_system(p)
+            _same_settings(t.base, p, cfg.arm_keys, ignore=_SYSTEM_KEYS)
+        else:
+            _same_settings(t.base, p, cfg.arm_keys)
+
+
 def _read_screens(path: Path) -> tuple[Screen, ...]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -506,8 +536,7 @@ def _test_stage(cfg: GateConfig, confirm_base: Path, unseal: bool) -> _TestStage
     shown = {
         name: cfg.arms[key] for key, (name, _) in REPORT_ARMS.items() if key in cfg.arms
     }
-    for p in (t.edit, *shown.values()):
-        _same_settings(t.base, p, cfg.arm_keys)
+    _same_settings_test(cfg, shown)
     _same_settings(confirm_base, t.base, cfg.arm_keys, ignore=("k",))
     key = config_hash(_header(t.base))
     floor = load_floor(t.floor, key)
