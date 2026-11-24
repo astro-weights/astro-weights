@@ -35,6 +35,17 @@ from astro_weights.eval.paired import (
     pair,
 )
 from astro_weights.eval.records import Record, prompt_hash, read_jsonl, write_jsonl
+from astro_weights.eval.tasks import (
+    TaskComparison,
+    TaskDiff,
+    TaskRecord,
+    ToolCall,
+    Turn,
+    compare_tasks,
+    format_tasks,
+    read_tasks,
+    write_tasks,
+)
 from astro_weights.eval.verdict import Verdict
 
 __all__ = [
@@ -46,18 +57,25 @@ __all__ = [
     "PairedResult",
     "Record",
     "StratumResult",
+    "TaskComparison",
+    "TaskDiff",
+    "TaskRecord",
+    "ToolCall",
+    "Turn",
     "Verdict",
     "answer_part",
     "arms_dict",
     "check_headers",
     "compare",
     "compare_arms",
+    "compare_tasks",
     "config_hash",
     "control_rule",
     "exceeds_floor",
     "floor_from_records",
     "format_arms",
     "format_report",
+    "format_tasks",
     "grade_choice",
     "grade_exact",
     "grade_math",
@@ -70,8 +88,10 @@ __all__ = [
     "prompt_hash",
     "read_header",
     "read_jsonl",
+    "read_tasks",
     "save_floor",
     "tokens_beyond_floor",
     "write_header",
     "write_jsonl",
+    "write_tasks",
 ]
