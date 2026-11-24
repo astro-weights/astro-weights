@@ -1,0 +1,1 @@
+`astro_weights.eval.suites` loads the GSM8K, IFEval and MMLU-Pro regression suites at a pinned revision and sha256 (download or your own file), and `astro_weights.eval.ifeval` grades IFEval strictly; the `eval` extra now includes pyarrow and langdetect.
