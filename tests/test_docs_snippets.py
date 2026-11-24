@@ -41,6 +41,13 @@ SKIP: dict[tuple[str, int], str] = {
         "docs/how-to/run-eval.md",
         5,
     ): "needs a llama-server with a base GGUF and a LoRA GGUF",
+    ("docs/how-to/run-gate.md", 1): "needs a base model and neutral prompt token ids",
+    ("docs/how-to/run-gate.md", 3): "needs a base model and two text sets",
+    ("docs/how-to/run-gate.md", 4): "downloads IFEval from the Hugging Face Hub",
+    (
+        "docs/how-to/run-gate.md",
+        5,
+    ): "needs a gorilla checkout and an OpenAI-compatible server with tool calls",
 }
 
 FENCE = re.compile(r"^```python\n(.*?)^```", re.DOTALL | re.MULTILINE)

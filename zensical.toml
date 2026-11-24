@@ -24,6 +24,7 @@ nav = [
     "how-to/find-direction.md",
     "how-to/compare-arms.md",
     "how-to/run-eval.md",
+    "how-to/run-gate.md",
     "how-to/agent-local-model.md",
     "how-to/agent-hosted.md",
     "how-to/agent-claude-code.md",
@@ -31,7 +32,7 @@ nav = [
     "how-to/agent-sdk.md",
   ] },
   { "Reference" = ["reference/index.md", "reference/cli.md", "reference/mcp-server.md"] },
-  { "Explanation" = ["explanation/why-lora.md", "explanation/agent-budgets-and-sandbox.md"] },
+  { "Explanation" = ["explanation/why-lora.md", "explanation/agent-budgets-and-sandbox.md", "explanation/gate-verdicts.md"] },
   { "Blog" = "https://astro-weights.dev/blog/" },
 ]
 
