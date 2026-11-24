@@ -1,0 +1,1 @@
+An explicit `[forward] device` (for example `cuda`) that the installed torch cannot use now stops `astro-weights run` before the editor starts, instead of failing on the first forward pass after editor turns were paid for.

@@ -1045,3 +1045,37 @@ def test_mps_matches_cpu(tiny: Path, tmp_path: Path) -> None:
                 np.testing.assert_allclose(
                     mps[arm][key], want, rtol=1e-4, atol=1e-4, err_msg=key
                 )
+
+
+@pytest.mark.parametrize(
+    ("device", "cuda", "count", "mps", "want"),
+    [
+        ("auto", False, 0, False, None),
+        ("cpu", False, 0, False, None),
+        ("cuda", True, 1, False, None),
+        ("cuda", False, 0, False, "has no CUDA"),
+        ("cuda:1", True, 1, False, "only 1 CUDA device"),
+        ("mps", False, 0, True, None),
+        ("mps", False, 0, False, "MPS is not available"),
+        ("gpu0", True, 1, True, "not a torch device"),
+    ],
+)
+def test_device_problem(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    cuda: bool,
+    count: int,
+    mps: bool,
+    want: str | None,
+) -> None:
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: count)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+    got = forward.device_problem(device)
+    if want is None:
+        assert got is None
+    else:
+        assert got is not None
+        assert want in got
