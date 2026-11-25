@@ -14,8 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from astro_weights.eval import Record, config_hash, header_path, write_jsonl
-from astro_weights.eval.header import read_header, write_header
+from astro_weights.eval import Record, write_jsonl
 from astro_weights.eval.suites import PINS, load_suite, suite_grader
 from astro_weights.runners.endpoint import generate_records_http, run_header_http
 
@@ -48,19 +47,6 @@ def _placeholder(gold: str, output: str) -> bool:
     return False
 
 
-def _keep_header(path: Path, header: dict[str, Any]) -> None:
-    """Write `header` beside `path`, or keep the one of the run being resumed."""
-    where = header_path(path)
-    if where.exists():
-        if config_hash(read_header(where)) != config_hash(header):
-            raise ValueError(
-                f"{where}: the records were made under another config "
-                "(config_hash differs); start a new out_dir for this one"
-            )
-        return
-    write_header(where, header)
-
-
 def _generate(
     backend: HFBackend | HttpBackend,
     items: Sequence[Mapping[str, Any]],
@@ -81,14 +67,10 @@ def _generate(
         )  # fmt: skip
     from astro_weights.runners.generate import generate_records
 
-    if resume:
-        _keep_header(path, header)
-    elif not (path.exists() and path.stat().st_size > 0):
-        write_header(header_path(path), header)  # else generate_records refuses
     return generate_records(
         backend.model, backend.tokenizer, items, arm, _placeholder, max_new_tokens,
         seed, backend.chat, out=path, resume=resume, batch_size=backend.batch_size,
-        system=system,
+        system=system, header=header,
     )  # fmt: skip
 
 
