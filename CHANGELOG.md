@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
+## [0.3.0] - 2026-11-24
+
+### Added
+
+- A noise-floor result (`FloorResult`, `floor_from_records`, `save_floor`, `load_floor`) is stored under the run's `config_hash` and loaded only for that exact hash.
+- Added the 0.3 exit test (`tests/test_exit_0_3.py`, `ASTRO_EXIT_DATA`, layout and commands in `tests/exit_0_3/README.md`): criteria 2 to 8 of PDR 0.3 on recorded files, plus a synthetic variant for CI.
+- Docs: how-to "Run the 0.3 gate end to end" (splits and seal, self-test and noise floor, pre-screens, random controls, scripted and prompt arms, the `confirm` tool, regression suites, BFCL `multi_turn_base`, `astro-weights gate`) and explanation "Gate verdicts" (outcomes, keep-original advice, why the test split is sealed, MDE). CLI reference lists `self-test`; MCP reference lists the `confirm` object of `run.json`.
+- Guards: edit norm range check, perplexity and last-token KL pre-screens (`edits.check_norms`, `runners.guards`).
+- MCP `confirm` tool (with a `confirm` object in run.json): the agent learns only whether its stored edits beat the current best on held-out confirm items by the margin, at most `max_queries` times; `finish` reports whether the export is the last edit that passed (`exported_is_best`), and `RunRecord.confirm_counts` gives `candidates_tried` (distinct edit sets sent to confirm, not every save), `candidates_saved` (accepted `save_edit` calls) and `confirm_queries`.
+- Multi-turn task records (`TaskRecord`, `read_tasks`, `write_tasks`) and `compare_tasks` / `format_tasks`: paired pass rate, tokens, tool calls and turns per task, trials averaged per task.
+- Run headers split their keys into config (decide the outputs) and provenance (where and when). `check_headers` now compares config keys only (model identity, backend and build are config), so HTTP arms under different served names or URLs no longer need `--ignore-header`; new `config_hash`, `CONFIG_KEYS`, `PROVENANCE_KEYS`, and an `arm_keys` argument and `astro-weights eval --arm-key KEY` for arms on one server that differ in an `extra_body` key. `run_header` and `run_header_http` also record a run id, K, concurrency, library version and commit, numpy version, GPU model and count, llama.cpp build info, vLLM version, declared `serving_flags` and a `model_id` for HTTP arms. New `astro_weights.eval.Verdict` schema for `verdict.json`.
+- Runners take a `system` prompt (`generate_records`, `generate_records_http`, `run_suites`; recorded in the run header as `system` and `system_sha256`) so the gate's `prompt` and `edit+prompt` arms pair with base on the item prompt, and `astro-weights gate` accepts those arms only when their header carries a system prompt that base, edit and scripted lack.
+- Seeded dev / confirm / test splits (`astro_weights.eval.splits`: `assign_splits`, `SplitManifest` with `k` seeds per test item) and a sealed test split (`astro_weights.eval.seal`): `astro-weights eval --split test --manifest M --seal-dir D --adapter A` scores each edit once on a test set (same records, same factors, or the same `B @ A` within 1e-3 under probes seeded by the ledger's secret `seal.salt` are refused; a scored edit's records cannot come back as a base or floor arm), and `--unseal` scores it again with a line in the ledger saying so.
+- `astro-weights export --gguf` and `--splice` print the sha256 of each GGUF they write, and return it under `sha256` with `--json`, so the exact file can be recorded with the results.
+- `astro-weights gate GATE.toml` runs the 0.3 gate end to end from recorded files (pre-screens, random controls on confirm, the sealed K=4 test split through the same seal as `eval --split test`, regression suites), prints the outcome with every check and arm, and writes `verdict.json`; exit 0 confirmed, 1 regressed or not significant, 3 screened out, 2 bad input or refused.
+- `astro_weights.eval.suites` loads the GSM8K, IFEval and MMLU-Pro regression suites at a pinned revision and sha256 (download or your own file), and `astro_weights.eval.ifeval` grades IFEval strictly; the `eval` extra now includes pyarrow and langdetect.
+- `astro_weights.runners.suites_run.run_suites` runs the GSM8K, IFEval and MMLU-Pro regression suites for one arm (Hugging Face model or OpenAI-compatible server), grades each item with the suite grader and writes pairable records and a run header per suite.
+- `compare_arms` and `format_arms` compare one base against many named arms (edit, random controls, prompt, scripted) in one table with the MDE on every row and a summary of the controls.
+- `compare` and `astro-weights eval` add the 0.3 paired statistics: `k` samples per item with an exact sign test on per-item means, a paired bootstrap CI for the score difference, Wilson and Newcombe intervals for binary scores, per-stratum rows (`strata=`), and the minimum detectable difference on every result line.
+- `control_rule` judges an edit against random controls: the target effect must strictly beat their q-quantile (at least 20 controls for q=0.95) and every side effect must stay inside the controls' range.
+- `gate` turns pre-screens, random controls, the K=4 test split and regression suites into one constraint-style outcome (confirmed, not significant, regressed or screened out) with every check, the MDE, the recorded non-inferiority margin (capped at 2 pp) and keep-original advice; `format_gate` prints it.
+- `generate_records_http` takes `concurrency`, `resume` and `header`: requests run in parallel while records stay in item order, a crashed run resumes without gaps or duplicates (refused under another config), and connection errors, timeouts, 429 and 5xx are retried and counted in the header's `infra_errors`.
+- `random_like` and `random_controls` build seeded random edits with the modules, shapes, rank and per-module `|B @ A|_F` of an edit, optionally matched after rounding to bfloat16 or float16, as controls for a real edit.
+- `runners.endpoint.chat_http` makes one tool-calling chat request, and `runners.bfcl` (`load_bfcl`, `run_task`, `run_bfcl`) runs BFCL `multi_turn_base` tasks from a pinned local checkout against an OpenAI-compatible server and scores them with BFCL's state and response checks into `TaskRecord`s.
+- `runners.scripted_arm.scripted_arm` builds a closed-form baseline edit (difference-of-means direction, `project_out` on the writer modules of a given edit) to compare an agent's edit against.
+- `self_test_http` and `astro-weights self-test` send one prompt under varied batch sizes and prefix-cache states and report whether the server returns a single output.
+- `tokens_beyond_floor` is a one-sided check that an edit lowers output tokens by more than the base-vs-base noise floor.
+
+### Changed
+
+- `check_headers(base, edit, ignore=...)` now always skips the provenance keys and `ignore` adds to them, so the old `ignore=("device",)` still works; the default is `()`. `run_header_http` records the served name as `served_model` (provenance) instead of `model`, so an HTTP header written by 0.2 differs from a new one on `model`. New config keys (`model_name_or_path`, `model_id`, `backend`, and the torch, transformers, llama.cpp build and vLLM versions) are missing from old headers, so an old header differs from a new one on them. Rerun the arm, or pass `--ignore-header`.
+
+### Fixed
+
+- A tool call the server cannot parse (llama-server answers HTTP 500 "Failed to parse tool call") is now a BFCL turn without a call, and a conversation that outgrows the server context (HTTP 400 `exceed_context_size_error`) ends that task as failed; before, either one aborted `run_bfcl` and lost every record of the run.
+- Export takes each edit's low-rank dW from the float edit the agent sent, not the copy rounded to the base dtype, so a small edit on a bf16 base no longer fails `max_rel_residual`; the adapter meta records `delta_source` ("float", or "rounded" for edits stored before this change) and `replay_max_abs` per tensor.
+- The 0.3 exit test gates the edit against `control-01` to `control-20` and each of 21 controls against the other 20, so no gate pool contains the arm it gates.
+- The `[confirm]` table of an `astro-weights run` config (items, grader, margin, max_queries) writes the `confirm` object of `run.json`, so a run started from TOML can use the `confirm` tool.
+- The `exec_python` and `finish` tool descriptions now say that `finish` exports each edit at rank `export.rank` (default 8) and fails above `export.max_rel_residual` (default 0.05), so MCP clients such as Codex keep edits low rank.
+
 ## [0.2.2] - 2026-11-19
 
 ### Added
@@ -221,6 +261,7 @@ First release. Pre-alpha: the API will change.
 - `apply`/`remove` on transformers models (`hf` extra).
 - `astro-weights inspect` CLI.
 
+[0.3.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.3.0
 [0.2.2]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.2
 [0.2.1]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.1
 [0.2.0]: https://github.com/astro-weights/astro-weights/releases/tag/v0.2.0

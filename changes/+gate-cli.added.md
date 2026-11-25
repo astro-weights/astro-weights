@@ -1,1 +1,0 @@
-`astro-weights gate GATE.toml` runs the 0.3 gate end to end from recorded files (pre-screens, random controls on confirm, the sealed K=4 test split through the same seal as `eval --split test`, regression suites), prints the outcome with every check and arm, and writes `verdict.json`; exit 0 confirmed, 1 regressed or not significant, 3 screened out, 2 bad input or refused.

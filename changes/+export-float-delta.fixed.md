@@ -1,1 +1,0 @@
-Export takes each edit's low-rank dW from the float edit the agent sent, not the copy rounded to the base dtype, so a small edit on a bf16 base no longer fails `max_rel_residual`; the adapter meta records `delta_source` ("float", or "rounded" for edits stored before this change) and `replay_max_abs` per tensor.

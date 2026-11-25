@@ -1,1 +1,0 @@
-`random_like` and `random_controls` build seeded random edits with the modules, shapes, rank and per-module `|B @ A|_F` of an edit, optionally matched after rounding to bfloat16 or float16, as controls for a real edit.
