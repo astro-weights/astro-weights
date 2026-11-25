@@ -186,6 +186,34 @@ def read_tasks(path: str | Path) -> list[TaskRecord]:
     return out
 
 
+def read_tasks_tail(path: str | Path) -> tuple[list[TaskRecord], int | None, bool]:
+    """Records in `path` without changing it, and how to repair its last line.
+
+    Returns (records, cut, whole): `cut` is the size to truncate to when a crash
+    left a last line without its newline that is not valid JSON; `whole` is True
+    when that line is valid and only lacks its newline.
+    """
+    data = Path(path).read_bytes()
+    cut: int | None = None
+    whole = False
+    if data and not data.endswith(b"\n"):
+        start = data.rfind(b"\n") + 1
+        try:
+            json.loads(data[start:])
+        except ValueError:  # truncated JSON or a cut UTF-8 character
+            cut, data = start, data[:start]
+        else:
+            whole = True
+    out: list[TaskRecord] = []
+    for num, line in enumerate(data.decode("utf-8").split("\n"), start=1):
+        if line.strip():
+            try:
+                out.append(_parse(line))
+            except ValueError as e:
+                raise ValueError(f"line {num}: {e}") from e
+    return out, cut, whole
+
+
 @dataclass(frozen=True)
 class TaskDiff:
     """Paired per-task difference (edit - base) of one count, averaged over trials per task."""

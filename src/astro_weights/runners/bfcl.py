@@ -21,20 +21,24 @@ import copy
 import hashlib
 import inspect
 import json
+import os
 import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from astro_weights.eval import TaskRecord, ToolCall, Turn, prompt_hash, write_tasks
+from astro_weights.eval import TaskRecord, ToolCall, Turn, prompt_hash, write_header
+from astro_weights.eval.header import header_path
+from astro_weights.eval.tasks import read_tasks_tail
 from astro_weights.runners.endpoint import (
     ChatReply,
     ContextOverflowError,
     ToolCallParseError,
+    _header_to_keep,
     chat_http,
 )
 
@@ -509,6 +513,44 @@ def _check_envs(tasks: Sequence[BfclTask]) -> None:
                     ) from e
 
 
+def _load_done(
+    path: Path, tasks: Sequence[BfclTask], arm: str, trials: int
+) -> dict[tuple[str, int], TaskRecord]:
+    """Records of an earlier run in `path`, checked against this run.
+
+    The file is only repaired (a crash's partial last line) after it checked out.
+    """
+    records, cut, whole = read_tasks_tail(path)
+    hashes = {t.task_id: t.prompt_hash for t in tasks}
+    done: dict[tuple[str, int], TaskRecord] = {}
+    for r in records:
+        where = f"{path}: task {r.task_id!r} trial {r.trial}"
+        if r.arm != arm:
+            raise ValueError(
+                f"{where} is arm {r.arm!r}, this run is arm {arm!r}; "
+                "the file is another run's"
+            )
+        if r.task_id not in hashes:
+            raise ValueError(f"{path}: task_id {r.task_id!r} is not in tasks")
+        if not 0 <= r.trial < trials:
+            raise ValueError(f"{where} is outside trials=1..{trials}")
+        if r.prompt_hash != hashes[r.task_id]:
+            raise ValueError(
+                f"{where}: the task differs from the one that would be run now; "
+                "the file is another run's"
+            )
+        if (r.task_id, r.trial) in done:
+            raise ValueError(f"{where} appears twice")
+        done[r.task_id, r.trial] = r
+    if cut is not None:
+        with path.open("r+b") as f:
+            f.truncate(cut)
+    elif whole:
+        with path.open("ab") as f:
+            f.write(b"\n")
+    return done
+
+
 def run_bfcl(
     tasks: Sequence[BfclTask],
     base_url: str,
@@ -523,14 +565,31 @@ def run_bfcl(
     extra_body: Mapping[str, Any] | None = None,
     timeout: float = 120.0,
     out: str | Path | None = None,
+    resume: bool = False,
+    header: Mapping[str, Any] | None = None,
 ) -> list[TaskRecord]:
     """Run each task `trials` times against `{base_url}/v1/chat/completions`.
 
-    Returns the records task by task, trial by trial; with `out` also writes them
-    (`write_tasks`) after the last one. Trial `t` uses request seed `seed + t`.
-    `max_new_tokens` caps each reply. A server error raises as in `chat_http` and
-    nothing is written. Serve the base and the edit under two names and call this once
-    per name, with the same `tasks`.
+    Returns the records task by task, trial by trial. With `out`, each record is
+    appended to the JSONL file (flushed and fsynced) as soon as its trial finishes,
+    so a killed run keeps what it finished. Trial `t` uses request seed `seed + t`.
+    `max_new_tokens` caps each reply. A server error raises as in `chat_http`; the
+    records already written stay. Serve the base and the edit under two names and call
+    this once per name, with the same `tasks`.
+
+    A non-empty `out` raises `FileExistsError` unless `resume=True`. Resuming keeps
+    the records in the file and runs only the (task, trial) pairs not in it, asking
+    each the same as an uninterrupted run would (same seed); a last line cut short by
+    a crash is dropped and redone. A record of another arm, of a task not in `tasks`,
+    with `trial >= trials`, whose prompt hash differs, or a second record of one
+    (task, trial) raises `ValueError`. The returned list holds the kept and the new
+    records together.
+
+    `header` is this run's `run_header_http` result. It must agree with this call
+    (`max_new_tokens`, `seed`, `extra_body`), else `ValueError`. With `out`, it is
+    written to `header_path(out)`. Resuming, an existing header file there must
+    agree with this call too and, when `header` is given, have the same
+    `config_hash`; it is kept as it is.
     """
     if isinstance(trials, bool) or not isinstance(trials, int) or trials < 1:
         raise ValueError(f"trials must be an int >= 1, got {trials!r}")
@@ -539,32 +598,61 @@ def run_bfcl(
     ids = [t.task_id for t in tasks]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate task_id in tasks")
+    if resume and out is None:
+        raise ValueError("resume=True needs out")
     _check_envs(tasks)
-    records = []
-    for task in tasks:
-        for trial in range(trials):
-            chat = partial(
-                _chat_once,
-                base_url,
-                model,
-                max_new_tokens=max_new_tokens,
-                seed=seed + trial,
-                api_key=api_key,
-                extra_body=extra_body,
-                timeout=timeout,
+    path = Path(out) if out is not None else None
+    done: dict[tuple[str, int], TaskRecord] = {}
+    kept = None if header is None else dict(header)
+    if path is not None and path.exists() and path.stat().st_size > 0:
+        if not resume:
+            raise FileExistsError(
+                f"{path} already has records; pass resume=True to continue it "
+                "or choose another path"
             )
-            records.append(
-                run_task(
+        call = {
+            "max_new_tokens": max_new_tokens,
+            "seed": seed,
+            "extra_body": json.loads(json.dumps(dict(extra_body or {}))),
+        }
+        kept = _header_to_keep(path, header, call)  # before _load_done repairs the file
+        done = _load_done(path, tasks, arm, trials)
+    if path is not None and kept is not None:
+        write_header(header_path(path), kept)
+    sink = None
+    try:
+        for task in tasks:
+            for trial in range(trials):
+                if (task.task_id, trial) in done:
+                    continue
+                chat = partial(
+                    _chat_once,
+                    base_url,
+                    model,
+                    max_new_tokens=max_new_tokens,
+                    seed=seed + trial,
+                    api_key=api_key,
+                    extra_body=extra_body,
+                    timeout=timeout,
+                )
+                record = run_task(
                     task,
                     chat,
                     arm=arm,
                     trial=trial,
                     max_steps_per_turn=max_steps_per_turn,
                 )
-            )
-    if out is not None:
-        write_tasks(out, records)
-    return records
+                done[task.task_id, trial] = record
+                if path is not None:
+                    if sink is None:
+                        sink = path.open("a", encoding="utf-8")
+                    sink.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+                    sink.flush()
+                    os.fsync(sink.fileno())
+    finally:
+        if sink is not None:
+            sink.close()
+    return [done[t.task_id, k] for t in tasks for k in range(trials)]
 
 
 def _chat_once(
