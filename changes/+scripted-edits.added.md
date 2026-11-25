@@ -1,1 +1,0 @@
-The scripted editor takes candidate edits made outside the run (`[editor] edit = [PEFT dirs]` in the run config, `--edit` on its command line): it applies each to the base weights, sends it to `confirm`, and exports the last one that passed, so the gate can read the run record of a scripted or closed-form edit.
