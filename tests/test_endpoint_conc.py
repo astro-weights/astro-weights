@@ -332,3 +332,30 @@ def test_resume_refuses_mismatching_header_file_keys(tmp_path: Path) -> None:
         write_header(header_path(out), {"seed": 0, "max_new_tokens": 8})
         with pytest.raises(ValueError, match=r"extra_body: .* has '<missing>'"):
             _run(url, out, resume=True)
+
+
+def test_failure_waits_for_earlier_items_in_flight(tmp_path: Path) -> None:
+    # i3 answers only after i4 has failed all 3 attempts, so i3 is in flight
+    # when the error arrives: it must still be written, and nothing after it
+    out = tmp_path / "a.jsonl"
+    i4_tries = 0
+    lock = threading.Lock()
+    i4_done = threading.Event()
+
+    def slow_3_down_4(body: dict[str, Any]) -> Reply:
+        nonlocal i4_tries
+        if _n(body) == 3:
+            assert i4_done.wait(30)
+        if _n(body) == 4:
+            with lock:
+                i4_tries += 1
+                if i4_tries == 3:
+                    i4_done.set()
+            return (503, "overloaded")
+        return _answer(body)
+
+    with serve(slow_3_down_4) as (url, _):
+        header = _header(url, concurrency=2)
+        with pytest.raises(RuntimeError, match=r"item 'i4'.*3 attempts.*HTTP 503"):
+            _run(url, out, header=header, concurrency=2)
+    assert [r.item_id for r in read_jsonl(out)] == ["i0", "i1", "i2", "i3"]
