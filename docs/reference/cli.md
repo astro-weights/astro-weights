@@ -96,7 +96,7 @@ Exit codes: 0 confirmed, 1 regressed or not significant, 3 screened out, 2 bad i
 astro-weights gen [--resume] [--json] ARM.toml
 ```
 
-`gen` runs one arm of an eval, one runner call per file, so a long run is its own batch job that can be killed and continued. It asks an OpenAI-compatible server (vLLM, llama.cpp) for the answers; there is no local-model (Hugging Face) kind. For that, call `runners.generate.generate_records` from Python.
+`gen` runs one arm of an eval, one runner call per file, so a long run is its own batch job that can be killed and continued. It asks an OpenAI-compatible server (vLLM, llama.cpp) for the answers; there is no local-model (Hugging Face) kind. For that, call `runners.generate.generate_records` from Python. Walkthrough: [Run one eval arm from a TOML file](../how-to/run-arm.md).
 
 `ARM.toml` has a `kind` and the keyword arguments of that kind's runner, under the same names and with the same meaning. Relative paths are read from the file's directory. An unknown key, a missing key or a bad type is an error (exit 2) that names the key.
 
