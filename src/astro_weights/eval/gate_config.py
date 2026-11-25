@@ -100,6 +100,7 @@ class GateConfig:
     boot: int = 10000
     seed: int = 0
     arm_keys: tuple[str, ...] = ()
+    max_cap_hit: float | None = None
 
 
 def _table(
@@ -247,7 +248,7 @@ def load_gate_config(path: str | Path) -> GateConfig:
                 "test",
                 "suites",
             ),
-            ("arms", "footprint", "boot", "seed", "arm_keys"),
+            ("arms", "footprint", "boot", "seed", "arm_keys", "max_cap_hit"),
         )
         arms_t = _table(t.get("arms", {}), "arms", (), REPORT_ARMS)
         foot_t = t.get("footprint", {})
@@ -255,6 +256,11 @@ def load_gate_config(path: str | Path) -> GateConfig:
         keys = t.get("arm_keys", [])
         if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
             raise ValueError("arm_keys: must be a list of strings")
+        cap = None
+        if "max_cap_hit" in t:
+            cap = _num(t, "max_cap_hit", "GATE.toml")
+            if not 0 <= cap <= 1:
+                raise ValueError("GATE.toml.max_cap_hit: must lie in [0, 1]")
         return GateConfig(
             margin=_num(t, "margin", "GATE.toml"),
             margin_source=_str(t, "margin_source", "GATE.toml"),
@@ -271,6 +277,7 @@ def load_gate_config(path: str | Path) -> GateConfig:
             boot=_int({"boot": t.get("boot", 10000)}, "boot", "GATE.toml", 1),
             seed=_int({"seed": t.get("seed", 0)}, "seed", "GATE.toml", 0),
             arm_keys=tuple(keys),
+            max_cap_hit=cap,
         )
     except ValueError as e:
         raise ValueError(f"{path}: {e}") from None

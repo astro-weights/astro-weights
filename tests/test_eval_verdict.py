@@ -80,3 +80,27 @@ def test_from_json_strict() -> None:
     del data["schema_version"]  # optional on input
     data["verdict"] = "regressed"
     assert Verdict.from_json(json.dumps(data)).verdict == "regressed"
+
+
+def test_cap_fields_roundtrip_and_may_be_absent() -> None:
+    v = _v(max_new_tokens=1024, cap_hit={"confirm": {"base": 0.0117, "edit": 0.0}})
+    assert Verdict.from_json(v.to_json()) == v
+    old = json.loads(_v().to_json())
+    del old["max_new_tokens"], old["cap_hit"]  # file written before the keys existed
+    got = Verdict.from_json(json.dumps(old))
+    assert (got.max_new_tokens, dict(got.cap_hit)) == (None, {})
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"max_new_tokens": 0},
+        {"max_new_tokens": True},
+        {"cap_hit": {"test": {"edit": 1.5}}},
+        {"cap_hit": {"test": {"edit": True}}},
+        {"cap_hit": {"test": 0.1}},
+    ],
+)
+def test_bad_cap_fields(kw: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match=r"max_new_tokens|cap_hit"):
+        _v(**kw)

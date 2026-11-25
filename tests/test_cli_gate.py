@@ -617,3 +617,82 @@ def test_only_prompt_arms_may_have_a_system_prompt(
     assert code == 2
     assert "system" in err
     assert not (cfg.parent / "seal").exists()
+
+
+def _cap_some(path: Path, n: int) -> None:
+    """Mark the first `n` records of an arm file as having hit the cap."""
+    lines = path.read_text().splitlines()
+    for i in range(n):
+        rec = json.loads(lines[i])
+        rec["hit_cap"] = True
+        lines[i] = json.dumps(rec)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _set_guard(cfg: Path, limit: float) -> None:
+    cfg.write_text(f"max_cap_hit = {limit}\n" + cfg.read_text())
+
+
+def test_cap_hit_is_reported_and_kept_in_the_verdict(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build()
+    _cap_some(cfg.parent / "test" / "edit.jsonl", 4)
+    code, out, _ = gate(cfg, capsys=capsys)
+    assert code == 0  # no key, no refusal
+    assert "cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%  controls max=" in out
+    v = verdict(cfg)
+    assert v.max_new_tokens == 256
+    assert set(v.cap_hit) == {"confirm", "test"}
+    assert set(v.cap_hit["confirm"]) == {"base", "edit"} | {
+        f"control-{j:02d}" for j in range(fixture.N_CONTROLS)
+    }
+    n = len((cfg.parent / "test" / "edit.jsonl").read_text().splitlines())
+    assert v.cap_hit["test"] == {"base": 0.0, "edit": 4 / n}
+    assert Verdict.from_json(v.to_json()) == v
+
+
+def test_cap_hit_in_json(build: Build, capsys: pytest.CaptureFixture[str]) -> None:
+    cfg = build(controls_beat=False)  # confirm fails: no test split
+    code, out, _ = gate(cfg, "--json", capsys=capsys)
+    assert code == 1
+    data = json.loads(out)
+    assert data["max_new_tokens"] == 256
+    assert set(data["cap_hit"]) == {"confirm"}
+    assert set(verdict(cfg).cap_hit) == {"confirm"}
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["confirm/base.jsonl", "confirm/controls/control-07.jsonl", "test/edit.jsonl"],
+)
+def test_cap_hit_guard_refuses_and_never_spends_the_seal(
+    build: Build, capsys: pytest.CaptureFixture[str], path: str
+) -> None:
+    cfg = build()
+    _set_guard(cfg, 0.01)
+    _cap_some(cfg.parent / path, 10)
+    code, _, err = gate(cfg, capsys=capsys)
+    assert code == 2
+    assert "cap-hit guard" in err
+    assert Path(path).stem in err
+    assert "above max_cap_hit 1.00%" in err
+    assert not (cfg.parent / "verdict.json").exists()
+    assert not (cfg.parent / "seal").exists()
+
+
+def test_cap_hit_guard_at_the_limit_passes(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build()
+    _set_guard(cfg, 0.0)
+    assert gate(cfg, capsys=capsys)[0] == 0
+    assert load_gate_config(cfg).max_cap_hit == 0.0
+
+
+@pytest.mark.parametrize("bad", ["-0.1", "1.5", "true", '"0.01"'])
+def test_cap_hit_guard_value_is_checked(build: Build, bad: str) -> None:
+    cfg = build()
+    cfg.write_text(f"max_cap_hit = {bad}\n" + cfg.read_text())
+    with pytest.raises(ValueError, match="max_cap_hit"):
+        load_gate_config(cfg)

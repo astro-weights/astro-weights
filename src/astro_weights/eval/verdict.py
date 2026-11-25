@@ -1,6 +1,6 @@
 """Schema of `verdict.json`: what a gate run records beside its verdict.
 
-Schema only. No command fills it yet. Verdicts are per backend: the base, the edit and
+`astro-weights gate` fills it. Verdicts are per backend: the base, the edit and
 the build all ran on the backend named in the record, so `backend` and `build` are
 required. Never runs a model.
 """
@@ -8,7 +8,7 @@ required. Never runs a model.
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Self
 
 VERDICTS = ("confirmed", "not significant", "regressed")
@@ -29,6 +29,12 @@ class Verdict:
     measure name to its value for the edit after dtype rounding. `infra_errors` counts
     requests that failed for server reasons. `backend` and `build` name the serving
     engine ("llama.cpp", "vllm", "hf") and its version or build.
+
+    `max_new_tokens` is the generation cap of the arms (None when their headers do not
+    say). `cap_hit` maps a split ("confirm", "test") to the share of records that hit
+    the cap, per arm ("base", "edit", each control and report arm). A capped answer is
+    censored, not wrong: read every score and token claim beside these shares. Both
+    keys may be absent in files written before they existed.
     """
 
     verdict: str
@@ -40,6 +46,8 @@ class Verdict:
     confirm_queries: int
     infra_errors: int
     footprint: Mapping[str, float]
+    max_new_tokens: int | None = None
+    cap_hit: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -62,11 +70,29 @@ class Verdict:
             for k, v in self.footprint.items()
         ):
             raise ValueError("footprint must map names to finite numbers")
+        if self.max_new_tokens is not None and (
+            not _is_int(self.max_new_tokens) or self.max_new_tokens < 1
+        ):
+            raise ValueError("max_new_tokens must be a positive integer or null")
+        if not isinstance(self.cap_hit, Mapping) or not all(
+            isinstance(split, str)
+            and isinstance(arms, Mapping)
+            and all(
+                isinstance(k, str)
+                and isinstance(v, int | float)
+                and not isinstance(v, bool)
+                and 0 <= v <= 1
+                for k, v in arms.items()
+            )
+            for split, arms in self.cap_hit.items()
+        ):
+            raise ValueError("cap_hit must map split to arm to a share in [0, 1]")
 
     def to_json(self) -> str:
         """JSON text with sorted keys."""
         data = {f.name: getattr(self, f.name) for f in fields(self)}
         data["footprint"] = dict(self.footprint)
+        data["cap_hit"] = {k: dict(v) for k, v in self.cap_hit.items()}
         return json.dumps(data, indent=1, sort_keys=True, allow_nan=False) + "\n"
 
     @classmethod
@@ -83,7 +109,7 @@ class Verdict:
         known = {f.name for f in fields(cls)}
         if unknown := sorted(set(data) - known):
             raise ValueError(f"unknown keys: {', '.join(unknown)}")
-        required = known - {"schema_version"}
+        required = known - {"schema_version", "max_new_tokens", "cap_hit"}
         if missing := sorted(required - set(data)):
             raise ValueError(f"missing keys: {', '.join(missing)}")
         return cls(**data)

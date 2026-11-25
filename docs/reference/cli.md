@@ -76,6 +76,7 @@ Refused with exit 2, nothing sealed: bad or unknown `GATE.toml` key; a records f
 | `manifest` | path | split manifest; confirm and test records must lie in its splits; its `k` must be 4 |
 | `boot`, `seed` | int | bootstrap resamples (default 10000) and seed (default 0) for every comparison |
 | `arm_keys` | list of strings | `extra_body` keys allowed to differ between arms, as `eval --arm-key` |
+| `max_cap_hit` | number in [0, 1] | optional; refuse (exit 2, no verdict) when any confirm or test arm has a larger share of records that hit `max_new_tokens`. Absent: no refusal. Cap-hit shares are printed and kept in `verdict.json` either way |
 | `[footprint]` | table | name to number, copied to `verdict.json` |
 | `[confirm]` | table | `base`, `edit` (confirm-split records), `controls` (a directory: every `*.jsonl` in it is one control arm, 20 or more), `target` (`tokens_diff`, better lower, or `diff`, better higher), `q` (default 0.95, at least 0.95), `side_effects` (names; `accuracy` is the `diff` of the confirm records, any other name needs a `[confirm.side.NAME]` table with `base`, `edit`, `controls`) |
 | `[test]` | table | `base`, `edit` (test-split records, K = 4), `seal_dir` (ledger directory), `adapter` (the edit's PEFT directory, keyed by content), `floor` (directory of stored noise floors, `floor-<config_hash>.json`) |

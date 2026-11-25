@@ -598,6 +598,42 @@ def _screens_failed(cfg: GateConfig, screens: tuple[Screen, ...]) -> GateResult 
     return gate(GateInputs(screens, cfg.margin, cfg.margin_source))
 
 
+def _cap_hits(arms: ArmsResult) -> dict[str, float]:
+    """Share of records that hit the generation cap: base, then each arm in order."""
+    first = next(iter(arms.results.values()))
+    return {"base": first.cap_hit_base} | {
+        n: r.cap_hit_edit for n, r in arms.results.items()
+    }
+
+
+def _cap_line(arms: ArmsResult, cap: int | None) -> str:
+    """One report line: cap-hit of base, edit and report arms; controls as their max."""
+    ctl = arms.controls()
+    hits = {n: v for n, v in _cap_hits(arms).items() if n not in ctl}
+    line = f"cap-hit (max_new_tokens {cap}): " + "  ".join(
+        f"{n}={v:.1%}" for n, v in hits.items()
+    )
+    if ctl:
+        worst = max(ctl, key=lambda n: ctl[n].cap_hit_edit)
+        line += f"  controls max={ctl[worst].cap_hit_edit:.1%} ({worst})"
+    return line
+
+
+def _cap_guard(limit: float | None, split: str, arms: ArmsResult) -> None:
+    """Refuse (exit 2, no verdict) when any arm's cap-hit share is above `limit`."""
+    if limit is None:
+        return
+    if over := {n: v for n, v in _cap_hits(arms).items() if v > limit}:
+        shown = ", ".join(f"{n} {v:.2%}" for n, v in over.items())
+        print(
+            f"error: cap-hit guard: on the {split} split {shown} above max_cap_hit "
+            f"{limit:.2%}; answers cut at the cap are censored, not wrong. Raise "
+            "max_new_tokens and rerun those arms. No verdict written.",
+            file=sys.stderr,
+        )
+        raise _Refused
+
+
 def _gate_output(
     result: GateResult,
     counts: tuple[int, int],
@@ -605,8 +641,10 @@ def _gate_output(
     test: ArmsResult | None,
     written: Path | None,
     as_json: bool,
+    cap: int | None = None,
 ) -> None:
     searched = {"candidates_tried": counts[0], "confirm_queries": counts[1]}
+    splits = {"confirm": confirm, "test": test}
     if as_json:
         _emit(
             {
@@ -614,20 +652,20 @@ def _gate_output(
                 **searched,
                 "verdict_file": None if written is None else str(written),
                 "arms": {
-                    "confirm": None if confirm is None else arms_dict(confirm),
-                    "test": None if test is None else arms_dict(test),
+                    k: None if a is None else arms_dict(a) for k, a in splits.items()
                 },
+                "max_new_tokens": cap,
+                "cap_hit": {k: _cap_hits(a) for k, a in splits.items() if a},
             }
         )
         return
     print(format_gate(result), end="")
     print(f"candidates tried: {counts[0]}  confirm queries: {counts[1]}")
-    if confirm is not None:
-        print("\narms on the confirm split, each against base:")
-        print(format_arms(confirm))
-    if test is not None:
-        print("\narms on the test split, each against base:")
-        print(format_arms(test))
+    for name, arms in splits.items():
+        if arms is not None:
+            print(f"\narms on the {name} split, each against base:")
+            print(format_arms(arms))
+            print(_cap_line(arms, cap))
     print(f"verdict file: {written}" if written else "no verdict file written")
 
 
@@ -640,6 +678,7 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
         return _GATE_EXIT[screened.outcome]
     c = cfg.confirm
     confirm = _confirm_arms(cfg, c.base, c.edit, c.controls)
+    _cap_guard(cfg.max_cap_hit, "confirm", confirm)
     controls = _controls(cfg, confirm)
     inputs = GateInputs(
         screens,
@@ -652,6 +691,7 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
     stage = None
     if controls.passed:  # a failed confirm never spends the sealed test split
         stage = _test_stage(cfg, c.base, unseal)
+        _cap_guard(cfg.max_cap_hit, "test", stage.arms)
         inputs = replace(
             inputs,
             test=stage.arms.results["edit"],
@@ -661,6 +701,8 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
         )
     result = gate(inputs)  # pure; every input is judged before the seal is touched
     key = stage.config_hash if stage else config_hash(_header(c.base))
+    cap = _header(c.base).get("max_new_tokens")
+    cap = cap if isinstance(cap, int) and not isinstance(cap, bool) else None
     verdict = Verdict(
         result.outcome,
         cfg.backend,
@@ -671,6 +713,12 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
         counts[1],
         stage.infra_errors if stage else _infra_errors(c.base, c.edit),
         dict(cfg.footprint),
+        cap,
+        {
+            k: _cap_hits(a)
+            for k, a in (("confirm", confirm), ("test", stage and stage.arms))
+            if a
+        },
     )
     written = out or config.parent / "verdict.json"
     # Write first, rename after sealing: a bad --out never spends the test split.
@@ -686,7 +734,7 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
     finally:
         tmp.unlink(missing_ok=True)
     _gate_output(
-        result, counts, confirm, stage.arms if stage else None, written, as_json
+        result, counts, confirm, stage.arms if stage else None, written, as_json, cap
     )
     return _GATE_EXIT[result.outcome]
 
