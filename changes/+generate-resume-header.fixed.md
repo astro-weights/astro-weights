@@ -1,1 +1,0 @@
-`generate_records` takes a `header` (from `run_header`) and writes it beside `out`; a resume now refuses a file whose header has another config (model, adapter, `max_new_tokens`, `sampling`, `batch_size` or `system`) instead of mixing the two runs in one file.

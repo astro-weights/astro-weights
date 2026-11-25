@@ -1,1 +1,0 @@
-The MCP `status` tool takes `wait_s` (capped at 55 s) and blocks until the job is done or failed, so an editor waiting on a long `confirm` query makes one call per minute instead of polling and spending its token budget.

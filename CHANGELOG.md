@@ -4,7 +4,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 <!-- towncrier release notes start -->
 
-## [0.3.0] - 2026-11-24
+## [0.3.0] - 2026-11-26
+
+0.3 "Proof": a gate between an agent's edit and a claim about it. Splits with a sealed test scored once, at least 20 norm-matched random controls, a margin fixed before the test (2 points at most), a measured noise floor, pre-screens, regression suites (GSM8K, IFEval) and three verdicts: confirmed, not significant, regressed (or screened out before any eval). `[confirm] target = "tokens"`: an edit passes with fewer tokens and accuracy within the margin of the base model. Every verdict prints its minimum detectable effect, candidates tried and all arms. Exit test on Gemma 4 E4B: VERDICT-SLOT.
 
 ### Added
 
@@ -31,6 +33,11 @@ All notable changes to this project are documented here. The format follows [Kee
 - `runners.scripted_arm.scripted_arm` builds a closed-form baseline edit (difference-of-means direction, `project_out` on the writer modules of a given edit) to compare an agent's edit against.
 - `self_test_http` and `astro-weights self-test` send one prompt under varied batch sizes and prefix-cache states and report whether the server returns a single output.
 - `tokens_beyond_floor` is a one-sided check that an edit lowers output tokens by more than the base-vs-base noise floor.
+- `run_bfcl` now appends each task record to `out` as it finishes (flushed and fsynced) and takes `resume=True` and `header=` to continue a killed run, asking only the (task, trial) pairs not yet written and refusing a file made under another config, arm or task set. Behaviour changes: a non-empty `out` now raises `FileExistsError` unless `resume=True` (it used to be overwritten), and a server error now leaves the records already written in `out` (it used to write none).
+- `astro-weights gen ARM.toml [--resume]` runs one eval arm (`http`, `suites` or `bfcl`) against an OpenAI-compatible server from a TOML file and continues it after a kill, keeping the records already written.
+- Docs: how-to "Run one eval arm from a TOML file" (`astro-weights gen`: write ARM.toml, run, resume after a kill, exit codes). CLI reference `gen` section links to it.
+- The scripted editor takes candidate edits made outside the run (`[editor] edit = [PEFT dirs]` in the run config, `--edit` on its command line): it applies each to the base weights, sends it to `confirm`, and exports the last one that passed, so the gate can read the run record of a scripted or closed-form edit.
+- The MCP `status` tool takes `wait_s` (capped at 55 s) and blocks until the job is done or failed, so an editor waiting on a long `confirm` query makes one call per minute instead of polling and spending its token budget.
 
 ### Changed
 
@@ -45,6 +52,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - The `exec_python` and `finish` tool descriptions now say that `finish` exports each edit at rank `export.rank` (default 8) and fails above `export.max_rel_residual` (default 0.05), so MCP clients such as Codex keep edits low rank.
 - The MCP `confirm` tool takes `target = "tokens"` (fewer output tokens, accuracy within the margin of base, the gate's `tokens_diff` rule), so a terse edit can pass, and `batch_size` to generate confirm items in batches.
 - When a concurrent endpoint run hits an error, items before the failing one that were still in flight are now waited for and written, as documented, so a resume does not request them again.
+- A `confirm` query killed mid-way no longer counts toward `max_queries` (the record gets a `confirm_interrupted` event), and its outputs are checkpointed per item under `RUN_DIR/confirm/`, so a resumed run generates only the items not yet written.
+- `generate_records` takes a `header` (from `run_header`) and writes it beside `out`; a resume now refuses a file whose header has another config (model, adapter, `max_new_tokens`, `sampling`, `batch_size` or `system`) instead of mixing the two runs in one file.
 
 ## [0.2.2] - 2026-11-19
 
