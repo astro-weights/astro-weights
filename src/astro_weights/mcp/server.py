@@ -31,6 +31,7 @@ import math
 import secrets
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -67,6 +68,10 @@ from astro_weights.mcp.jobs import Executor, JobRunner, RunConfig, load_run_conf
 from astro_weights.mcp.kernel import Kernel
 from astro_weights.mcp.record import RunRecord, library_commit
 from astro_weights.mcp.sandbox import SandboxUnavailable
+
+_MAX_WAIT_S = (
+    55.0  # status(wait_s) cap, below the ~60 s tool timeout of common MCP clients
+)
 
 __all__ = ["build_server", "main"]
 
@@ -343,7 +348,7 @@ def build_server(
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
     def exec_python(code: str) -> dict[str, Any]:
-        """Start a Python code run; returns a handle to poll with status.
+        """Start a Python code run; returns a handle for status (pass wait_s to block).
 
         The kernel has numpy (``np``) and the standard library only; variables stay
         between runs and the last bare expression is printed. Helpers: ``NAMES`` and
@@ -360,7 +365,7 @@ def build_server(
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
     def forward_pass(request: dict[str, Any]) -> dict[str, Any]:
-        """Start a model forward pass; returns a handle to poll with status.
+        """Start a model forward pass; returns a handle for status (pass wait_s to block).
 
         ``{"kind": "teacher_forced", "texts": [str], "return": ["hidden", "mlp",
         "attn", "logprobs"], "layers": [int], "last_tokens": int, "arm": "base" |
@@ -384,12 +389,21 @@ def build_server(
         return submit("forward_pass", "forward", params)
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
-    def status(handle: str) -> dict[str, Any]:
-        """Return a job's state and result, plus the budget."""
+    def status(handle: str, wait_s: float = 0) -> dict[str, Any]:
+        """Return a job's state and result, plus the budget.
+
+        wait_s > 0 blocks until the job is done or failed, at most that many seconds
+        (capped at 55): one call instead of many polls while a job runs.
+        """
         try:
             job = store.get(handle)
         except UnknownHandle:
             return {"error": "unknown handle"}
+        # ponytail: 1 s re-read of the job file; a condition variable if jobs get short
+        deadline = time.monotonic() + min(max(float(wait_s), 0.0), _MAX_WAIT_S)
+        while job.state in ("queued", "running") and time.monotonic() < deadline:
+            time.sleep(min(1.0, max(deadline - time.monotonic(), 0.0)))
+            job = store.get(handle)
         if job.state == "failed":  # e.g. refused at charge time: results unreadable
             forward.discard_results(run_dir, job)
         out = {**job.to_json(), "budget": ledger.to_json()}
