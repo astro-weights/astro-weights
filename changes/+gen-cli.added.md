@@ -1,0 +1,1 @@
+`astro-weights gen ARM.toml [--resume]` runs one eval arm (`http`, `suites` or `bfcl`) against an OpenAI-compatible server from a TOML file and continues it after a kill, keeping the records already written.

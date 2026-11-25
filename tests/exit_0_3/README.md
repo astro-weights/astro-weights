@@ -104,98 +104,62 @@ merged weights for llama.cpp; the base is served unmodified.
 
 ### 2. Records: confirm split (K = 1) and test split (K = 4)
 
-One call per arm; items are `{"item_id", "prompt", "gold"}` of the split. The confirm
-split is run for the base, the edit and each of the 21 controls (the controls go in
-`confirm/controls/control-NN.jsonl`); the test split
-for the base and the edit only, once per seed 0 to 3, then the four files are joined
-into one `test/base.jsonl` and one `test/edit.jsonl` (`header["k"] == 4`).
+One `ARM.toml` and one `astro-weights gen` call per arm. `items` is the benchmark as JSONL
+of `{"item_id", "prompt", "gold"}`; `manifest` and `split` keep that split's items. The
+confirm split is run for the base, the edit and each of the 21 controls (the controls go
+in `confirm/controls/control-NN.jsonl`); the test split for the base and the edit only.
+For `split = "test"` `gen` takes `k` (4) from the manifest, runs seeds 0 to 3 into
+`test/base.s0.jsonl` .. `s3.jsonl` and joins them into `test/base.jsonl` with seed 0's
+header (`header["k"] == 4`).
 
-The output directories must exist first:
-`mkdir -p exit/gate/confirm/controls exit/gate/pools exit/gate/test exit/floor/default exit/floor/deterministic`.
+Paths in an `ARM.toml` are relative to that file. This one is the confirm base arm
+(`exit/gate/arms/confirm-base.toml`); `model` is the served name (`base`, `edit`,
+`control-NN`). `model_id` is a CONFIG key: arms that differ in it are refused by
+`check_headers`, and the gate would refuse every pair. vLLM has no `/props`, so without it
+the header takes the served name; every arm sets the one `BASE_MODEL_ID`.
 
-```python
-from astro_weights.eval import (
-    header_path,
-    read_header,
-    read_jsonl,
-    write_header,
-    write_jsonl,
-)
-from astro_weights.runners.endpoint import generate_records_http, run_header_http
+```toml
+kind = "http"
+arm = "base"                    # the arm name in the records
+base_url = "http://localhost:8000"   # BASE_URL
+model = "base"
+model_id = "BASE_MODEL_ID"
+max_new_tokens = 1024           # MAX_NEW_TOKENS, the same on every arm
+items = "../../items.jsonl"
+grader = "math"                 # exact, choice or math
+manifest = "../splits.json"
+split = "confirm"
+out = "../confirm/base.jsonl"
+concurrency = 8
+extra_body = { temperature = 0.7, top_p = 0.95 }   # SAMPLING, fixed once, every arm
+```
 
+The confirm base arm must carry the test base arm's settings (`gate` checks them, `k`
+aside), so every arm, confirm and test, takes the same `extra_body` and
+`serving_flags`. The other arms differ in `arm`, `model`, `split` and `out`:
 
-def run(
-    model,
-    arm,
-    items,
-    out,
-    seed=0,
-    k=1,
-    extra_body=None,
-    serving_flags=None,
-    system=None,
-):
-    # model_id: vLLM has no /props, so without it the header takes the served name
-    # ("base", "edit", "control-NN"). model_id is a CONFIG key: arms that differ in it
-    # are refused by check_headers, and the gate would refuse every pair.
-    header = run_header_http(
-        BASE_URL,
-        model,
-        MAX_NEW_TOKENS,
-        seed,
-        extra_body,
-        k=k,
-        concurrency=8,
-        serving_flags=serving_flags,
-        model_id=BASE_MODEL_ID,
-        system=system,
-    )
-    return generate_records_http(
-        BASE_URL,
-        model,
-        items,
-        arm,
-        scorer,
-        MAX_NEW_TOKENS,
-        seed=seed,
-        extra_body=extra_body,
-        out=out,
-        concurrency=8,
-        header=header,
-        system=system,
-    )
+| File | `arm` | `model` | `split` | `out` |
+|---|---|---|---|---|
+| `confirm-edit.toml` | `edit` | `edit` | `confirm` | `../confirm/edit.jsonl` |
+| `confirm-control-NN.toml` (NN = 00 to 20) | `control-NN` | `control-NN` | `confirm` | `../confirm/controls/control-NN.jsonl` |
+| `test-base.toml` | `base` | `base` | `test` | `../test/base.jsonl` |
+| `test-edit.toml` | `edit` | `edit` | `test` | `../test/edit.jsonl` |
 
+`gen` creates the output directories (`exit/gate/pools`, `exit/floor/default` and
+`exit/floor/deterministic` are made in the steps below). Every run is resumable after a
+kill (GPU sessions are renewed): run each command with `--resume`, which on a finished
+arm asks nothing and on an arm not started yet starts it. A resume under a changed
+setting (`max_new_tokens`, `extra_body`, `serving_flags`, `system`...) exits 2 and
+writes nothing; delete the file to start the arm over.
 
-def run_k4(
-    model, arm, items, stem, extra_body=SAMPLING, serving_flags=None, system=None
-):
-    """One K = 4 arm: seeds 0 to 3, joined into `stem.jsonl` with a k = 4 header."""
-    for s in range(4):
-        args = (s, 4, extra_body, serving_flags, system)
-        run(model, arm, items, f"{stem}.s{s}.jsonl", *args)
-    write_jsonl(
-        f"{stem}.jsonl",
-        [r for s in range(4) for r in read_jsonl(f"{stem}.s{s}.jsonl")],
-    )
-    write_header(  # seed 0's header: k = 4, the same config for the four seeds
-        header_path(f"{stem}.jsonl"), read_header(header_path(f"{stem}.s0.jsonl"))
-    )
-
-
-# the confirm base arm must carry the test base arm's settings (`gate` checks them,
-# `k` aside), so the confirm runs take the same SAMPLING
-run("base", "base", confirm_items, "exit/gate/confirm/base.jsonl", extra_body=SAMPLING)
-run("edit", "edit", confirm_items, "exit/gate/confirm/edit.jsonl", extra_body=SAMPLING)
-for i in range(21):
-    run(
-        f"control-{i:02d}",
-        f"control-{i:02d}",
-        confirm_items,
-        f"exit/gate/confirm/controls/control-{i:02d}.jsonl",
-        extra_body=SAMPLING,
-    )
-run_k4("base", "base", test_items, "exit/gate/test/base")
-run_k4("edit", "edit", test_items, "exit/gate/test/edit")
+```bash
+cd exit/gate/arms
+for t in confirm-base confirm-edit test-base test-edit; do
+  astro-weights gen $t.toml --resume
+done
+for i in $(seq -f %02g 0 20); do
+  astro-weights gen confirm-control-$i.toml --resume
+done
 ```
 
 Then the gate pools. The edit is gated against `control-01` to `control-20` (20 files);
@@ -242,17 +206,24 @@ config key (`arm_keys` aside).
 
 - `scripted`: the closed-form baseline `runners.scripted_arm.scripted_arm` (HF model and
   the contrast texts), saved with `save_peft`, served as one more adapter, run like the
-  edit: `run_k4("scripted", "scripted", test_items, "exit/gate/test/scripted")`.
-- `prompt` and `edit_prompt`: the base, and the edit, run with a system prompt. Pass it
-  as `system=` to `run_header_http` and `generate_records_http`: the header records
-  `system` and `system_sha256`, the item prompts and so their `prompt_hash`es stay the
-  base's, and `gate` refuses a prompt arm without it (and a base, edit or scripted arm
-  with it). Add `system=None` to `run` and `run_k4` above and pass it to both calls:
+  edit: `test-scripted.toml` is `test-edit.toml` with `arm = "scripted"`,
+  `model = "scripted"` and `out = "../test/scripted.jsonl"`.
+- `prompt` and `edit_prompt`: the base, and the edit, run with a system prompt. Give the
+  `ARM.toml` a `system` key: the header records `system` and `system_sha256`, the item
+  prompts and so their `prompt_hash`es stay the base's, and `gate` refuses a prompt arm
+  without it (and a base, edit or scripted arm with it).
 
-```python
-ASK = "Be extremely brief: at most two short sentences of reasoning, then the answer."
-run_k4("base", "prompt", test_items, "exit/gate/test/prompt", system=ASK)
-run_k4("edit", "edit_prompt", test_items, "exit/gate/test/edit_prompt", system=ASK)
+```toml
+# test-prompt.toml: test-base.toml plus
+arm = "prompt"
+out = "../test/prompt.jsonl"
+system = "Be extremely brief: at most two short sentences of reasoning, then the answer."
+# test-edit-prompt.toml: test-edit.toml plus the same system key, and
+# arm = "edit_prompt", out = "../test/edit_prompt.jsonl"
+```
+
+```bash
+for t in test-scripted test-prompt test-edit-prompt; do astro-weights gen $t.toml --resume; done
 ```
 
 ### 3. Noise floors
@@ -262,20 +233,27 @@ Each floor run is a full K = 4 run (seeds 0 to 3 joined into one file with a `k 
 header, like `test/base.jsonl`): `floor_from_records` takes `k` from the number of
 paired seeds, and the gate refuses a floor that was not scored with K = 4.
 
+Four more `ARM.toml` files, each `test-base.toml` with another `out`, run with `gen` (each
+has its own `run_id`; the default floor's run1 may instead be `test/base.jsonl` copied
+with its header):
+
+| File | `out` | other keys |
+|---|---|---|
+| `floor-default-1.toml`, `floor-default-2.toml` | `../../floor/default/run1.jsonl`, `run2.jsonl` | as `test-base.toml` |
+| `floor-det-1.toml`, `floor-det-2.toml` | `../../floor/deterministic/run1.jsonl`, `run2.jsonl` | `serving_flags = { VLLM_BATCH_INVARIANT = "1" }` |
+
+For the deterministic pair restart the server in its batch-invariant mode and declare it
+in `serving_flags`, so the header shows that mode and differs from the default floor's.
+
+```bash
+for t in floor-default-1 floor-default-2 floor-det-1 floor-det-2; do
+  astro-weights gen exit/gate/arms/$t.toml --resume
+done
+```
+
 ```python
 from pathlib import Path
-from astro_weights.eval import floor_from_records, read_header, save_floor
-
-# default serving (the settings of exit/gate/test/base.jsonl): two new runs, or run1
-# copied from test/base.jsonl (+ header) and run2 new. Each run has its own run_id.
-run_k4("base", "base", test_items, "exit/floor/default/run1")
-run_k4("base", "base", test_items, "exit/floor/default/run2")
-
-# deterministic serving (restart the server in its batch-invariant mode) and declare
-# it, so the header shows that mode: two runs, headers differ from the default floor's.
-BI = {"VLLM_BATCH_INVARIANT": "1"}
-run_k4("base", "base", test_items, "exit/floor/deterministic/run1", serving_flags=BI)
-run_k4("base", "base", test_items, "exit/floor/deterministic/run2", serving_flags=BI)
+from astro_weights.eval import floor_from_records, read_header, read_jsonl, save_floor
 
 d = Path("exit/floor/default")
 header = read_header(d / "run1.header.json")
@@ -361,52 +339,58 @@ Path("exit/gate/screens.json").write_text(json.dumps(screens))
 A pinned gorilla checkout (`BFCL_COMMIT` in `runners/bfcl.py`; `load_bfcl` verifies
 every file against `PINS`):
 
-```python
-from astro_weights.runners.bfcl import load_bfcl, run_bfcl
-
-tasks = load_bfcl("gorilla/berkeley-function-call-leaderboard")  # 200 tasks
-for arm in ("base", "edit"):
-    run_bfcl(
-        tasks,
-        BASE_URL,
-        arm,
-        arm,
-        trials=4,  # K=4 per task (PDR 0.3 section 4.7); the pilot may use 1
-        max_new_tokens=1024,
-        out=f"exit/bfcl/{arm}.jsonl",
-    )
+```toml
+# exit/bfcl/base.toml (edit.toml: arm = "edit", model = "edit", out = "edit.jsonl")
+kind = "bfcl"
+arm = "base"
+base_url = "http://localhost:8000"   # BASE_URL
+model = "base"
+bfcl_root = "../../gorilla/berkeley-function-call-leaderboard"   # 200 tasks
+trials = 4          # K=4 per task (PDR 0.3 section 4.7); the pilot may use 1
+max_new_tokens = 1024
+out = "base.jsonl"
 ```
 
-`run_bfcl` writes `out` once, after the last conversation, and has no resume: a server
-error (HTTP 400 when a prompt exceeds the context, a timeout) on conversation 1,500 of
-1,600 loses the run. Pilot first with `tasks[:10]` and `trials=1` to measure time per task, then the full
-200 with `trials=4` (200 tasks x 4 trials x 2 arms = 1600 conversations). Serve base and edit with the same
-settings; the files must have the same tasks and trials (`compare_tasks` refuses
-otherwise).
+```bash
+astro-weights gen exit/bfcl/base.toml --resume
+astro-weights gen exit/bfcl/edit.toml --resume
+```
+
+`gen` appends each finished (task, trial) record to `out` (fsynced) and writes the header
+beside it. After a kill or a server error (HTTP 400 when a prompt exceeds the context, a
+timeout) rerun with `--resume`: only the pairs not yet written are asked. A resume under
+another `max_new_tokens`, `seed`, `extra_body` or `serving_flags` is refused (exit 2) and
+the file is left alone. Pilot first with `trials = 1` and a copy of the config to measure
+time per task (a separate `out`), then the full 200 with `trials = 4` (200 tasks x 4
+trials x 2 arms = 1600 conversations). Serve base and edit with the same settings; the
+files must have the same tasks and trials (`compare_tasks` refuses otherwise).
 
 ### 6. Regression suites (criterion 8), after 7b lands
 
-`runners.suites_run.run_suites` (branch `orca/w7-7b-suites-run`; not in this branch)
-writes `out_dir/<suite>/<arm>.jsonl` and its header for one arm:
+`gen` with `kind = "suites"` (`runners.suites_run.run_suites` over `HttpBackend`) writes
+`out_dir/<suite>/<arm>.jsonl` and its header for one arm:
 
-```python
-from astro_weights.runners.suites_run import HttpBackend, run_suites
-
-for arm in ("base", "edit"):
-    run_suites(
-        ["gsm8k", "ifeval"],
-        arm,
-        "exit/gate/suites",
-        backend=HttpBackend(
-            BASE_URL, arm
-        ),  # llama.cpp: extra_body=<the arm's lora list>
-        max_new_tokens=1024,
-    )
+```toml
+# exit/gate/suites-base.toml (suites-edit.toml: arm = "edit", model = "edit")
+kind = "suites"
+arm = "base"
+base_url = "http://localhost:8000"   # BASE_URL
+model = "base"          # llama.cpp: extra_body = the arm's lora list
+suites = ["gsm8k", "ifeval"]
+out_dir = "suites"
+max_new_tokens = 1024
 ```
+
+```bash
+for arm in base edit; do astro-weights gen exit/gate/suites-$arm.toml --resume; done
+```
+
+A suite file left by a kill holds scores of 0 until a resume finishes it and regrades it;
+always rerun with `--resume`.
 
 In each `GATE.toml`: `[suites.gsm8k]` with `base = "suites/gsm8k/base.jsonl"`,
 `edit = "suites/gsm8k/edit.jsonl"`, its own `margin` and `source`; same for `ifeval`.
-Run the same for the planted bad edit (served as `bad`) into `exit/gate/suites_bad`.
+Run the same for the planted bad edit (served as `bad`, `out_dir = "suites_bad"`).
 
 ### 7. The `GATE.toml` files
 
@@ -438,8 +422,9 @@ its side effects stay inside the other 20's range). It then goes on to the test 
 scored on the edit's test files, would get the edit's verdict, so test 2 would fail on its
 exit code. For each control whose gate gets past stage 3 (the gate prints stage 4 lines,
 or fails with a missing test file), run its own K = 4 test arm
-(`run_k4("control-NN", "control-NN", test_items, "exit/gate/test/control-NN")`, served as
-above) and its own regression suites (`run_suites(..., "control-NN", ...)`), and point
+(a `test-control-NN.toml` like `test-edit.toml` with `arm`/`model` `control-NN` and
+`out = "../test/control-NN.jsonl"`, served as above) and its own regression suites (a
+`suites-control-NN.toml`), and point
 that gate's `[test] edit` and `[suites.*] edit` at them. Its own random edit then has no
 effect to confirm, and test 2 expects `not significant`.
 
