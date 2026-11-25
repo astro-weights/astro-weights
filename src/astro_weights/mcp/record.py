@@ -284,6 +284,8 @@ class RunRecord:
         one per accepted ``save_edit``: an upper bound on the edit sets the search
         made on dev (saves of the same values count again).
         ``confirm_refused``: ``confirm`` calls refused past the query limit.
+        ``confirm_interrupted`` (only when > 0): queries cut off by a kill before a
+        result; they stay in ``confirm_queries`` but not in the query limit.
         """
         events = self.read()
         candidates = {
@@ -291,7 +293,7 @@ class RunRecord:
             for e in events
             if e["event"] == "confirm_result" and isinstance(e.get("candidate"), str)
         }
-        return {
+        counts = {
             "candidates_tried": len(candidates),
             "candidates_saved": sum(e["event"] == "edit_saved" for e in events),
             "confirm_queries": sum(e["event"] == "confirm_query" for e in events),
@@ -300,3 +302,7 @@ class RunRecord:
                 for e in events
             ),
         }
+        cut = sum(e["event"] == "confirm_interrupted" for e in events)
+        if cut:
+            counts["confirm_interrupted"] = cut
+        return counts
