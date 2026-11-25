@@ -24,6 +24,7 @@ nav = [
     "how-to/find-direction.md",
     "how-to/compare-arms.md",
     "how-to/run-eval.md",
+    "how-to/run-arm.md",
     "how-to/run-gate.md",
     "how-to/agent-local-model.md",
     "how-to/agent-hosted.md",
