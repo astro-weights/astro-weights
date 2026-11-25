@@ -788,3 +788,42 @@ def test_generator_batches_the_tiny_model(tmp_path: Path) -> None:
     two = gen({"arm": "base", "prompts": prompts, "batch_size": 2})
     assert len(two["texts"]) == 3
     assert len(two["tokens"]) == 3
+
+
+ACCURACY_TEXT = (
+    "Start a confirm query of the stored edits; returns a handle to poll with "
+    'status. Coarse feedback only: the job result is {"passed": bool} and '
+    "nothing else. The edits pass when they beat the current best (the base "
+    "model at first, then the last edits that passed) on held-out confirm items "
+    "by more than the run's margin; a tie fails. Use it to select, not to tune: "
+    "at most 5 queries per run, later calls are refused."
+)
+TOKENS_RULE = (
+    "The edits pass when the edited model writes fewer output tokens over held-out "
+    "confirm items than the current best (the base model at first, then the last "
+    "edits that passed), while its accuracy stays within the run's margin of the "
+    "base model; a token tie fails."
+)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("target", ["accuracy", "tokens"])
+async def test_tool_description_states_the_target_rule(
+    tmp_path: Path, target: str
+) -> None:
+    run = tokens_run(tmp_path, n=4, target=target)
+    async with Client(
+        build_server(run, {"confirm": TokenModel(run, 4, (0, 0), [])})
+    ) as c:
+        tools = {t.name: t.description or "" for t in (await c.list_tools()).tools}
+    text = tools["confirm"]
+    if target == "accuracy":
+        assert text == ACCURACY_TEXT
+    else:
+        assert text == ACCURACY_TEXT.replace(
+            "The edits pass when they beat the current best (the base model at "
+            "first, then the last edits that passed) on held-out confirm items by "
+            "more than the run's margin; a tie fails.",
+            TOKENS_RULE,
+        )
+        assert TOKENS_RULE in text

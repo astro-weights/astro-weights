@@ -213,13 +213,21 @@ def _export(
     return {"export": summary}
 
 
-def _confirm_text(limit: int) -> str:
+def _confirm_text(limit: int, target: str = "accuracy") -> str:
+    rule = (
+        "The edits pass when the edited model writes fewer output tokens over "
+        "held-out confirm items than the current best (the base model at first, "
+        "then the last edits that passed), while its accuracy stays within the "
+        "run's margin of the base model; a token tie fails. "
+        if target == "tokens"
+        else "The edits pass when they beat the current best (the base "
+        "model at first, then the last edits that passed) on held-out confirm items "
+        "by more than the run's margin; a tie fails. "
+    )
     return (
         "Start a confirm query of the stored edits; returns a handle to poll with "
         'status. Coarse feedback only: the job result is {"passed": bool} and '
-        "nothing else. The edits pass when they beat the current best (the base "
-        "model at first, then the last edits that passed) on held-out confirm items "
-        "by more than the run's margin; a tie fails. Use it to select, not to tune: "
+        f"nothing else. {rule}Use it to select, not to tune: "
         f"at most {limit} queries per run, later calls are refused."
     )
 
@@ -405,7 +413,9 @@ def build_server(
                 except ConfirmLimit as exc:
                     return refuse("confirm_limit", str(exc))
 
-        server.tool(description=_confirm_text(cfg.confirm.max_queries))(confirm)
+        server.tool(
+            description=_confirm_text(cfg.confirm.max_queries, cfg.confirm.target)
+        )(confirm)
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]
     def finish(summary: str) -> dict[str, Any]:
