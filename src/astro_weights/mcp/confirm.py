@@ -227,6 +227,8 @@ def _restore(events: list[dict[str, Any]]) -> _State:
         if e["event"] == "confirm_base":
             st.base = (int(e["base_correct"]), int(e["base_tokens"]))
             st.bar_tokens = st.base[1]
+            if st.bar is None:  # a crash before the first result: best is still base
+                st.bar = st.base[0]
         if e["event"] != "confirm_result":
             continue
         if isinstance(e.get("best"), int):
