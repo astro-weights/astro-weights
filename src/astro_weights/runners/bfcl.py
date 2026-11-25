@@ -33,11 +33,13 @@ from typing import Any
 
 from astro_weights.eval import TaskRecord, ToolCall, Turn, prompt_hash, write_header
 from astro_weights.eval.header import header_path
+from astro_weights.eval.records import _repair_tail
 from astro_weights.eval.tasks import read_tasks_tail
 from astro_weights.runners.endpoint import (
     ChatReply,
     ContextOverflowError,
     ToolCallParseError,
+    _check_call,
     _header_to_keep,
     chat_http,
 )
@@ -533,7 +535,7 @@ def _load_done(
         if r.task_id not in hashes:
             raise ValueError(f"{path}: task_id {r.task_id!r} is not in tasks")
         if not 0 <= r.trial < trials:
-            raise ValueError(f"{where} is outside trials=1..{trials}")
+            raise ValueError(f"{where} is outside trials 0..{trials - 1}")
         if r.prompt_hash != hashes[r.task_id]:
             raise ValueError(
                 f"{where}: the task differs from the one that would be run now; "
@@ -542,12 +544,7 @@ def _load_done(
         if (r.task_id, r.trial) in done:
             raise ValueError(f"{where} appears twice")
         done[r.task_id, r.trial] = r
-    if cut is not None:
-        with path.open("r+b") as f:
-            f.truncate(cut)
-    elif whole:
-        with path.open("ab") as f:
-            f.write(b"\n")
+    _repair_tail(path, cut, whole)
     return done
 
 
@@ -601,6 +598,13 @@ def run_bfcl(
     if resume and out is None:
         raise ValueError("resume=True needs out")
     _check_envs(tasks)
+    call = {
+        "max_new_tokens": max_new_tokens,
+        "seed": seed,
+        "extra_body": json.loads(json.dumps(dict(extra_body or {}))),
+    }
+    if header is not None:
+        _check_call(header, call, "header")
     path = Path(out) if out is not None else None
     done: dict[tuple[str, int], TaskRecord] = {}
     kept = None if header is None else dict(header)
@@ -610,11 +614,6 @@ def run_bfcl(
                 f"{path} already has records; pass resume=True to continue it "
                 "or choose another path"
             )
-        call = {
-            "max_new_tokens": max_new_tokens,
-            "seed": seed,
-            "extra_body": json.loads(json.dumps(dict(extra_body or {}))),
-        }
         kept = _header_to_keep(path, header, call)  # before _load_done repairs the file
         done = _load_done(path, tasks, arm, trials)
     if path is not None and kept is not None:

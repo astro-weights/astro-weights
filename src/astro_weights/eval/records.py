@@ -80,6 +80,36 @@ def _parse(line: str, num: int) -> Record:
     return Record(**obj)
 
 
+def _split_tail(data: bytes) -> tuple[bytes, int | None, bool]:
+    """`data` without a crash's partial last line, and how to repair the file.
+
+    Returns (data, cut, whole): `cut` is the size to truncate to when the last line
+    lacks its newline and is not valid JSON (`data` is then cut there); `whole` is
+    True when that line is valid and only lacks its newline.
+    """
+    cut: int | None = None
+    whole = False
+    if data and not data.endswith(b"\n"):
+        start = data.rfind(b"\n") + 1
+        try:
+            json.loads(data[start:])
+        except ValueError:  # truncated JSON or a cut UTF-8 character
+            cut, data = start, data[:start]
+        else:
+            whole = True
+    return data, cut, whole
+
+
+def _repair_tail(path: Path, cut: int | None, whole: bool) -> None:
+    """Apply what `_split_tail` found to the file: truncate, or add the newline."""
+    if cut is not None:
+        with path.open("r+b") as f:
+            f.truncate(cut)
+    elif whole:
+        with path.open("ab") as f:
+            f.write(b"\n")
+
+
 def read_jsonl(path: str | Path) -> list[Record]:
     """Read records written by `write_jsonl`; blank lines are skipped."""
     out: list[Record] = []

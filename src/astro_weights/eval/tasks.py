@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from astro_weights.eval.paired import PairedResult, compare
-from astro_weights.eval.records import Record
+from astro_weights.eval.records import Record, _split_tail
 
 
 @dataclass(frozen=True)
@@ -193,17 +193,7 @@ def read_tasks_tail(path: str | Path) -> tuple[list[TaskRecord], int | None, boo
     left a last line without its newline that is not valid JSON; `whole` is True
     when that line is valid and only lacks its newline.
     """
-    data = Path(path).read_bytes()
-    cut: int | None = None
-    whole = False
-    if data and not data.endswith(b"\n"):
-        start = data.rfind(b"\n") + 1
-        try:
-            json.loads(data[start:])
-        except ValueError:  # truncated JSON or a cut UTF-8 character
-            cut, data = start, data[:start]
-        else:
-            whole = True
+    data, cut, whole = _split_tail(Path(path).read_bytes())
     out: list[TaskRecord] = []
     for num, line in enumerate(data.decode("utf-8").split("\n"), start=1):
         if line.strip():

@@ -338,7 +338,7 @@ def test_resume_refuses_a_trial_beyond_trials(
     out = tmp_path / "r.jsonl"
     with serve(lambda _b: ok("done")) as (url, _s):
         _run(tasks, url, out)
-        with pytest.raises(ValueError, match="outside trials"):
+        with pytest.raises(ValueError, match=r"outside trials 0\.\.0"):
             _run(tasks, url, out, resume=True, trials=1)
 
 
@@ -415,3 +415,23 @@ def test_run_fsyncs_each_record(
             tasks, url, "m", "a", trials=2, max_new_tokens=16, out=tmp_path / "r.jsonl"
         )
     assert len(calls) >= len(recs) == len(tasks) * 2
+
+
+def test_header_must_agree_with_this_call(
+    tasks: list[BfclTask], tmp_path: Path
+) -> None:
+    out = tmp_path / "r.jsonl"
+    with serve(lambda _b: ok("done")) as (url, state):
+        head = run_header_http(url, "m", 32, SEED)
+        n = len(state.requests)
+        with pytest.raises(ValueError, match="max_new_tokens"):
+            run_bfcl(
+                tasks, url, "m", "a", seed=SEED, max_new_tokens=16, out=out, header=head
+            )
+        with pytest.raises(ValueError, match="seed"):
+            run_bfcl(
+                tasks, url, "m", "a", seed=SEED + 1, max_new_tokens=32, header=head
+            )
+        assert _asked(state.requests[n:]) == Counter()
+    assert not out.exists()
+    assert not header_path(out).exists()
