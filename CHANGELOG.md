@@ -43,6 +43,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - The 0.3 exit test gates the edit against `control-01` to `control-20` and each of 21 controls against the other 20, so no gate pool contains the arm it gates.
 - The `[confirm]` table of an `astro-weights run` config (items, grader, margin, max_queries) writes the `confirm` object of `run.json`, so a run started from TOML can use the `confirm` tool.
 - The `exec_python` and `finish` tool descriptions now say that `finish` exports each edit at rank `export.rank` (default 8) and fails above `export.max_rel_residual` (default 0.05), so MCP clients such as Codex keep edits low rank.
+- The MCP `confirm` tool takes `target = "tokens"` (fewer output tokens, accuracy within the margin of base, the gate's `tokens_diff` rule), so a terse edit can pass, and `batch_size` to generate confirm items in batches.
+- When a concurrent endpoint run hits an error, items before the failing one that were still in flight are now waited for and written, as documented, so a resume does not request them again.
 
 ## [0.2.2] - 2026-11-19
 
