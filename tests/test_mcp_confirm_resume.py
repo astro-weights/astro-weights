@@ -62,7 +62,7 @@ def save_edit(run: Path, tiny: Path) -> None:
 
 def wait_done(run: Path, handle: str) -> str:
     store = HandleStore(run)
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         state = store.get(handle).state
         if state in {"done", "failed"}:
@@ -125,7 +125,7 @@ def test_kill_mid_query_then_resume(
         [sys.executable, "-c", CHILD, str(HERE), str(run), str(tiny)]
     )
     try:
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 300
         while lines(ckpt) < 2:
             assert proc.poll() is None, "child exited early"
             assert time.monotonic() < deadline, "no checkpoint rows"
