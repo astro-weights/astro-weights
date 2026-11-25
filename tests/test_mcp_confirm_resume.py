@@ -17,12 +17,14 @@ from typing import Any
 import numpy as np
 import pytest
 
+from astro_weights.mcp import forward
 from astro_weights.mcp.confirm import Confirmer, _load_rows, _restore, generator
 from astro_weights.mcp.handles import HandleStore
 from astro_weights.mcp.jobs import ConfirmConfig
 from astro_weights.mcp.record import RunRecord
 
 HERE = Path(__file__).parent
+HF = forward.hf_available()
 PROMPTS = ["w1 w2", "w3", "w4 w5 w6", "w7", "w8 w9"]
 GOLDS = ["a", "b", "c", "d", "e"]
 CAP = 4
@@ -37,7 +39,6 @@ def new_run(run: Path) -> Path:
 
 def make_confirmer(run: Path, tiny: Path) -> Confirmer:
     """Confirmer on the tiny model, checkpointing under ``run`` (also used by the child)."""
-    from astro_weights.mcp import forward
     from astro_weights.mcp.edit_store import EditStore
 
     backend = forward.ForwardBackend(tiny, EditStore(run, tiny), device="cpu")
@@ -107,12 +108,11 @@ def lines(path: Path) -> int:
         return 0
 
 
+@pytest.mark.skipif(not HF, reason="needs the hf extra")
 @pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="needs SIGKILL")
 def test_kill_mid_query_then_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pytest.importorskip("torch")
-    pytest.importorskip("transformers")
     from mcp_tiny_hf import save_tiny_model
 
     import astro_weights.runners.generate as g
@@ -249,15 +249,13 @@ def test_load_rows_cuts_a_torn_line_and_skips_stale_rows(tmp_path: Path) -> None
     assert path.read_text() == body
 
 
+@pytest.mark.skipif(not HF, reason="needs the hf extra")
 def test_generator_batches_resume_from_the_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pytest.importorskip("torch")
-    pytest.importorskip("transformers")
     from mcp_tiny_hf import save_tiny_model
 
     import astro_weights.runners.generate as g
-    from astro_weights.mcp import forward
     from astro_weights.mcp.edit_store import EditStore
 
     tiny = save_tiny_model(tmp_path / "tiny")
