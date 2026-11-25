@@ -207,7 +207,8 @@ def test_sigkill_then_resume(
         [sys.executable, "-I", "-c", _CHILD, str(out), str(batch_size)]
     )
     try:
-        deadline = time.monotonic() + 300  # a busy CI box loads torch slowly; the child-alive check ends a crash early
+        # a busy CI box loads torch slowly; the child-alive check ends a crash early
+        deadline = time.monotonic() + 300
         while _lines(out) < 2:
             assert child.poll() is None, "child ended before it could be killed"
             assert time.monotonic() < deadline, "child wrote no records in 300 s"
