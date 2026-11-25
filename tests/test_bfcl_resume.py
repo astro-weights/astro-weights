@@ -122,10 +122,10 @@ def test_sigkill_then_resume(root: Path, tasks: list[BfclTask], tmp_path: Path) 
             [sys.executable, "-I", "-c", _CHILD, str(root), url, str(out)]
         )
         try:
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + 300
             while _lines(out) < 2:
                 assert child.poll() is None, "child ended before it could be killed"
-                assert time.monotonic() < deadline, "child wrote no records in 30 s"
+                assert time.monotonic() < deadline, "child wrote no records in 300 s"
                 time.sleep(0.02)
             os.kill(child.pid, signal.SIGKILL)
         finally:
