@@ -27,11 +27,20 @@ no timing. Any error in a query is also ``{"passed": false}``; only the error's
 type name is recorded. The items file is read here, in the server, at start; the
 kernel sandbox cannot read it and no tool returns it. Counts and the bar go to the
 run record (``confirm_query`` and ``confirm_result`` events), which no tool returns.
+
+Resume: a query counts toward ``max_queries`` once it has a ``confirm_result``. On
+start, each ``confirm_query`` without one (the server was killed mid-query, so the
+agent never saw a result) gets one ``confirm_interrupted`` event and does not
+count; query numbers keep increasing. With a run directory, ``generator``
+checkpoints each finished chunk of outputs under ``RUN_DIR/confirm/``, so a
+resubmitted query of the same edits generates only the items not yet written; the
+base arm's outputs are reused the same way.
 """
 
 import contextlib
 import hashlib
 import json
+import os
 import threading
 from collections.abc import Callable
 from fractions import Fraction
@@ -147,7 +156,53 @@ def pin(cfg: ConfirmConfig, items: Items) -> dict[str, Any]:
     return out
 
 
-def generator(backend: Any, max_new_tokens: int) -> Executor:
+Row = tuple[str, int, bool]  # output text, token count, hit the cap
+
+
+def _prompt_sha(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode()).hexdigest()
+
+
+def _load_rows(path: Path, shas: list[str]) -> dict[int, Row]:
+    """Checkpointed rows of ``path`` whose prompt sha256 still matches, by index.
+
+    A torn last line (a kill mid-write) is cut off the file first.
+    """
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return {}
+    keep = data[: data.rfind(b"\n") + 1]
+    if len(keep) != len(data):
+        with path.open("r+b") as f:
+            f.truncate(len(keep))
+    rows: dict[int, Row] = {}
+    for line in keep.decode("utf-8", "replace").splitlines():
+        try:
+            r = json.loads(line)
+            i, row = r["index"], (r["text"], r["tokens"], r["hit_cap"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        ok = isinstance(i, int) and 0 <= i < len(shas) and r.get("sha256") == shas[i]
+        types = (str, int, bool)
+        if ok and all(isinstance(v, t) for v, t in zip(row, types, strict=True)):
+            rows[i] = row
+    return rows
+
+
+def _save_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Append one chunk of rows; written, flushed and fsynced together."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows)
+    with path.open("ab") as f:
+        f.write(data.encode())
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def generator(
+    backend: Any, max_new_tokens: int, run_dir: Path | None = None
+) -> Executor:
     """Executor ``{"arm", "prompts", "batch_size"?}`` on the forward model.
 
     Returns ``{"texts", "tokens", "hit_cap", "candidate"}``: per prompt the output,
@@ -155,6 +210,13 @@ def generator(backend: Any, max_new_tokens: int) -> Executor:
     when the tokenizer has one. ``batch_size`` (default 1) > 1 left-pads that many
     prompts per call, as ``generate_records`` does. ``candidate`` is
     ``candidate_id`` of the edits actually applied, or ``"base"``.
+
+    With ``run_dir``, each finished chunk of rows (index, prompt sha256, text,
+    tokens, hit_cap) is appended to
+    ``run_dir/confirm/<candidate>-<batch_size>-<max_new_tokens>.jsonl``; a later
+    call (after a kill and resume) reuses the rows whose prompt sha256 matches and
+    generates only the rest. Chunks sit at fixed positions, so the outputs equal an
+    uninterrupted run.
     """
 
     def run(params: dict[str, Any]) -> dict[str, Any]:
@@ -162,36 +224,56 @@ def generator(backend: Any, max_new_tokens: int) -> Executor:
 
         arm = params["arm"]
         size = int(params.get("batch_size", 1))
+        prompts = list(params["prompts"])
         with backend._lock:  # one model, shared with forward_pass jobs
             backend._ensure()
             backend._sync(arm)
             model, tok = backend._model, backend._tok
+            cand = "base" if arm == "base" else candidate_id(dict(backend._applied))
             eos = model.generation_config.eos_token_id
             eos_ids = set(
                 eos if isinstance(eos, list) else [] if eos is None else [eos]
             )
             if size > 1 and tok.pad_token_id is None:
                 raise ValueError("confirm.batch_size > 1 needs a pad token")
-            shown = [_prompt_text(tok, p, True) for p in params["prompts"]]
-            rows: list[tuple[str, int, bool]] = []
+            shas = [_prompt_sha(p) for p in prompts]
+            path = None
+            done: dict[int, Row] = {}
+            if run_dir is not None:
+                path = Path(run_dir) / KIND / f"{cand}-{size}-{max_new_tokens}.jsonl"
+                done = _load_rows(path, shas)
+            shown = [_prompt_text(tok, p, True) for p in prompts]
+            rows: dict[int, Row] = {}
             for start in range(0, len(shown), size):
+                idx = range(start, min(start + size, len(shown)))
+                if all(i in done for i in idx):
+                    rows.update((i, done[i]) for i in idx)
+                    continue
                 chunk = shown[start : start + size]
                 if size == 1:
                     text, chat = chunk[0]
-                    rows.append(
-                        _run_one(model, tok, text, chat, max_new_tokens, eos_ids)
-                    )
+                    got = [_run_one(model, tok, text, chat, max_new_tokens, eos_ids)]
                 else:
                     texts = [t for t, _ in chunk]
-                    rows += _run_batch(
+                    got = _run_batch(
                         model, tok, texts, chunk[0][1], max_new_tokens, eos_ids
                     )
-            applied = dict(backend._applied)
+                if path is not None:
+                    _save_rows(
+                        path,
+                        [
+                            {"index": i, "sha256": shas[i], "text": r[0]}
+                            | {"tokens": r[1], "hit_cap": r[2]}
+                            for i, r in zip(idx, got, strict=True)
+                        ],
+                    )
+                rows.update(zip(idx, got, strict=True))
+        out = [rows[i] for i in range(len(shown))]
         return {
-            "texts": [r[0] for r in rows],
-            "tokens": [r[1] for r in rows],
-            "hit_cap": [r[2] for r in rows],
-            "candidate": "base" if arm == "base" else candidate_id(applied),
+            "texts": [r[0] for r in out],
+            "tokens": [r[1] for r in out],
+            "hit_cap": [r[2] for r in out],
+            "candidate": cand,
         }
 
     return run
@@ -212,17 +294,38 @@ class _State:
     """What the confirm rule carries from query to query, rebuilt from the record."""
 
     def __init__(self) -> None:
-        self.queries = 0
+        self.queries = 0  # counted toward max_queries: not interrupted
+        self.last = 0  # highest query number used; numbers are never reused
         self.bar: int | None = None  # accuracy target: correct count of the best
         self.best: str | None = None  # candidate of the last pass
         self.base: tuple[int, int] | None = None  # tokens target: correct, tokens
         self.bar_tokens: int | None = None  # tokens target: total of the best
 
 
+def _interrupted(events: list[dict[str, Any]]) -> list[int]:
+    """Query numbers with a ``confirm_query`` but no result and no interrupted mark."""
+    closed = {
+        e.get("query")
+        for e in events
+        if e["event"] in {"confirm_result", "confirm_interrupted"}
+    }
+    return [
+        e["query"]
+        for e in events
+        if e["event"] == "confirm_query" and e.get("query") not in closed
+    ]
+
+
 def _restore(events: list[dict[str, Any]]) -> _State:
-    """Queries made, bars and best candidate from earlier record events."""
+    """Queries made, bars and best candidate from earlier record events.
+
+    A query counts once it has a result: ``confirm_interrupted`` queries do not.
+    """
     st = _State()
-    st.queries = sum(e["event"] == "confirm_query" for e in events)
+    asked = [e for e in events if e["event"] == "confirm_query"]
+    cut = sum(e["event"] == "confirm_interrupted" for e in events)
+    st.queries = len(asked) - cut
+    st.last = max((int(e["query"]) for e in asked), default=0)
     for e in events:
         if e["event"] == "confirm_base":
             st.base = (int(e["base_correct"]), int(e["base_tokens"]))
@@ -259,8 +362,13 @@ class Confirmer:
         self._record = record
         self._count_lock = threading.Lock()
         self._run_lock = threading.Lock()
-        self._st = _restore(record.read())
+        events = record.read()
+        for query in _interrupted(events):  # killed mid-query: no result was seen
+            record.event("confirm_interrupted", query=query)
+            events.append({"event": "confirm_interrupted", "query": query})
+        self._st = _restore(events)
         self._queries, self._bar = self._st.queries, self._st.bar
+        self._last = self._st.last
         self.best_candidate = self._st.best
 
     def export_check(self, exported: dict[str, str] | None) -> dict[str, Any]:
@@ -288,7 +396,8 @@ class Confirmer:
                     f"confirm limit reached: {self._cfg.max_queries} queries"
                 )
             self._queries += 1
-            query = self._queries
+            self._last += 1
+            query = self._last
             self._record.event("confirm_query", query=query)
             job = self._store.submit(KIND, {})
         threading.Thread(

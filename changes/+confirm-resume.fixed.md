@@ -1,0 +1,1 @@
+A `confirm` query killed mid-way no longer counts toward `max_queries` (the record gets a `confirm_interrupted` event), and its outputs are checkpointed per item under `RUN_DIR/confirm/`, so a resumed run generates only the items not yet written.

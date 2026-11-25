@@ -164,7 +164,7 @@ def _forward(
     def check(request: Any) -> dict[str, Any]:
         return forward.check_request(request, backend, edits, max_new_tokens=cap)
 
-    return forward.executor(backend, run_dir), check, generator(backend, cap)
+    return forward.executor(backend, run_dir), check, generator(backend, cap, run_dir)
 
 
 def _base_model(model_dir: Path) -> str:
