@@ -109,7 +109,7 @@ _CONFIRM: _Fields = {
 }
 # editor options map one to one onto the editor's command-line flags
 _EDITORS: dict[str, _Fields] = {
-    "scripted": {},
+    "scripted": {"edit": ("paths", None)},
     "local": {
         "base_url": ("str", _REQUIRED),
         "model": ("str", _REQUIRED),
@@ -130,6 +130,7 @@ _EDITORS: dict[str, _Fields] = {
 _TABLES = ("run", "limits", "editor", "kernel", "forward", "export", "confirm")
 _TYPE_TEXT = {
     "path": "a non-empty string",
+    "paths": "a non-empty list of non-empty strings",
     "str": "a non-empty string",
     "env": "the name of an environment variable",
     "int": "an int",
@@ -163,6 +164,12 @@ def _finite(value: float) -> bool:
 def _ok(kind: str, value: object) -> bool:
     if kind in ("path", "str"):
         return isinstance(value, str) and value.strip() != ""
+    if kind == "paths":
+        return (
+            isinstance(value, list)
+            and value != []
+            and all(isinstance(v, str) and v.strip() != "" for v in value)
+        )
     if kind == "env":
         return isinstance(value, str) and _ENV_NAME.fullmatch(value) is not None
     if kind == "int":
@@ -254,6 +261,9 @@ class RunSpec:
             flag = "--" + key.replace("_", "-")
             if value is True:
                 argv.append(flag)
+            elif isinstance(value, list):  # a repeatable flag
+                for item in value:
+                    argv += [flag, str(item)]
             elif value is not None and value is not False:
                 argv += [flag, str(value)]
         if self.editor == "hosted":  # the config's dollar limit is the cap
@@ -283,6 +293,9 @@ def _parse(where: str, raw: dict[str, Any], base: Path, text: str) -> RunSpec:
         )
     options = {k: v for k, v in editor_raw.items() if k != "kind"}
     options = _table(where, options, _EDITORS[kind], "editor")
+    for key, (field_kind, _) in _EDITORS[kind].items():
+        if field_kind == "paths" and options[key] is not None:
+            options[key] = [str(_path(base, v)) for v in options[key]]
     limits = _table(where, raw["limits"], _LIMITS, "limits")
     if limits["dollars"] is None:
         limits["dollars"] = HOSTED_DOLLARS if kind == "hosted" else 0.0

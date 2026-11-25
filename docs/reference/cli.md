@@ -158,6 +158,7 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 | `[limits]` | `forward_passes`, `code_runs`, `tokens` | int >= 0 | required |
 | | `dollars` | number >= 0; must be > 0 for `hosted` | 20.0 for `hosted`, 0 for the others |
 | `[editor]` | `kind` | `scripted`, `local` or `hosted` (`hosted` needs the `hosted` extra: `pip install "astro-weights[mcp,hf,hosted]"`) | required |
+| `scripted` | `edit` | list of PEFT adapter directories, relative to the config: candidate edits applied and sent to `confirm` in order, then the last that passed is exported (needs `[confirm]`) | the fixed demo script |
 | `local` | `base_url`, `model` | non-empty string | required |
 | | `api_key_env` | the name of an environment variable | no key |
 | | `max_turns` | int >= 1 | 40 |
