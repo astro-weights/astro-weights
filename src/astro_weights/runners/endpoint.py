@@ -386,21 +386,31 @@ def _in_order(
     pending = iter(enumerate(todo))
     running: dict[Future[Any], int] = {}
     ready: dict[int, Any] = {}
+    failed: tuple[int, BaseException] | None = None  # earliest failed item
     nxt = 0
     with ThreadPoolExecutor(concurrency) as pool:
         while True:
-            for i, item in pending:
-                running[pool.submit(fetch, item)] = i
-                if len(running) == concurrency:
-                    break
+            if failed is None:
+                for i, item in pending:
+                    running[pool.submit(fetch, item)] = i
+                    if len(running) == concurrency:
+                        break
             if not running:
-                return
+                break
             finished, _ = wait(running, return_when=FIRST_COMPLETED)
             for f in finished:
-                ready[running.pop(f)] = f.result()
-            while nxt in ready:
+                i = running.pop(f)
+                try:
+                    ready[i] = f.result()
+                except Exception as e:  # noqa: BLE001 - re-raised below, earliest first
+                    if failed is None or i < failed[0]:
+                        failed = (i, e)
+            # items before the failure still get emitted once they finish
+            while nxt in ready and (failed is None or nxt < failed[0]):
                 emit(todo[nxt], ready.pop(nxt))
                 nxt += 1
+    if failed is not None:
+        raise failed[1]
 
 
 def generate_records_http(
