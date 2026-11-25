@@ -225,7 +225,7 @@
   "self_test_http": "(base_url: str, model: str, prompt: str, *, batch_sizes: collections.abc.Sequence[int] = (1, 4, 8), prefix_lens: collections.abc.Sequence[int] = (0, 256, 1024), max_new_tokens: int = 64, api_key: str | None = None, extra_body: collections.abc.Mapping[str, Any] | None = None, timeout: float = 120.0) -> astro_weights.runners.endpoint.SelfTestResult"
  },
  "astro_weights.runners.generate": {
-  "generate_records": "(model: Any, tokenizer: Any, items: collections.abc.Sequence[collections.abc.Mapping[str, Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, seed: int = 0, chat: bool = True, *, out: pathlib.Path | str | None = None, resume: bool = False, batch_size: int = 1, sampling: collections.abc.Mapping[str, float] | None = None, system: str | None = None) -> list[astro_weights.eval.records.Record]",
+  "generate_records": "(model: Any, tokenizer: Any, items: collections.abc.Sequence[collections.abc.Mapping[str, Any]], arm: str, scorer: collections.abc.Callable[[str, str], bool], max_new_tokens: int, seed: int = 0, chat: bool = True, *, out: pathlib.Path | str | None = None, resume: bool = False, batch_size: int = 1, sampling: collections.abc.Mapping[str, float] | None = None, system: str | None = None, header: collections.abc.Mapping[str, Any] | None = None) -> list[astro_weights.eval.records.Record]",
   "run_header": "(model: Any, tokenizer: Any, max_new_tokens: int, seed: int, chat: bool, *, batch_size: int = 1, sampling: collections.abc.Mapping[str, float] | None = None, run_id: str | None = None, k: int = 1, concurrency: int = 1, system: str | None = None) -> dict[str, Any]"
  },
  "astro_weights.runners.hf": {
