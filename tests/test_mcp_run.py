@@ -1247,7 +1247,12 @@ def test_gguf_installed_matches_the_import_system() -> None:
 def test_scripted_edit_paths_resolve_and_repeat_the_flag(tmp_path: Path) -> None:
     spec = load_config(write_config(tmp_path, editor={"edit": ["a", "/abs/b"]}))
     base = (tmp_path / "cfg").resolve()
-    assert spec.editor_argv()[1:] == ["--edit", str(base / "a"), "--edit", "/abs/b"]
+    assert spec.editor_argv()[1:] == [
+        "--edit",
+        str(base / "a"),
+        "--edit",
+        str((base / "/abs/b").resolve()),  # Windows: joins base drive
+    ]
 
 
 @pytest.mark.parametrize("bad", [[], ["ok", ""], "a"])
