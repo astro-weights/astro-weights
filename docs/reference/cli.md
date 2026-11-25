@@ -104,14 +104,14 @@ astro-weights gen [--resume] [--json] ARM.toml
 |---|---|---|
 | `http` | `generate_records_http` with `run_header_http` for the header | `arm`, `base_url`, `model`, `max_new_tokens`, `out` (records JSONL), `items` (JSONL of `{"item_id", "prompt", "gold"}`), `grader` (`exact`, `choice` or `math`; `math` needs the `eval` extra). Optional: `seed` (0), `k` (1), `manifest` with `split`, `extra_body`, `serving_flags`, `model_id`, `system`, `concurrency` (1), `timeout` (120), `api_key_env` |
 | `suites` | `run_suites` with `HttpBackend` | `arm`, `base_url`, `model`, `max_new_tokens`, `out_dir` (records go to `out_dir/<suite>/<arm>.jsonl`), `suites` (list of names). Optional: `seed`, `limit`, `cache_dir`, `suite_paths` (table of name to file), `extra_body`, `system`, `concurrency`, `api_key_env` |
-| `bfcl` | `load_bfcl` then `run_bfcl`, header from `run_header_http` | `arm`, `base_url`, `model`, `max_new_tokens`, `out`, `bfcl_root`. Optional: `trials` (1), `max_steps_per_turn` (20), `seed`, `extra_body`, `serving_flags`, `model_id`, `timeout`, `api_key_env` |
+| `bfcl` | `load_bfcl` then `run_bfcl`, header from `run_header_http` with `k = trials` | `arm`, `base_url`, `model`, `max_new_tokens`, `out`, `bfcl_root`. Optional: `trials` (1), `max_steps_per_turn` (20), `seed`, `extra_body`, `serving_flags`, `model_id`, `timeout`, `api_key_env` |
 
 - `api_key_env` names an environment variable that holds the key; the key itself never goes in the file or the header.
 - `http` with `manifest` and `split`: only that split's items of `items` are run (every id the split lists must be in the file). For `split = "test"`, `k` is the manifest's `k` (an explicit `k` of another value is refused). With `k` above 1 the arm runs seeds `seed` to `seed + k - 1` into `out`'s stem plus `.s0.jsonl`, `.s1.jsonl` and so on, then joins them into `out` with seed 0's header, as `tests/exit_0_3/README.md` makes its K = 4 test arms.
 - Without `--resume`, a records file that is not empty is refused (exit 2) before any request. With `--resume`, the records already in the files stay as they are (byte for byte), a last line cut short by a crash is dropped and redone, and only the other items are asked. A file made under another config (`max_new_tokens`, `seed`, `extra_body`, `serving_flags`, `system`, `model_id`, `concurrency`, `k`, a suite's `limit`...) is refused with the differences, and nothing is written. `gen` keeps no state beyond the records and header files the runners write.
 - Every record is written and fsynced when it is made, so a kill loses at most the requests in flight.
 - Output: `ARM: done/total items, OUT`. `--json` prints `{"arm", "out", "done", "total"}` (`out` is the directory for `suites`; `total` is `done` for `suites`, whose item count comes from the suite files).
-- Exit codes: 0 done; 2 bad config, missing extra or key variable, a non-empty file without `--resume`, or a resume refused; 1 a server error that outlasted the runner's retries (the records so far stay, `done` counts them, the error is on stderr: run again with `--resume`).
+- Exit codes: 0 done; 2 bad config, missing extra or key variable, a non-empty file without `--resume`, or a resume refused; 1 a server error that outlasted the runner's retries, or a reply the runner cannot read (no message, no `usage`), once requests have begun (the records so far stay, `done` counts them, the error is on stderr: run again with `--resume`). Everything found before the first request is exit 2.
 
 ## mcp
 
@@ -208,7 +208,7 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 - `inspect` exits 1 on hash problems (`problem:` lines on stderr, also with `--json`).
 - `eval` exits 1 when the run headers differ, and 2 on an unreadable file or arms that do not pair.
 - `self-test` exits 0 when every output matches, 1 when they differ, and 2 on a bad argument, an unset `--api-key-env` variable or a server error.
-- `gen` exits 0 when every item has a record, 1 on a server error after retries and 2 on bad input or a refused resume (see [gen](#gen)).
+- `gen` exits 0 when every item has a record, 1 on a server error after retries or an unreadable reply once requests began, and 2 on bad input or a refused resume (see [gen](#gen)).
 - `gate` exits 0 when confirmed, 1 when regressed or not significant, 3 when screened out, and 2 on bad input or a refusal (see [gate](#gate)).
 - `build`, `compose` and `export` exit 0 on success and 2 on any error.
 - Errors go to stderr as a line starting with `error:`; read and parse errors name the file.

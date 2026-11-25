@@ -7,9 +7,11 @@ import math
 import os
 import secrets
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from safetensors import SafetensorError
@@ -985,13 +987,51 @@ def _run(config: Path, resume: bool, show_status: bool, as_json: bool) -> int:
     return 0
 
 
+class _Spy:
+    """Whether the current runner call has sent a request for an item yet."""
+
+    started = False
+
+
 @dataclass(frozen=True)
 class _GenPlan:
-    """What one `gen` run writes (`paths`, `total` items or None) and how to run it."""
+    """What one `gen` run writes (`paths`, `total` items or None) and how to run it.
+
+    `counted` are the files that hold each record once (`paths` also has the joined
+    `out` of a K > 1 arm). `spy` tells a failure before the first request (a config
+    error or a refused resume) from one after it (a server's malformed reply).
+    """
 
     paths: tuple[Path, ...]
+    counted: tuple[Path, ...]
     total: int | None
     run: Callable[[], int]  # returns the records it holds at the end
+    spy: _Spy
+
+
+@contextmanager
+def _watch(spy: _Spy) -> Iterator[None]:
+    """Set `spy.started` when the runner inside sends its first item request.
+
+    The header's `Hi` probe is not one. Wraps `endpoint._chat`, which every runner
+    sends its requests through, and puts it back afterwards.
+    """
+    from astro_weights.runners import endpoint
+
+    real = endpoint._chat
+    probe = [{"role": "user", "content": "Hi"}]
+
+    def chat(url: str, body: dict[str, Any], *args: Any, **kw: Any) -> Any:
+        if body.get("messages") != probe:
+            spy.started = True
+        return real(url, body, *args, **kw)
+
+    spy.started = False
+    endpoint._chat = chat
+    try:
+        yield
+    finally:
+        endpoint._chat = real
 
 
 def _whole_lines(paths: tuple[Path, ...]) -> int:
@@ -1046,6 +1086,7 @@ def _plan_http(cfg: ArmConfig, resume: bool) -> _GenPlan:
     scorer = _grader(cfg.grader)
     key = _api_key(cfg)
     out = cfg.out
+    spy = _Spy()
     parts = (
         [out] if k == 1 else [out.with_name(f"{out.stem}.s{s}.jsonl") for s in range(k)]
     )
@@ -1055,15 +1096,15 @@ def _plan_http(cfg: ArmConfig, resume: bool) -> _GenPlan:
         n = 0
         for s, part in enumerate(parts):
             seed = cfg.seed + s
-            n += len(
-                generate_records_http(
+            header = _header_for(cfg, key, seed, k)
+            with _watch(spy):
+                got = generate_records_http(
                     cfg.base_url, cfg.model, items, cfg.arm, scorer, cfg.max_new_tokens,
                     seed=seed, api_key=key, timeout=cfg.timeout,
                     extra_body=cfg.extra_body, out=part, concurrency=cfg.concurrency,
-                    resume=resume, header=_header_for(cfg, key, seed, k),
-                    system=cfg.system,
-                )
-            )  # fmt: skip
+                    resume=resume, header=header, system=cfg.system,
+                )  # fmt: skip
+            n += len(got)
         if k > 1:  # the seeds joined into `out`, with seed 0's header (README run_k4)
             tmp = out.with_name(out.name + ".tmp")
             write_jsonl(tmp, [r for p in parts for r in read_jsonl(p)])
@@ -1071,7 +1112,8 @@ def _plan_http(cfg: ArmConfig, resume: bool) -> _GenPlan:
             write_header(header_path(out), read_header(header_path(parts[0])))
         return n
 
-    return _GenPlan((out, *parts[k == 1 :]), len(items) * k, run)
+    paths = (out, *parts[k == 1 :])
+    return _GenPlan(paths, tuple(parts), len(items) * k, run, spy)
 
 
 def _plan_suites(cfg: ArmConfig, resume: bool) -> _GenPlan:
@@ -1084,17 +1126,19 @@ def _plan_suites(cfg: ArmConfig, resume: bool) -> _GenPlan:
         cfg.base_url, cfg.model, key, cfg.concurrency, cfg.extra_body or None
     )
     paths = tuple(out_dir / n / f"{cfg.arm}.jsonl" for n in cfg.suites)
+    spy = _Spy()
 
     def run() -> int:
-        run_suites(
-            list(cfg.suites), cfg.arm, out_dir, backend=backend,
-            max_new_tokens=cfg.max_new_tokens, seed=cfg.seed, limit=cfg.limit,
-            cache_dir=cfg.cache_dir, suite_paths=cfg.suite_paths or None,
-            resume=resume, system=cfg.system,
-        )  # fmt: skip
+        with _watch(spy):
+            run_suites(
+                list(cfg.suites), cfg.arm, out_dir, backend=backend,
+                max_new_tokens=cfg.max_new_tokens, seed=cfg.seed, limit=cfg.limit,
+                cache_dir=cfg.cache_dir, suite_paths=cfg.suite_paths or None,
+                resume=resume, system=cfg.system,
+            )  # fmt: skip
         return _whole_lines(paths)
 
-    return _GenPlan(paths, None, run)
+    return _GenPlan(paths, paths, None, run, spy)
 
 
 def _plan_bfcl(cfg: ArmConfig, resume: bool) -> _GenPlan:
@@ -1105,19 +1149,22 @@ def _plan_bfcl(cfg: ArmConfig, resume: bool) -> _GenPlan:
     out = cfg.out
     key = _api_key(cfg)
     tasks = load_bfcl(cfg.bfcl_root)
+    spy = _Spy()
 
     def run() -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
-        got = run_bfcl(
-            tasks, cfg.base_url, cfg.model, cfg.arm, trials=cfg.trials,
-            max_new_tokens=cfg.max_new_tokens,
-            max_steps_per_turn=cfg.max_steps_per_turn, seed=cfg.seed, api_key=key,
-            extra_body=cfg.extra_body, timeout=cfg.timeout, out=out,
-            resume=resume, header=_header_for(cfg, key, cfg.seed, 1),
-        )  # fmt: skip
+        header = _header_for(cfg, key, cfg.seed, cfg.trials)  # k = trials, as K = 4
+        with _watch(spy):
+            got = run_bfcl(
+                tasks, cfg.base_url, cfg.model, cfg.arm, trials=cfg.trials,
+                max_new_tokens=cfg.max_new_tokens,
+                max_steps_per_turn=cfg.max_steps_per_turn, seed=cfg.seed,
+                api_key=key, extra_body=cfg.extra_body, timeout=cfg.timeout,
+                out=out, resume=resume, header=header,
+            )  # fmt: skip
         return len(got)
 
-    return _GenPlan((out,), len(tasks) * cfg.trials, run)
+    return _GenPlan((out,), (out,), len(tasks) * cfg.trials, run, spy)
 
 
 def _gen(config: Path, resume: bool, as_json: bool) -> int:
@@ -1138,11 +1185,17 @@ def _gen(config: Path, resume: bool, as_json: bool) -> int:
     code = 0
     try:
         done = plan.run()
-    except RuntimeError as e:  # a server failed past its retries; the records stay
+    except (*_ERRORS, ImportError, RuntimeError) as e:
+        # a server that failed past its retries, or answered something unreadable
+        # after requests began: the records stay, run again with --resume. Anything
+        # raised before the first request is a bad config or a refused resume.
+        late = isinstance(e, RuntimeError) or (
+            isinstance(e, ValueError) and plan.spy.started
+        )
+        if not late:
+            return _fail(config, e)
         print(f"error: {e}", file=sys.stderr)
-        done, code = _whole_lines(plan.paths), 1
-    except (*_ERRORS, ImportError) as e:  # a refused resume, an unreadable file
-        return _fail(config, e)
+        done, code = _whole_lines(plan.counted), 1
     total = plan.total if code else (plan.total if plan.total is not None else done)
     if as_json:
         _emit({"arm": cfg.arm, "out": str(shown), "done": done, "total": total})

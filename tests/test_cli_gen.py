@@ -291,6 +291,66 @@ def test_server_error_exits_1_keeps_records_then_resumes(
     ]
 
 
+def test_malformed_reply_mid_run_exits_1_keeps_records(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A reply the runner cannot read, after requests began, is a runtime error."""
+    bad = ["q4"]
+
+    def respond(body: dict[str, Any]) -> Reply:
+        if body["messages"][-1]["content"] in bad:
+            return 200, json.dumps({"choices": [{"message": None}]})
+        return _answer(body)
+
+    with serve(respond) as (url, _state):
+        cfg = _http_cfg(tmp_path, url)
+        code, out, err = gen(cfg, "--json", capsys=capsys)
+        assert code == 1
+        assert "no message" in err
+        assert json.loads(out) == {
+            "arm": "base", "out": str(tmp_path / "out/base.jsonl"), "done": 4, "total": N,
+        }  # fmt: skip
+        bad.clear()
+        assert gen(cfg, "--resume", capsys=capsys)[0] == 0
+        # the very first reply unreadable: still after the first request, still 1
+        (tmp_path / "out/base.jsonl").unlink()
+        bad.append("q0")
+        code, out, _ = gen(cfg, capsys=capsys)
+        assert (code, out.startswith("base: 0/8 items")) == (1, True)
+    assert _lines(tmp_path / "out/base.jsonl") == 0
+
+
+def test_failure_counts_only_the_seed_files_when_k_above_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, test = _manifest(tmp_path)
+    rows = [{"item_id": f"i{i}", "prompt": f"q{i}", "gold": f"a{i}"} for i in range(40)]
+    (tmp_path / "all.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    down = [False]
+
+    def respond(body: dict[str, Any]) -> Reply:
+        if down[0] and body["messages"][-1]["content"] == f"q{max(test)}":
+            return 500, "boom"
+        return _answer(body)
+
+    with serve(respond) as (url, _state):
+        cfg = _write(
+            tmp_path / "ARM.toml", kind="http", arm="base", base_url=url, model="m",
+            max_new_tokens=16, items="all.jsonl", grader="exact", out="t/base.jsonl",
+            manifest="splits.json", split="test",
+        )  # fmt: skip
+        assert gen(cfg, capsys=capsys)[0] == 0
+        s1 = tmp_path / "t/base.s1.jsonl"
+        lines = s1.read_bytes().splitlines(keepends=True)
+        s1.write_bytes(b"".join(lines[:-1]))  # seed 1 lost its last record
+        assert (tmp_path / "t/base.jsonl").exists()  # the joined file is still there
+        down[0] = True
+        code, out, _ = gen(cfg, "--resume", "--json", capsys=capsys)
+    assert code == 1
+    got = json.loads(out)
+    assert (got["done"], got["total"]) == (2 * len(test) - 1, 2 * len(test))
+
+
 def test_api_key_from_environment(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -495,6 +555,7 @@ def test_bfcl_kind_runs_and_resumes(
         path = tmp_path / "b/base.jsonl"
         assert _lines(path) == total
         assert read_header(header_path(path))["seed"] == 5
+        assert read_header(header_path(path))["k"] == 2  # k = trials
         before = path.read_bytes()
         lines = before.splitlines(keepends=True)
         path.write_bytes(b"".join(lines[:2]))
@@ -511,6 +572,28 @@ def test_bfcl_kind_runs_and_resumes(
     code, _, _ = gen(changed, "--resume", capsys=capsys)
     assert code == 2
     assert path.read_bytes() == before
+
+
+def test_bfcl_reply_without_usage_exits_1(
+    tmp_path: Path, bfcl_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    n = [0]
+
+    def respond(_b: dict[str, Any]) -> Reply:
+        n[0] += 1
+        return ok("done") if n[0] <= 3 else ok("done", usage={})
+
+    with serve(respond) as (url, _state):
+        cfg = _write(
+            tmp_path / "ARM.toml", kind="bfcl", arm="base", base_url=url, model="m",
+            max_new_tokens=16, bfcl_root="bfcl", out="b.jsonl",
+        )  # fmt: skip
+        code, out, err = gen(cfg, "--json", capsys=capsys)
+    assert code == 1
+    assert "usage" in err
+    got = json.loads(out)
+    assert got["done"] == _lines(tmp_path / "b.jsonl")
+    assert got["total"] == len(bfcl.load_bfcl(bfcl_root))
 
 
 def test_bfcl_bad_root_exits_2(
