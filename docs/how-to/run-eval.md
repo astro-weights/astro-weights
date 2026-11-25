@@ -66,7 +66,7 @@ LlamaForCausalLM
 
 ## Write as you go, resume, batch
 
-`out` appends each record to a JSONL file as soon as it exists, so a crash keeps the finished items. A non-empty `out` raises `FileExistsError` unless `resume=True`; a resumed run keeps the records already in the file and generates only the missing items. `batch_size` generates that many items at once, with left padding. This continues the example above:
+`out` appends each record to a JSONL file as soon as it exists, so a crash keeps the finished items. A non-empty `out` raises `FileExistsError` unless `resume=True`; a resumed run keeps the records already in the file and generates only the missing items. Pass `header=run_header(...)` too and it is written beside `out` (`out.header.json`); a resume then refuses, before generating anything, a file whose header has another `config_hash` (another model, adapter, `max_new_tokens`, `sampling`, `batch_size` or `system`). `batch_size` generates that many items at once, with left padding. This continues the example above:
 
 ```python
 from pathlib import Path

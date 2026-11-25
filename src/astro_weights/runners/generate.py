@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import random
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -11,7 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from astro_weights.eval import Record, prompt_hash, read_jsonl
-from astro_weights.eval.header import run_identity, system_header
+from astro_weights.eval.header import (
+    header_path,
+    run_identity,
+    system_header,
+    write_header,
+)
+from astro_weights.runners.header_guard import kept_header
 
 try:
     import peft
@@ -196,6 +203,7 @@ def generate_records(
     batch_size: int = 1,
     sampling: Mapping[str, float] | None = None,
     system: str | None = None,
+    header: Mapping[str, Any] | None = None,
 ) -> list[Record]:
     """Generate and score each item; items carry `item_id`, `prompt`, `gold`.
 
@@ -204,7 +212,8 @@ def generate_records(
     inside the thinking can be graded. The model runs in eval mode (restored after).
 
     With `out`, each record is appended to that JSONL file (the `write_jsonl`
-    line format) and flushed as soon as it exists, so a crash keeps what was done.
+    line format), flushed and fsynced as soon as it exists, so a crash (even a
+    killed machine) keeps what was done.
     A non-empty `out` raises `FileExistsError` unless `resume=True`. Resuming
     keeps the records already in the file and skips their items; a last line cut
     short by a crash is dropped and redone. A record whose arm or seed differs,
@@ -238,9 +247,17 @@ def generate_records(
     `system` is sent as a system message through the chat template (it needs
     `chat=True` and a template, else `ValueError`; an empty string is refused).
     `prompt_hash` still hashes the prompt rendered without it, so an arm run with a
-    system prompt pairs with one run without. A resume of a file made under another
-    `system` is not caught here (the records do not carry it); `run_header`
-    records it and `run_suites` compares headers.
+    system prompt pairs with one run without. A resume cannot see the
+    system prompt in the records; pass `header` for that.
+
+    `header` is this run's `run_header` result (CONFIG keys include the model,
+    `max_new_tokens`, `sampling`, `batch_size` and `system`). With `out`, it is
+    written to `header_path(out)` before anything is generated. On a resume an
+    existing header file there must have the same `config_hash`, else
+    `ValueError` before any item is generated and with the file untouched:
+    records made under two configs never end up in one file. A resumed file
+    with no header file gets `header` written. The header is not checked
+    against this call's other arguments; build it with `run_header` from them.
     """
     _check_sampling(sampling)
     system_header(system)
@@ -267,7 +284,12 @@ def generate_records(
         for item, (text, _) in zip(items, bare, strict=True)
     }
     path = None if out is None else Path(out)
+    kept = None if header is None else dict(header)
+    if resume and path is not None and path.exists() and path.stat().st_size > 0:
+        kept = kept_header(path, header)  # before _load_done repairs the file
     done = _load_done(path, resume, hashes, arm, seed)
+    if path is not None and kept is not None:
+        write_header(header_path(path), kept)
     entries = [
         (item, text, templated)
         for item, (text, templated) in zip(items, prompts, strict=True)
@@ -284,6 +306,7 @@ def generate_records(
                 if sink is not None:
                     sink.write(json.dumps(asdict(rec), ensure_ascii=False) + "\n")
                     sink.flush()
+                    os.fsync(sink.fileno())  # on disk before the next item
     finally:
         model.train(was_training)
     return [done[str(item["item_id"])] for item in items]

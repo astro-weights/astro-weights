@@ -6,6 +6,7 @@ Serve the base and the edit under two model names and call this once per name.
 
 import http.client
 import json
+import os
 import re
 import tempfile
 import threading
@@ -21,13 +22,12 @@ from typing import Any
 
 from astro_weights.eval import Record, ToolCall, prompt_hash, read_jsonl
 from astro_weights.eval.header import (
-    config_hash,
     header_path,
-    read_header,
     run_identity,
     system_header,
     write_header,
 )
+from astro_weights.runners.header_guard import kept_header
 
 _KEYS = ("item_id", "prompt", "gold")
 _RETRIES = 2
@@ -351,17 +351,8 @@ def _header_to_keep(
     An existing header file must match this call and, when `header` is given, have
     its `config_hash`.
     """
-    where = header_path(path)
-    if not where.exists():
-        return None if header is None else dict(header)
-    old = read_header(where)
-    _check_call(old, call, str(where))
-    if header is not None and config_hash(old) != config_hash(header):
-        raise ValueError(
-            f"{where}: the records were made under another config "
-            "(config_hash differs); start a new file for this one"
-        )
-    return old
+    where = str(header_path(path))
+    return kept_header(path, header, lambda old: _check_call(old, call, where))
 
 
 def _start_counts(header: Mapping[str, Any] | None) -> _Counts:
@@ -551,6 +542,7 @@ def generate_records_http(
         if sink is not None:
             sink.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
             sink.flush()
+            os.fsync(sink.fileno())
 
     try:
         _in_order(todo, fetch, concurrency, emit)
