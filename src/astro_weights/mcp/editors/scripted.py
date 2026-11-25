@@ -4,10 +4,19 @@ An MCP client. It starts the server over stdio, runs the script, polls each job 
 its end and prints a JSON summary. It uses no tokens and no dollars, so it reports
 no usage. It needs the ``mcp`` extra and never imports the server's internals.
 
-    python -m astro_weights.mcp.editors.scripted RUN_DIR [--unsafe-kernel]
+    python -m astro_weights.mcp.editors.scripted RUN_DIR [--edit PEFT_DIR ...] [--unsafe-kernel]
+
+With ``--edit`` (``[editor] edit = [...]`` in the run config) it runs candidate
+edits made outside the run, for example a closed-form edit picked on the dev split,
+through the run's selection step: each PEFT adapter, in the order given, is applied
+to the base weights and sent to ``confirm``; then the last one that passed is applied
+again and ``finish`` exports it. The run record then holds one confirm query per
+candidate, so a gate can read it like an agent run.
 """
 
 import argparse
+import base64
+import io
 import json
 import sys
 import time
@@ -25,7 +34,14 @@ except ModuleNotFoundError as e:
         name=e.name,
     ) from e
 
-__all__ = ["DEFAULT_SCRIPT", "ScriptFailed", "Step", "main", "run_scripted"]
+__all__ = [
+    "DEFAULT_SCRIPT",
+    "ScriptFailed",
+    "Step",
+    "main",
+    "run_edits",
+    "run_scripted",
+]
 
 Args = Mapping[str, Any] | Callable[[Sequence[str]], Mapping[str, Any]]
 
@@ -170,14 +186,116 @@ async def run_scripted(
     return results
 
 
-async def _run(run_dir: Path, unsafe: bool) -> list[dict[str, Any]]:
+def _npy(a: Any) -> str:
+    import numpy as np
+
+    buf = io.BytesIO()
+    np.save(buf, np.ascontiguousarray(a, dtype=np.float32), allow_pickle=False)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def apply_code(deltas: Sequence[tuple[str, Any, Any]]) -> str:
+    """Kernel code that sets each module to its base weight + B @ A, after dropping
+    every stored edit. ``deltas`` holds (module, B, A); a module is matched to the
+    one weight in NAMES that ends with its ``layers.N....`` part."""
+    rows = ",\n".join(f"    ({m!r}, {_npy(b)!r}, {_npy(a)!r})" for m, b, a in deltas)
+    return f"""\
+import base64, io, re
+def _arr(t):
+    return np.load(io.BytesIO(base64.b64decode(t)), allow_pickle=False)
+for _n in list(edited()):
+    drop_edit(_n)
+for _m, _b, _a in [
+{rows}
+]:
+    _key = re.search(r"layers\\.\\d+\\..*$", _m).group(0)
+    _hits = [n for n in NAMES if n.removesuffix(".weight").endswith(_key)]
+    assert len(_hits) == 1, (_m, _hits)
+    _w = load_original(_hits[0])
+    save_edit(_hits[0], _w + _arr(_b) @ _arr(_a))
+    print(_hits[0])
+"""
+
+
+async def _wait(
+    session: Client | ClientSession, index: int, handle: str, timeout_s: float
+) -> dict[str, Any]:
+    """Block on ``status(wait_s)`` until the job ends; ScriptFailed on failure or timeout."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        out = await _call(session, "status", {"handle": handle, "wait_s": 50})
+        if out.get("state") in ("done", "failed") or out.get("error"):
+            break
+        if time.monotonic() >= deadline:
+            raise ScriptFailed(index, {"error": "wait timed out", "handle": handle})
+    if _failure(out):
+        raise ScriptFailed(index, out)
+    return out
+
+
+async def run_edits(
+    session: Client | ClientSession,
+    candidates: Sequence[Sequence[tuple[str, Any, Any]]],
+    *,
+    timeout_s: float = 24 * 3600,
+) -> list[dict[str, Any]]:
+    """Apply each candidate, confirm it, then finish with the last that passed.
+
+    With no pass the candidates' last one stays applied, so ``finish`` reports
+    ``exported_is_best`` false. Returns every tool result in order.
+    """
+    results: list[dict[str, Any]] = []
+    passed: int | None = None
+
+    async def step(index: int, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        out = await _call(session, tool, args)
+        results.append(out)
+        if _failure(out):
+            raise ScriptFailed(index, out)
+        if isinstance(out.get("handle"), str):
+            out = await _wait(session, index, out["handle"], timeout_s)
+            results.append(out)
+        return out
+
+    i = 0
+    for n, cand in enumerate(candidates):
+        await step(i, "exec_python", {"code": apply_code(cand)})
+        out = await step(i + 1, "confirm", {})
+        if (out.get("result") or {}).get("passed") is True:
+            passed = n
+        i += 2
+    if passed is not None and passed != len(candidates) - 1:
+        await step(i, "exec_python", {"code": apply_code(candidates[passed])})
+        i += 1
+    note = (
+        "no candidate passed" if passed is None else f"candidate {passed + 1} exported"
+    )
+    await step(
+        i, "finish", {"summary": f"scripted run over {len(candidates)} edits: {note}"}
+    )
+    return results
+
+
+def load_candidates(paths: Sequence[Path]) -> list[list[tuple[str, Any, Any]]]:
+    """(module, B, A) per delta of each PEFT adapter directory, scaling in B."""
+    from astro_weights.export.peft import load_peft
+
+    return [[(d.module, d.B, d.A) for d in load_peft(p).deltas] for p in paths]
+
+
+async def _run(
+    run_dir: Path, unsafe: bool, edits: Sequence[Path] = ()
+) -> list[dict[str, Any]]:
     args = ["-m", "astro_weights.mcp", str(run_dir)] + (
         ["--unsafe-kernel"] if unsafe else []
     )
     params = StdioServerParameters(command=sys.executable, args=args)
     failure: ScriptFailed | None = None
+    candidates = load_candidates(edits) if edits else None
     async with Client(params) as client:
         try:
+            if candidates is not None:
+                return await run_edits(client, candidates)
             return await run_scripted(client)
         except ScriptFailed as exc:  # keep it out of the transport's exception group
             failure = exc
@@ -193,12 +311,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--unsafe-kernel", action="store_true", help="pass through to the server"
     )
+    parser.add_argument(
+        "--edit",
+        action="append",
+        type=Path,
+        default=[],
+        metavar="PEFT_DIR",
+        help="a candidate edit (PEFT adapter), repeatable, in the order to confirm",
+    )
     args = parser.parse_args(argv)
     if not (args.run_dir / "run.json").is_file():
         print(f"error: {args.run_dir / 'run.json'} not found", file=sys.stderr)
         return 2
     try:
-        results = anyio.run(_run, args.run_dir, args.unsafe_kernel)
+        results = anyio.run(_run, args.run_dir, args.unsafe_kernel, args.edit)
     except ScriptFailed as exc:
         print(json.dumps({"error": str(exc), "step": exc.index, "result": exc.result}))
         return 1

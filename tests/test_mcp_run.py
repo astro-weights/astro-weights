@@ -1242,3 +1242,15 @@ def test_gguf_installed_matches_the_import_system() -> None:
     import importlib.util
 
     assert run._gguf_installed() == (importlib.util.find_spec("gguf") is not None)
+
+
+def test_scripted_edit_paths_resolve_and_repeat_the_flag(tmp_path: Path) -> None:
+    spec = load_config(write_config(tmp_path, editor={"edit": ["a", "/abs/b"]}))
+    base = (tmp_path / "cfg").resolve()
+    assert spec.editor_argv()[1:] == ["--edit", str(base / "a"), "--edit", "/abs/b"]
+
+
+@pytest.mark.parametrize("bad", [[], ["ok", ""], "a"])
+def test_scripted_edit_must_be_a_list_of_paths(tmp_path: Path, bad: Any) -> None:
+    with pytest.raises(RunError, match=r"\[editor\] edit must be"):
+        load_config(write_config(tmp_path, editor={"edit": bad}))

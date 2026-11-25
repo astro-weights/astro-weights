@@ -128,6 +128,34 @@ save_peft(scripted, "scripted")
 
 Prompt arm: the base model with one fixed short instruction added to every item, same items. `edit_prompt` is the edit plus that instruction. Generate these arms like any other: [Run an eval](run-eval.md).
 
+## Gate an edit made without an agent
+
+The gate reads `confirm_export` from a run record, so an edit made outside a run (a scripted arm picked on the dev split, say) goes through a run with the scripted editor first. List the candidates in the order they were tried; each is applied to the base weights and sent to `confirm`, then the last one that passed is exported. The record then counts every candidate sent to `confirm`, as for an agent. Record any search done before the run (strengths tried on the dev split) beside the config.
+
+```toml
+[run]
+dir = "runs/scripted"
+seed = 0
+model_dir = "models/base"
+
+[limits]
+forward_passes = 0
+code_runs = 4
+tokens = 0
+
+[editor]
+kind = "scripted"
+edit = ["scripted"]          # PEFT adapter directories, in the order tried
+
+[confirm]
+items = "data/confirm.jsonl"
+grader = "math"
+margin = 0.02
+max_queries = 2              # one per candidate, plus one spare for a resume
+```
+
+`astro-weights run CONFIG.toml`, then point `run_record` in `GATE.toml` at `runs/scripted/record.jsonl` and `adapter` at the exported adapter. A killed run resumes with `astro-weights run CONFIG.toml --resume`; the confirm outputs already generated are reused.
+
 ## Confirm tool for agents
 
 An agent run selects its edit on the confirm split through the MCP `confirm` tool. Add a `confirm` object to `run.json` (or a `[confirm]` table to the `astro-weights run` config); the first four keys are required:
