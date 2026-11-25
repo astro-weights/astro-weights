@@ -59,7 +59,7 @@
   "TaskRecord": "(task_id: str, trial: int, arm: str, prompt_hash: str, turns: tuple[astro_weights.eval.tasks.Turn, ...], passed: bool, output_tokens: int, tool_calls: int, n_turns: int, cluster_id: str | None = None) -> None",
   "ToolCall": "(name: str, arguments: str) -> None",
   "Turn": "(role: str, text: str, tool_calls: tuple[astro_weights.eval.tasks.ToolCall, ...] = (), output_tokens: int = 0) -> None",
-  "Verdict": "(verdict: str, backend: str, build: str, config_hash: str, split_manifest_sha256: str, candidates_tried: int, confirm_queries: int, infra_errors: int, footprint: collections.abc.Mapping[str, float], schema_version: int = 1) -> None",
+  "Verdict": "(verdict: str, backend: str, build: str, config_hash: str, split_manifest_sha256: str, candidates_tried: int, confirm_queries: int, infra_errors: int, footprint: collections.abc.Mapping[str, float], max_new_tokens: int | None = None, cap_hit: collections.abc.Mapping[str, collections.abc.Mapping[str, float]] = <factory>, schema_version: int = 1) -> None",
   "answer_part": "(text: str) -> str",
   "arms_dict": "(result: astro_weights.eval.arms.ArmsResult, full_controls: bool = False) -> dict[str, object]",
   "check_headers": "(base: dict[str, Any], edit: dict[str, Any], ignore: collections.abc.Collection[str] = (), arm_keys: collections.abc.Collection[str] = ()) -> None",
