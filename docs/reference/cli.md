@@ -1,7 +1,7 @@
 # CLI
 
 ```text
-astro-weights [--version] {build,compose,eval,export,gate,inspect,mcp,run,self-test} ...
+astro-weights [--version] {build,compose,eval,export,gate,gen,inspect,mcp,run,self-test} ...
 ```
 
 | Command | Does |
@@ -12,6 +12,7 @@ astro-weights [--version] {build,compose,eval,export,gate,inspect,mcp,run,self-t
 | `compose ADAPTER ADAPTER [ADAPTER...] -o OUT_DIR [--base-model NAME] [--force]` | combine two or more PEFT adapters on the same base model into one adapter whose change is exactly their sum; print the module count and rank, then `wrote OUT_DIR` |
 | `export DIR [--gguf OUT.gguf --arch ARCH] [--card LICENSE] [--splice BASE.gguf --base-model DIR --merged OUT.gguf [--out-type TYPE]] [--force]` | verify the adapter in `DIR`, then write a GGUF LoRA adapter, a merged GGUF, a model card or any mix of them; see [How-to: build an adapter from a recipe file](../how-to/build-from-recipe.md) and [How-to: use with Ollama](../how-to/use-with-ollama.md) |
 | `gate GATE.toml [--out FILE] [--unseal] [--json]` | run the 0.3 gate end to end from recorded files: pre-screens, random controls on confirm, the sealed K=4 test split, regression suites; print the outcome with every check and arm, and write `verdict.json`; see [gate](#gate) and [How-to: run the 0.3 gate](../how-to/run-gate.md) |
+| `gen ARM.toml [--resume] [--json]` | run one eval arm against an OpenAI-compatible server from a TOML file, writing per-item records and a run header as it goes, and continue it after a kill with `--resume`; see [gen](#gen) |
 | `mcp RUN_DIR [--unsafe-kernel]` | serve the agent tools over stdio MCP for the run in `RUN_DIR`; see [mcp](#mcp) and [How-to: Claude Code](../how-to/agent-claude-code.md). New in 0.2 |
 | `run CONFIG.toml [--resume \| --status] [--json]` | start a run from a TOML config: write `RUN_DIR/run.json`, then run the chosen editor, which starts the server; see [run](#run) and [Tutorial: first agent run](../tutorials/first-agent-run.md). New in 0.2 |
 | `self-test --base-url URL --model NAME [--prompt TEXT] [--api-key-env VAR] [--json]` | send one prompt at temperature 0 under varied batch sizes (1, 4, 8) and shared-prefix fillers (0, 256, 1024 tokens) to an OpenAI-compatible server; print each output and whether all match; see [How-to: run the 0.3 gate](../how-to/run-gate.md#serving-self-test-and-noise-floor) |
@@ -88,6 +89,29 @@ Output: the `format_gate` report (outcome, every check, MDE and its split, margi
 `verdict.json` (default: beside `GATE.toml`; `--out FILE` moves it) is the `eval.verdict.Verdict` record: verdict, backend, build, `config_hash` (of the test base arm's header, or of the confirm base arm's when the test was not scored), manifest sha256, candidates tried, confirm queries, `infra_errors` (the `retries` plus `failed` counts the HTTP runner wrote into the test base and edit headers; for a failed confirm, the confirm arms') and footprint. It holds no timestamp, so the same files give the same bytes. `--json` prints one object: the `GateResult` fields (`outcome`, `checks`, `reasons`, `mde`, `mde_split`, `margin`, `margin_source`, `advice`, `suite_margins`), `candidates_tried`, `confirm_queries`, `verdict_file` (or `null`) and `arms` (`confirm` and `test`, each `null` or the `arms_dict` form).
 
 Exit codes: 0 confirmed, 1 regressed or not significant, 3 screened out, 2 bad input or refused.
+
+## gen
+
+```text
+astro-weights gen [--resume] [--json] ARM.toml
+```
+
+`gen` runs one arm of an eval, one runner call per file, so a long run is its own batch job that can be killed and continued. It asks an OpenAI-compatible server (vLLM, llama.cpp) for the answers; there is no local-model (Hugging Face) kind. For that, call `runners.generate.generate_records` from Python.
+
+`ARM.toml` has a `kind` and the keyword arguments of that kind's runner, under the same names and with the same meaning. Relative paths are read from the file's directory. An unknown key, a missing key or a bad type is an error (exit 2) that names the key.
+
+| `kind` | Runner | Keys (required first) |
+|---|---|---|
+| `http` | `generate_records_http` with `run_header_http` for the header | `arm`, `base_url`, `model`, `max_new_tokens`, `out` (records JSONL), `items` (JSONL of `{"item_id", "prompt", "gold"}`), `grader` (`exact`, `choice` or `math`; `math` needs the `eval` extra). Optional: `seed` (0), `k` (1), `manifest` with `split`, `extra_body`, `serving_flags`, `model_id`, `system`, `concurrency` (1), `timeout` (120), `api_key_env` |
+| `suites` | `run_suites` with `HttpBackend` | `arm`, `base_url`, `model`, `max_new_tokens`, `out_dir` (records go to `out_dir/<suite>/<arm>.jsonl`), `suites` (list of names). Optional: `seed`, `limit`, `cache_dir`, `suite_paths` (table of name to file), `extra_body`, `system`, `concurrency`, `api_key_env` |
+| `bfcl` | `load_bfcl` then `run_bfcl`, header from `run_header_http` with `k = trials` | `arm`, `base_url`, `model`, `max_new_tokens`, `out`, `bfcl_root`. Optional: `trials` (1), `max_steps_per_turn` (20), `seed`, `extra_body`, `serving_flags`, `model_id`, `timeout`, `api_key_env` |
+
+- `api_key_env` names an environment variable that holds the key; the key itself never goes in the file or the header.
+- `http` with `manifest` and `split`: only that split's items of `items` are run (every id the split lists must be in the file). For `split = "test"`, `k` is the manifest's `k` (an explicit `k` of another value is refused). With `k` above 1 the arm runs seeds `seed` to `seed + k - 1` into `out`'s stem plus `.s0.jsonl`, `.s1.jsonl` and so on, then joins them into `out` with seed 0's header, as `tests/exit_0_3/README.md` makes its K = 4 test arms.
+- Without `--resume`, a records file that is not empty is refused (exit 2) before any request. With `--resume`, the records already in the files stay as they are (byte for byte), a last line cut short by a crash is dropped and redone, and only the other items are asked. A file made under another config (`max_new_tokens`, `seed`, `extra_body`, `serving_flags`, `system`, `model_id`, `concurrency`, `k`, a suite's `limit`...) is refused with the differences, and nothing is written. `gen` keeps no state beyond the records and header files the runners write.
+- Every record is written and fsynced when it is made, so a kill loses at most the requests in flight.
+- Output: `ARM: done/total items, OUT`. `--json` prints `{"arm", "out", "done", "total"}` (`out` is the directory for `suites`; `total` is `done` for `suites`, whose item count comes from the suite files).
+- Exit codes: 0 done; 2 bad config, missing extra or key variable, a non-empty file without `--resume`, or a resume refused; 1 a server error that outlasted the runner's retries, or a reply the runner cannot read (no message, no `usage`), once requests have begun (the records so far stay, `done` counts them, the error is on stderr: run again with `--resume`). Everything found before the first request is exit 2.
 
 ## mcp
 
@@ -175,6 +199,7 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 | `eval` | see [eval](#eval) |
 | `compose` | `written` (the output directory), `rank`, `modules` (sorted names) and `sources` (the input directories, in order) |
 | `gate` | see [gate](#gate) |
+| `gen` | `arm`, `out`, `done`, `total`; see [gen](#gen) |
 | `build`, `export` | `written`: the list of paths written. `export --splice` adds `replaced` (the GGUF tensor names changed) and `out_type` |
 
 ## Exit codes
@@ -183,6 +208,7 @@ astro-weights run [--resume | --status] [--json] CONFIG.toml
 - `inspect` exits 1 on hash problems (`problem:` lines on stderr, also with `--json`).
 - `eval` exits 1 when the run headers differ, and 2 on an unreadable file or arms that do not pair.
 - `self-test` exits 0 when every output matches, 1 when they differ, and 2 on a bad argument, an unset `--api-key-env` variable or a server error.
+- `gen` exits 0 when every item has a record, 1 on a server error after retries or an unreadable reply once requests began, and 2 on bad input or a refused resume (see [gen](#gen)).
 - `gate` exits 0 when confirmed, 1 when regressed or not significant, 3 when screened out, and 2 on bad input or a refusal (see [gate](#gate)).
 - `build`, `compose` and `export` exit 0 on success and 2 on any error.
 - Errors go to stderr as a line starting with `error:`; read and parse errors name the file.
