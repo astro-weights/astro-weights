@@ -505,7 +505,8 @@ def start(spec: RunSpec, *, resume: bool = False) -> int:
     RunError, before anything is written, when the run directory already holds a
     run (and ``resume`` is not set), when a resume does not match the saved run or
     the run already finished, when the model directory or ``export.base_gguf`` is
-    missing, when the editor's API key variable is not set, or when an extra the
+    missing, when the editor's API key variable is not set, when an explicit
+    ``[forward] device`` is not available, or when an extra the
     run needs is not installed. A fresh start needs a new or empty run directory
     (or one only an aborted start of this same run wrote to); a resume keeps
     ``config.toml`` and writes its own copy as ``config.resume-<n>.toml``.
@@ -521,6 +522,9 @@ def start(spec: RunSpec, *, resume: bool = False) -> int:
             raise RunError(f"forward_pass {forward.HF_HINT}")
         if not spec.model_dir.is_dir():
             raise RunError(f"model_dir {spec.model_dir} is not a directory")
+        problem = forward.device_problem(str(spec.forward.get("device", "auto")))
+        if problem:
+            raise RunError(problem)
     gguf = spec.export.get("base_gguf")
     if gguf is not None:  # found now, not at finish after the budget is spent
         if not _gguf_installed():
