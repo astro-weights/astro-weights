@@ -112,7 +112,7 @@ Tools:
 |---|---|
 | `exec_python(code)` | start a cell in the sandboxed numpy kernel; returns a handle. One `code_runs` when it finishes |
 | `forward_pass(request)` | start a teacher-forced or generate pass on the base or edited weights; returns a handle. One `forward_passes` when it finishes. Request keys are in the `forward_pass` docstring |
-| `status(handle)` | the job's state (`queued`, `running`, `done`, `failed`), its result and the budget |
+| `status(handle, wait_s=0)` | the job's state (`queued`, `running`, `done`, `failed`), its result and the budget; `wait_s` > 0 blocks until the job ends, at most 55 s |
 | `finish(summary)` | end the run and export the stored edits to `RUN_DIR/export/` (adapter, plus a merged GGUF with `export.base_gguf`); works once |
 | `report_usage`, `check_spend`, `report_refusal` | for editors: record a turn's tokens and dollars, check a dollar estimate, record a refusal |
 

@@ -103,7 +103,7 @@ A refusal is an ordinary tool result with an `error` key, not an MCP protocol er
 
 ### Jobs and `status`
 
-`exec_python` and `forward_pass` return at once. The work runs in a background thread. Poll `status(handle)` until `state` is `done` or `failed`.
+`exec_python` and `forward_pass` return at once. The work runs in a background thread. Call `status(handle, wait_s=50)` to block until `state` is `done` or `failed` (at most 55 s per call), instead of polling: every poll costs editor tokens.
 
 `status` returns:
 

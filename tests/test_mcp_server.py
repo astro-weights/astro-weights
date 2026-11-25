@@ -1210,3 +1210,53 @@ async def test_split_manifests_and_ids_never_reach_the_agent(
                 assert not opened["result"]["ok"], path
                 out = opened["result"]["output"]
                 assert "PermissionError" in out or "FileNotFoundError" in out, out
+
+
+@pytest.mark.anyio
+async def test_status_wait_blocks_until_the_job_ends(tmp_path: Path) -> None:
+    import threading
+
+    gate = threading.Event()
+
+    def slow(params: dict[str, Any]) -> dict[str, Any]:
+        gate.wait(5)
+        return {"ok": True}
+
+    server = build_server(write_run(tmp_path), {"exec": slow})
+    async with Client(server) as client:
+        h = (await call(client, "exec_python", {"code": "1"}))["handle"]
+        assert (await call(client, "status", {"handle": h}))["state"] != "done"
+        threading.Timer(0.3, gate.set).start()
+        out = await call(client, "status", {"handle": h, "wait_s": 10})
+    assert out["state"] == "done"
+    assert out["result"] == {"ok": True}
+
+
+@pytest.mark.anyio
+async def test_status_wait_is_capped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    from astro_weights.mcp import server as server_mod
+
+    monkeypatch.setattr(server_mod, "_MAX_WAIT_S", 0.2)
+    gate = threading.Event()
+
+    def stuck(params: dict[str, Any]) -> dict[str, Any]:
+        gate.wait(5)
+        return {}
+
+    server = build_server(write_run(tmp_path), {"exec": stuck})
+    try:
+        async with Client(server) as client:
+            h = (await call(client, "exec_python", {"code": "1"}))["handle"]
+            t0 = time.monotonic()
+            out = await call(client, "status", {"handle": h, "wait_s": 30})
+            assert time.monotonic() - t0 < 3
+            assert out["state"] in {"queued", "running"}
+            gate.set()
+            await poll(client, h)
+    finally:
+        gate.set()
