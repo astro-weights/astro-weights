@@ -183,15 +183,16 @@ jobs:
           uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp --extra hosted python -m nltk.downloader -q punkt_tab
           uv run --no-sources --resolution lowest-direct --extra hf --extra eval --extra gguf --extra mcp --extra hosted pytest -m "not gpu" -n auto
 
-  # Not in ci-ok: hosted macOS can queue 15+ min. Runs after merge (push to main) and on release PRs; red goes to Eng.
+  # Windows runs in the merge queue, so a Windows break never reaches main (PR 191).
+  # macOS stays out of the queue (hosted macOS can queue 15+ min): runs after merge and on release PRs; red goes to Eng.
   test-os:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && github.event_name != 'merge_group'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'merge_group' && '["windows-latest"]' || '["macos-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -237,10 +238,9 @@ jobs:
           exit "$bad"
 
   # Single required check. Passes only if every needed job ended success or skipped (matrix can end abandoned).
-  # test-os left out on purpose (see test-os).
   ci-ok:
     if: always()
-    needs: [changes, lint, test, test-hf, wheel-smoke, test-lowest, zizmor, dco]
+    needs: [changes, lint, test, test-hf, wheel-smoke, test-lowest, test-os, zizmor, dco]
     runs-on: ubuntu-latest
     steps:
       - env:
