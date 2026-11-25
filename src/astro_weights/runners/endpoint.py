@@ -27,6 +27,7 @@ from astro_weights.eval.header import (
     system_header,
     write_header,
 )
+from astro_weights.eval.records import _repair_tail, _split_tail
 from astro_weights.runners.header_guard import kept_header
 
 _KEYS = ("item_id", "prompt", "gold")
@@ -280,17 +281,7 @@ def _read_file(path: Path) -> tuple[list[Record], int | None, bool]:
     left a last line without its newline that is not valid JSON; `whole` is True
     when that line is valid and only lacks its newline.
     """
-    data = path.read_bytes()
-    cut: int | None = None
-    whole = False
-    if data and not data.endswith(b"\n"):
-        start = data.rfind(b"\n") + 1
-        try:
-            json.loads(data[start:])
-        except ValueError:  # truncated JSON or a cut UTF-8 character
-            cut, data = start, data[:start]
-        else:
-            whole = True
+    data, cut, whole = _split_tail(path.read_bytes())
     with tempfile.TemporaryDirectory() as tmp:
         copy = Path(tmp) / "records.jsonl"
         copy.write_bytes(data)
@@ -322,12 +313,7 @@ def _load_done(
         if r.item_id in done:
             raise ValueError(f"{path}: duplicate item_id {r.item_id!r}")
         done[r.item_id] = r
-    if cut is not None:
-        with path.open("r+b") as f:
-            f.truncate(cut)
-    elif whole:
-        with path.open("ab") as f:
-            f.write(b"\n")
+    _repair_tail(path, cut, whole)
     return done
 
 

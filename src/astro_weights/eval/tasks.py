@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from astro_weights.eval.paired import PairedResult, compare
-from astro_weights.eval.records import Record
+from astro_weights.eval.records import Record, _split_tail
 
 
 @dataclass(frozen=True)
@@ -184,6 +184,24 @@ def read_tasks(path: str | Path) -> list[TaskRecord]:
                 except ValueError as e:
                     raise ValueError(f"line {num}: {e}") from e
     return out
+
+
+def read_tasks_tail(path: str | Path) -> tuple[list[TaskRecord], int | None, bool]:
+    """Records in `path` without changing it, and how to repair its last line.
+
+    Returns (records, cut, whole): `cut` is the size to truncate to when a crash
+    left a last line without its newline that is not valid JSON; `whole` is True
+    when that line is valid and only lacks its newline.
+    """
+    data, cut, whole = _split_tail(Path(path).read_bytes())
+    out: list[TaskRecord] = []
+    for num, line in enumerate(data.decode("utf-8").split("\n"), start=1):
+        if line.strip():
+            try:
+                out.append(_parse(line))
+            except ValueError as e:
+                raise ValueError(f"line {num}: {e}") from e
+    return out, cut, whole
 
 
 @dataclass(frozen=True)
