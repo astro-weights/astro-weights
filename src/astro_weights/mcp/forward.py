@@ -327,6 +327,32 @@ def _auto_device(torch: Any) -> str:
     return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
+def device_problem(device: str) -> str | None:
+    """Why an explicit ``[forward] device`` cannot run on this machine, else None.
+
+    Checked before the editor starts, so a CPU-only torch fails the run before any
+    editor turn is paid for. ``auto`` always has a device.
+    """
+    if device == "auto":
+        return None
+    torch, _ = _import_hf()
+    try:
+        dev = torch.device(device)
+    except (RuntimeError, ValueError) as exc:
+        return f"[forward] device {device!r} is not a torch device: {exc}"
+    if dev.type == "cuda":
+        if not torch.cuda.is_available():
+            return (
+                f"[forward] device {device!r}: this torch has no CUDA "
+                f'(torch {torch.__version__}); install a CUDA build or set device = "auto"'
+            )
+        if dev.index is not None and dev.index >= torch.cuda.device_count():
+            return f"[forward] device {device!r}: only {torch.cuda.device_count()} CUDA device(s)"
+    if dev.type == "mps" and not torch.backends.mps.is_available():
+        return f"[forward] device {device!r}: Apple MPS is not available"
+    return None
+
+
 class ForwardBackend:
     """The HF model behind ``forward_pass``; one per server, jobs run one at a time."""
 

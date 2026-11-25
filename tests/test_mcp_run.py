@@ -697,6 +697,23 @@ def test_model_dir_needs_the_hf_extra(
     assert not spec.run_dir.exists()
 
 
+def test_unavailable_forward_device_stops_the_run_before_the_editor(
+    tmp_path: Path, editor: FakeEditor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(forward, "hf_available", lambda: True)
+    monkeypatch.setattr(
+        forward, "device_problem", lambda d: f"{d}: this torch has no CUDA"
+    )
+    (tmp_path / "cfg" / "m").mkdir(parents=True)
+    spec = load_config(
+        write_config(tmp_path, run={"model_dir": "m"}, forward={"device": "cuda"})
+    )
+    with pytest.raises(RunError, match="cuda: this torch has no CUDA"):
+        run.start(spec)
+    assert not spec.run_dir.exists()
+    assert editor.calls == []
+
+
 def test_base_gguf_is_checked_before_the_run(
     tmp_path: Path, editor: FakeEditor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
