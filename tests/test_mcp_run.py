@@ -215,6 +215,24 @@ def test_confirm_table_reaches_run_json(tmp_path: Path) -> None:
     assert "confirm" not in load_config(write_config(tmp_path)).run_json()
 
 
+def test_confirm_target_and_batch_size_reach_run_json(tmp_path: Path) -> None:
+    confirm = {
+        "items": "items.jsonl",
+        "grader": "exact",
+        "margin": 0.02,
+        "max_queries": 5,
+        "target": "tokens",
+        "batch_size": 16,
+    }
+    spec = load_config(write_config(tmp_path, run={"model_dir": "m"}, confirm=confirm))
+    assert spec.run_json()["confirm"]["target"] == "tokens"
+    spec.run_dir.mkdir(parents=True)
+    (spec.run_dir / "run.json").write_text(json.dumps(spec.run_json()))
+    got = load_run_config(spec.run_dir).confirm
+    assert got is not None
+    assert (got.target, got.batch_size) == ("tokens", 16)
+
+
 @pytest.mark.parametrize(
     ("tables", "message"),
     [
@@ -225,6 +243,10 @@ def test_confirm_table_reaches_run_json(tmp_path: Path) -> None:
         ({"confirm": {"max_queries": 0}}, r"\[confirm\] max_queries must be an int"),
         ({"run": {"model_dir": DEL}}, r"\[confirm\] needs \[run\] model_dir"),
         ({"confirm": {"items": "run/items.jsonl"}}, r"outside the run directory"),
+        ({"confirm": {"target": "speed"}}, r"confirm.target must be one of"),
+        ({"confirm": {"batch_size": 0}}, r"\[confirm\] batch_size must be an int"),
+        ({"confirm": {"batch_size": -1}}, r"\[confirm\] batch_size must be an int"),
+        ({"confirm": {"batch_size": True}}, r"\[confirm\] batch_size must be an int"),
     ],
 )
 def test_confirm_table_errors(

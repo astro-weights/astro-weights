@@ -536,3 +536,255 @@ async def test_best_candidate_survives_a_restart(tmp_path: Path) -> None:
     async with Client(build_server(run, {"confirm": FakeModel(run, 0, [])})) as c:
         out = await call(c, "finish", {"summary": "done"})
     assert out["exported_is_best"] is True
+
+
+# --- target = "tokens": fewer output tokens, accuracy non-inferior to base ---
+
+EX03_N = 428  # EX03: Gemma 4 E4B, grader math, margin 0.02, 428 items, base 390
+
+
+def write_n_items(path: Path, n: int) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{"item_id": f"i{i}", "prompt": f"p{i}", "gold": f"g{i}"} for i in range(n)]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return path
+
+
+def tokens_run(tmp_path: Path, n: int = EX03_N, **confirm: Any) -> Path:
+    run = tmp_path / "run"
+    fake_model_dir(run / "model")
+    items = write_n_items(tmp_path / "secret" / "items.jsonl", n)
+    cfg = {
+        "seed": 7,
+        "editor": "scripted",
+        "model": None,
+        "limits": LIMITS,
+        "model_dir": "model",
+        "confirm": {
+            "items": str(items),
+            "grader": "exact",
+            "margin": 0.02,
+            "max_queries": 5,
+            "target": "tokens",
+            **confirm,
+        },
+    }
+    (run / "run.json").write_text(json.dumps(cfg))
+    return run
+
+
+class TokenModel:
+    """Base: ``base`` (correct, total tokens); edited: the next pair in ``script``."""
+
+    def __init__(
+        self, run: Path, n: int, base: tuple[int, int], script: list[tuple[int, int]]
+    ) -> None:
+        self.run, self.n, self.base = run, n, base
+        self.script = list(script)
+        self.calls: list[str] = []
+        self.sizes: list[int] = []
+
+    def __call__(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(params["arm"])
+        self.sizes.append(params.get("batch_size", 1))
+        assert len(params["prompts"]) == self.n
+        if params["arm"] == "base":
+            (right, total), cand = self.base, "base"
+        else:
+            right, total = self.script.pop(0)
+            manifest = json.loads((self.run / "edits" / "manifest.json").read_text())
+            cand = candidate_id({k: v["sha256"] for k, v in manifest.items()})
+        texts = [f"g{i}" if i < right else "wrong" for i in range(self.n)]
+        tokens = [total // self.n] * self.n
+        tokens[0] += total - sum(tokens)
+        caps = [i == 0 for i in range(self.n)]
+        return {"texts": texts, "tokens": tokens, "hit_cap": caps, "candidate": cand}
+
+
+def test_passes_tokens_rule() -> None:
+    from astro_weights.mcp.confirm import passes_tokens
+
+    # EX03: 390 of 428 at base, margin 0.02: 8.56 items may be lost
+    assert passes_tokens(390, 900, 390, 1000, EX03_N, 0.02)
+    assert passes_tokens(382, 900, 390, 1000, EX03_N, 0.02)  # -8 >= -8.56
+    assert not passes_tokens(381, 900, 390, 1000, EX03_N, 0.02)  # -9
+    assert not passes_tokens(390, 1000, 390, 1000, EX03_N, 0.02)  # token tie
+    assert not passes_tokens(400, 1001, 390, 1000, EX03_N, 0.02)
+    assert passes_tokens(98, 1, 100, 2, 100, 0.02)  # exactly -2 at 0.02 * 100
+    assert not passes_tokens(97, 1, 100, 2, 100, 0.02)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("target", ["accuracy", "tokens"])
+async def test_ex03_terse_edit_passes_only_on_tokens(
+    tmp_path: Path, target: str
+) -> None:
+    run = tokens_run(tmp_path, target=target)
+    model = TokenModel(run, EX03_N, (390, 100_000), [(390, 60_000)])
+    save_edit(run, 0.2)
+    async with Client(build_server(run, {"confirm": model})) as client:
+        out = await query(client, [])
+        assert set(out["result"]) == {"passed"}
+        finished = await call(client, "finish", {"summary": "done"})
+    passed = target == "tokens"
+    assert out["result"]["passed"] is passed
+    assert finished["exported_is_best"] is passed
+    (result,) = events(run, "confirm_result")
+    assert (result["correct"], result["bar"], result["n"]) == (390, 390, EX03_N)
+    if passed:
+        assert result["best_candidate"] == result["candidate"]
+        assert result["target"] == "tokens"
+        assert (result["tokens"], result["bar_tokens"]) == (60_000, 100_000)
+        assert (result["base_correct"], result["best"], result["hit_cap"]) == (
+            390,
+            390,
+            1,
+        )
+        (base,) = events(run, "confirm_base")
+        assert base == {
+            **base,
+            "n": EX03_N,
+            "base_correct": 390,
+            "base_tokens": 100_000,
+            "base_hit_cap": 1,
+        }
+        first = RunRecord.open(run / "record.jsonl").read()[0]
+        assert first["config"]["confirm"]["target"] == "tokens"
+    else:  # the default target writes what it wrote before
+        assert "target" not in result
+        assert not events(run, "confirm_base")
+        first = RunRecord.open(run / "record.jsonl").read()[0]
+        assert "target" not in first["config"]["confirm"]
+
+
+@pytest.mark.anyio
+async def test_tokens_bar_moves_accuracy_bar_stays_base(tmp_path: Path) -> None:
+    run = tokens_run(tmp_path, max_queries=5)
+    script = [
+        (382, 90_000),  # -8 vs base, fewer tokens: pass, token bar 90k
+        (381, 50_000),  # -9 vs base: fail
+        (382, 90_000),  # token tie with the bar: fail
+        (390, 95_000),  # better accuracy, more tokens than the new bar: fail
+        (383, 80_000),  # -7 vs base (not vs 382), fewer tokens: pass
+    ]
+    model = TokenModel(run, EX03_N, (390, 100_000), script[:2])
+    async with Client(build_server(run, {"confirm": model})) as client:
+        for scale in (0.1, 0.2):
+            save_edit(run, scale)
+            await query(client, [])
+    model2 = TokenModel(run, EX03_N, (0, 0), script[2:])  # base must not run again
+    async with Client(build_server(run, {"confirm": model2})) as client:
+        for scale in (0.3, 0.4, 0.5):
+            save_edit(run, scale)
+            await query(client, [])
+    assert model.calls == ["base", "edited", "edited"]
+    assert model2.calls == ["edited"] * 3
+    results = events(run, "confirm_result")
+    assert [e["passed"] for e in results] == [True, False, False, False, True]
+    assert [e["bar_tokens"] for e in results] == [
+        100_000,
+        90_000,
+        90_000,
+        90_000,
+        90_000,
+    ]
+    assert {e["base_correct"] for e in results} == {390}
+    assert [e["best"] for e in results] == [382, 382, 382, 382, 383]
+    assert len(events(run, "confirm_base")) == 1
+
+
+@pytest.mark.anyio
+async def test_tokens_restart_after_base_only(tmp_path: Path) -> None:
+    run = tokens_run(tmp_path, n=4, margin=0.0)
+
+    def broken(params: dict[str, Any]) -> dict[str, Any]:
+        if params["arm"] == "base":
+            return TokenModel(run, 4, (2, 40), [])(params)
+        raise RuntimeError("edited arm down")
+
+    save_edit(run, 0.1)
+    async with Client(build_server(run, {"confirm": broken})) as client:
+        assert (await query(client, []))["result"] == {"passed": False}
+    (first,) = events(run, "confirm_result")
+    assert first["error"] == "RuntimeError"
+    assert first["best"] == 2
+    model = TokenModel(run, 4, (0, 0), [(2, 39)])
+    async with Client(build_server(run, {"confirm": model})) as client:
+        assert (await query(client, []))["result"] == {"passed": True}
+    assert model.calls == ["edited"]
+
+
+@pytest.mark.anyio
+async def test_tokens_bad_counts_fail(tmp_path: Path) -> None:
+    run = tokens_run(tmp_path, n=4)
+
+    def no_tokens(params: dict[str, Any]) -> dict[str, Any]:
+        return {"texts": ["g0"] * 4, "tokens": [1, 2], "candidate": "x"}
+
+    save_edit(run, 0.1)
+    async with Client(build_server(run, {"confirm": no_tokens})) as client:
+        assert (await query(client, []))["result"] == {"passed": False}
+    (result,) = events(run, "confirm_result")
+    assert result["error"] == "ValueError"
+    assert result["best"] is None
+    assert not events(run, "confirm_base")
+
+
+@pytest.mark.anyio
+async def test_batch_size_reaches_both_arms(tmp_path: Path) -> None:
+    run = tokens_run(tmp_path, n=4, batch_size=3)
+    model = TokenModel(run, 4, (2, 40), [(2, 30)])
+    save_edit(run, 0.1)
+    async with Client(build_server(run, {"confirm": model})) as client:
+        assert (await query(client, []))["result"] == {"passed": True}
+    assert model.sizes == [3, 3]
+    first = RunRecord.open(run / "record.jsonl").read()[0]
+    assert first["config"]["confirm"]["batch_size"] == 3
+
+
+@pytest.mark.parametrize(
+    ("extra", "msg"),
+    [
+        ({"target": "speed"}, "confirm.target must be one of"),
+        ({"batch_size": 0}, "confirm.batch_size must be an int"),
+        ({"batch_size": -2}, "confirm.batch_size must be an int"),
+        ({"batch_size": True}, "confirm.batch_size must be an int"),
+        ({"batch_size": 2.0}, "confirm.batch_size must be an int"),
+        ({"other": 1}, "optional"),
+    ],
+)
+def test_bad_target_or_batch_size(tmp_path: Path, extra: Any, msg: str) -> None:
+    run = tokens_run(tmp_path, n=4, **extra)
+    with pytest.raises(ValueError, match=msg):
+        load_run_config(run)
+
+
+def test_target_and_batch_size_defaults(tmp_path: Path) -> None:
+    got = load_run_config(confirm_run(tmp_path)).confirm
+    assert got is not None
+    assert (got.target, got.batch_size) == ("accuracy", 1)
+
+
+@pytest.mark.skipif(not HF, reason="needs the hf extra")
+def test_generator_batches_the_tiny_model(tmp_path: Path) -> None:
+    from mcp_tiny_hf import save_tiny_model
+
+    from astro_weights.mcp.confirm import generator
+
+    tiny = save_tiny_model(tmp_path / "tiny")
+    backend = forward.ForwardBackend(
+        tiny, EditStore(tmp_path / "run", tiny), device="cpu"
+    )
+    gen = generator(backend, 3)
+    prompts = ["w1 w2", "w3", "w1"]
+    one = gen({"arm": "base", "prompts": prompts})
+    assert len(one["tokens"]) == len(one["hit_cap"]) == 3
+    assert all(0 < t <= 3 for t in one["tokens"])
+    backend._ensure()
+    if backend._tok.pad_token_id is None:
+        with pytest.raises(ValueError, match="pad token"):
+            gen({"arm": "base", "prompts": prompts, "batch_size": 2})
+        backend._tok.pad_token = backend._tok.eos_token
+    two = gen({"arm": "base", "prompts": prompts, "batch_size": 2})
+    assert len(two["texts"]) == 3
+    assert len(two["tokens"]) == 3

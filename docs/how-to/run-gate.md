@@ -130,7 +130,7 @@ Prompt arm: the base model with one fixed short instruction added to every item,
 
 ## Confirm tool for agents
 
-An agent run selects its edit on the confirm split through the MCP `confirm` tool. Add a `confirm` object to `run.json`; every key is required:
+An agent run selects its edit on the confirm split through the MCP `confirm` tool. Add a `confirm` object to `run.json` (or a `[confirm]` table to the `astro-weights run` config); the first four keys are required:
 
 ```json
 {
@@ -138,7 +138,9 @@ An agent run selects its edit on the confirm split through the MCP `confirm` too
     "items": "../data/confirm.jsonl",
     "grader": "math",
     "margin": 0.02,
-    "max_queries": 10
+    "max_queries": 10,
+    "target": "accuracy",
+    "batch_size": 1
   }
 }
 ```
@@ -147,8 +149,12 @@ An agent run selects its edit on the confirm split through the MCP `confirm` too
 - `grader`: `exact`, `choice` or `math`.
 - `margin`: in items correct per item (0.02 = 2 points).
 - `max_queries`: calls past it are refused.
+- `target` (default `accuracy`): the selection rule. Match it to the gate's `[confirm] target`: `accuracy` for `diff`, `tokens` for `tokens_diff`.
+- `batch_size` (default 1): confirm items generated at once, left-padded. Base and edit use the same size. Greedy outputs at a batch size above 1 can differ from batch size 1 (padding changes float rounding), as in `generate_records`.
 
-A query greedy-generates every confirm item with the stored edits and passes when they beat the current best (the base model first, then the last edits that passed) by more than `margin * n` items. A tie fails. The agent gets `{"passed": bool}` and nothing else. At `finish` the server records whether the exported edits are the ones that last passed; the gate refuses a run record where they are not. Reference: [MCP server: tools](../reference/mcp-server.md#tools).
+A query greedy-generates every confirm item with the stored edits. With `target = "accuracy"` it passes when they beat the current best (the base model first, then the last edits that passed) by more than `margin * n` items. A tie fails.
+
+With `target = "tokens"` it passes when both hold: the edits' total output tokens over all confirm items are below the current best's (the base model first, then the last edits that passed; a tie fails), and their correct count is at least the base model's minus `margin * n` (always against base, never against an earlier edit). This is the gate's test rule for a `tokens_diff` target: fewer tokens, accuracy non-inferior. The base model runs once per run; its counts go to a `confirm_base` event and survive a restart. Each `confirm_result` event then also carries `target`, `tokens`, `bar_tokens`, `base_correct` and `hit_cap` (outputs that hit `max_new_tokens`; capped outputs make a token cut look bigger, so check it). There `bar` is the base count and `best` the count of the current best. The agent gets `{"passed": bool}` and nothing else. At `finish` the server records whether the exported edits are the ones that last passed; the gate refuses a run record where they are not. Reference: [MCP server: tools](../reference/mcp-server.md#tools).
 
 ## Regression suites
 

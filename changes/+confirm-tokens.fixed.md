@@ -1,0 +1,1 @@
+The MCP `confirm` tool takes `target = "tokens"` (fewer output tokens, accuracy within the margin of base, the gate's `tokens_diff` rule), so a terse edit can pass, and `batch_size` to generate confirm items in batches.

@@ -21,7 +21,8 @@ The config names the run directory, the budget, the editor and its options::
     [kernel]                  # optional: timeout_s, mem_gib, unsafe, allow_nested_userns
     [forward]                 # optional: device, dtype, max_new_tokens
     [export]                  # optional: rank, max_rel_residual, base_gguf, gguf_out_type
-    [confirm]                 # optional, needs model_dir: items, grader, margin, max_queries
+    [confirm]                 # optional, needs model_dir: items, grader, margin, max_queries,
+                              # and optional target, batch_size
 
 ``start`` writes ``RUN_DIR/run.json`` and a copy of the config (``config.toml``),
 then runs the editor's ``main`` on the run directory; the editor starts the server.
@@ -103,6 +104,8 @@ _CONFIRM: _Fields = {
     "grader": ("str", _REQUIRED),
     "margin": ("number", _REQUIRED),
     "max_queries": ("positive", _REQUIRED),
+    "target": ("str", None),
+    "batch_size": ("positive", None),
 }
 # editor options map one to one onto the editor's command-line flags
 _EDITORS: dict[str, _Fields] = {
@@ -304,7 +307,8 @@ def _parse(where: str, raw: dict[str, Any], base: Path, text: str) -> RunSpec:
     run_dir = _path(base, run["dir"])
     confirm: dict[str, Any] = {}
     if "confirm" in raw:
-        confirm = _table(where, raw["confirm"], _CONFIRM, "confirm")
+        table = _table(where, raw["confirm"], _CONFIRM, "confirm")
+        confirm = {k: v for k, v in table.items() if v is not None}
         confirm["items"] = str(_path(base, confirm["items"]))
         if run["model_dir"] is None:
             raise RunError(f"{where}: [confirm] needs [run] model_dir")

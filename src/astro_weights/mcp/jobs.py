@@ -33,6 +33,8 @@ _FORWARD_KEYS = ("device", "dtype", "max_new_tokens")
 _EXPORT_KEYS = ("rank", "max_rel_residual", "base_gguf", "gguf_out_type")
 _GGUF_OUT_TYPES = ("q8_0", "f16", "bf16")
 _CONFIRM_KEYS = ("items", "grader", "margin", "max_queries")
+_CONFIRM_OPTIONAL = ("target", "batch_size")
+TARGETS = ("accuracy", "tokens")
 GRADERS = ("exact", "choice", "math")
 MAX_NEW_TOKENS = 32768
 
@@ -45,12 +47,19 @@ class ConfirmConfig:
     server only; a path inside the run directory is refused. ``grader`` names an
     ``astro_weights.eval`` grader (``grade_<grader>``). ``margin`` is in items
     correct per item (0.02 = 2 points); ``max_queries`` caps confirm calls.
+    ``target`` (optional) is ``"accuracy"`` (default: beat the best by more than
+    the margin) or ``"tokens"`` (fewer output tokens than the best, accuracy
+    within the margin of base); match it to the gate's ``control_target``.
+    ``batch_size`` (optional, default 1) is the number of confirm items generated
+    at once, the same for the base and the edited arm.
     """
 
     items: Path
     grader: str
     margin: float
     max_queries: int
+    target: str = "accuracy"
+    batch_size: int = 1
 
 
 @dataclass(frozen=True)
@@ -204,12 +213,14 @@ def _export_config(path: Path, export: Any) -> tuple[int, float, str | None, str
 
 
 def _confirm_config(path: Path, run_dir: Path, confirm: Any) -> ConfirmConfig | None:
-    """The optional ``confirm`` object of run.json; every key is required."""
+    """The optional ``confirm`` object of run.json; ``target``, ``batch_size`` optional."""
     if confirm is None:
         return None
-    if not isinstance(confirm, dict) or set(confirm) != set(_CONFIRM_KEYS):
+    ok = isinstance(confirm, dict) and set(_CONFIRM_KEYS) <= set(confirm)
+    if not ok or not set(confirm) <= {*_CONFIRM_KEYS, *_CONFIRM_OPTIONAL}:
         raise ValueError(
             f"{path}: confirm must be an object with keys {list(_CONFIRM_KEYS)}"
+            f" and optional {list(_CONFIRM_OPTIONAL)}"
         )
     items, grader = confirm["items"], confirm["grader"]
     margin, max_queries = confirm["margin"], confirm["max_queries"]
@@ -223,12 +234,20 @@ def _confirm_config(path: Path, run_dir: Path, confirm: Any) -> ConfirmConfig | 
     whole = isinstance(max_queries, int) and not isinstance(max_queries, bool)
     if not whole or max_queries < 1:
         raise ValueError(f"{path}: confirm.max_queries must be an int >= 1")
+    target = confirm.get("target", "accuracy")
+    if target not in TARGETS:
+        raise ValueError(f"{path}: confirm.target must be one of {list(TARGETS)}")
+    batch = confirm.get("batch_size", 1)
+    if not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
+        raise ValueError(f"{path}: confirm.batch_size must be an int >= 1")
     if (run_dir / items).resolve().is_relative_to(run_dir.resolve()):
         raise ValueError(
             f"{path}: confirm.items must be outside the run directory, where "
             "agent code and results live"
         )
-    return ConfirmConfig(run_dir / items, str(grader), float(margin), max_queries)
+    return ConfirmConfig(
+        run_dir / items, str(grader), float(margin), max_queries, str(target), batch
+    )
 
 
 class JobRunner:
