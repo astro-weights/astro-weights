@@ -1,0 +1,16 @@
+{#- Link-preview tags for /docs/ and /blog/, same card as the landing page (org-site index.html).
+    Description is front-matter `description`, else site_description; never a body excerpt. -#}
+{% extends "base.html" %}
+{% block extrahead %}
+  {%- set desc = page.meta.description if page.meta and page.meta.description else config.site_description %}
+  {%- set title = (page.title | striptags) ~ " - " ~ config.site_name if page.title and not page.is_homepage else config.site_name %}
+  <meta property="og:type" content="{{ 'article' if page.meta and page.meta.date else 'website' }}">
+  <meta property="og:site_name" content="astro-weights">
+  <meta property="og:title" content="{{ title | e }}">
+  <meta property="og:description" content="{{ desc | e }}">
+  <meta property="og:url" content="{{ page.canonical_url }}">
+  <meta property="og:image" content="https://astro-weights.dev/social-preview.png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta name="twitter:card" content="summary_large_image">
+{% endblock %}
