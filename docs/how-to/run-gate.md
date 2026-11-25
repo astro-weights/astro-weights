@@ -151,10 +151,15 @@ edit = ["scripted"]          # PEFT adapter directories, in the order tried
 items = "data/confirm.jsonl"
 grader = "math"
 margin = 0.02
-max_queries = 2              # one per candidate, plus one spare for a resume
+max_queries = 1              # one per candidate
+
+[export]
+rank = 8                     # at least the highest candidate rank, so the export is the confirmed weights
 ```
 
-`astro-weights run CONFIG.toml`, then point `run_record` in `GATE.toml` at `runs/scripted/record.jsonl` and `adapter` at the exported adapter. A killed run resumes with `astro-weights run CONFIG.toml --resume`; the confirm outputs already generated are reused.
+`astro-weights run CONFIG.toml`, then point `run_record` in `GATE.toml` at `runs/scripted/record.jsonl` and `adapter` at the exported adapter. A killed run resumes with `astro-weights run CONFIG.toml --resume`: candidates that already have a confirm result are not confirmed again, a query cut by the kill is asked again (it does not count toward `max_queries`), and the outputs it had already generated are reused.
+
+The editor refuses before any tool call when a candidate's rank is above `[export] rank`, when an adapter records a base tensor sha256 that differs from the run's model, or, on a resume, when the list or its files changed (`RUN_DIR/scripted_edits.json` holds the list a run started with). The `finish` summary in the record names each candidate with its file sha256.
 
 ## Confirm tool for agents
 

@@ -1,5 +1,6 @@
 """The scripted editor's --edit mode: candidates made outside the run go through confirm."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,12 +10,18 @@ import pytest
 
 pytest.importorskip("mcp")
 
+from safetensors.numpy import save_file
+
 from astro_weights.edits import Edit, LowRankDelta
 from astro_weights.export.peft import save_peft
 from astro_weights.mcp.editors.scripted import (
+    CANDIDATES,
     ScriptFailed,
     apply_code,
+    confirm_done,
     load_candidates,
+    main,
+    match_weight,
     run_edits,
 )
 
@@ -22,6 +29,17 @@ from astro_weights.mcp.editors.scripted import (
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+def _delta(
+    module: str, out_dim: int, in_dim: int, rank: int = 1, seed: int = 0
+) -> LowRankDelta:
+    rng = np.random.default_rng(seed)
+    return LowRankDelta(
+        module=module,
+        B=rng.standard_normal((out_dim, rank)).astype(np.float32),
+        A=rng.standard_normal((rank, in_dim)).astype(np.float32),
+    )
 
 
 def test_apply_code_sets_base_plus_delta_and_drops_old_edits() -> None:
@@ -32,8 +50,7 @@ def test_apply_code_sets_base_plus_delta_and_drops_old_edits() -> None:
     ]
     base = {n: rng.standard_normal((4, 6)).astype(np.float32) for n in names}
     store: dict[str, np.ndarray] = {names[0]: base[names[0]] + 1}
-    b = rng.standard_normal((4, 1)).astype(np.float32)
-    a = rng.standard_normal((1, 6)).astype(np.float32)
+    d = _delta("base_model.model.model.layers.1.mlp.down_proj", 4, 6)
     ns: dict[str, Any] = {
         "np": np,
         "NAMES": tuple(names),
@@ -43,35 +60,132 @@ def test_apply_code_sets_base_plus_delta_and_drops_old_edits() -> None:
         "save_edit": store.__setitem__,
         "print": lambda *a: None,
     }
-    exec(apply_code([("base_model.model.model.layers.1.mlp.down_proj", b, a)]), ns)  # noqa: S102
+    exec(apply_code([(d.module, d.B, d.A)]), ns)  # noqa: S102
     assert list(store) == [names[1]]
-    np.testing.assert_allclose(store[names[1]], base[names[1]] + b @ a, rtol=1e-6)
+    np.testing.assert_allclose(store[names[1]], base[names[1]] + d.B @ d.A, rtol=1e-6)
 
 
-def test_apply_code_refuses_an_ambiguous_module() -> None:
-    names = ("a.layers.0.mlp.down_proj.weight", "b.layers.0.mlp.down_proj.weight")
-    ns: dict[str, Any] = {
-        "np": np,
-        "NAMES": names,
-        "edited": list,
-        "drop_edit": None,
-    }
-    z = np.zeros((1, 1), np.float32)
-    with pytest.raises(AssertionError):
-        exec(apply_code([("layers.0.mlp.down_proj", z, z)]), ns)  # noqa: S102
+NAMES = (
+    "model.language_model.layers.3.mlp.down_proj.weight",
+    "model.vision_tower.layers.3.mlp.down_proj.weight",
+    "mtp.layers.3.mlp.down_proj.weight",
+)
 
 
-def test_load_candidates_reads_peft_dirs(tmp_path: Path) -> None:
-    rng = np.random.default_rng(1)
-    d = LowRankDelta(
-        module="model.layers.3.mlp.down_proj",
-        B=rng.standard_normal((4, 2)).astype(np.float32),
-        A=rng.standard_normal((2, 5)).astype(np.float32),
+@pytest.mark.parametrize(
+    "module",
+    [
+        "model.layers.3.mlp.down_proj",
+        "base_model.model.model.language_model.layers.3.mlp.down_proj",
+    ],
+)
+def test_match_weight_strips_only_wrappers(module: str) -> None:
+    assert match_weight(module, NAMES) == NAMES[0]
+
+
+@pytest.mark.parametrize(
+    ("module", "names", "msg"),
+    [
+        ("lm_head", NAMES, "no weight"),
+        ("model.vision_tower.layers.9.mlp.down_proj", NAMES, "no weight"),
+        (
+            "model.layers.3.mlp.down_proj",
+            (*NAMES, "model.layers.3.mlp.down_proj.weight"),
+            "several",
+        ),
+    ],
+)
+def test_match_weight_refuses(module: str, names: tuple[str, ...], msg: str) -> None:
+    with pytest.raises(ValueError, match=msg):
+        match_weight(module, names)
+
+
+def _run_dir(
+    tmp_path: Path, *, rank: int = 8, with_model: bool = True
+) -> tuple[Path, np.ndarray]:
+    w = np.arange(12, dtype=np.float32).reshape(3, 4)
+    model = tmp_path / "model"
+    model.mkdir()
+    save_file(
+        {"model.layers.0.mlp.down_proj.weight": w}, str(model / "model.safetensors")
     )
-    save_peft(Edit((d,), "base", {}, {}), tmp_path / "e")
-    [[(module, b, a)]] = load_candidates([tmp_path / "e"])
-    assert module.endswith("layers.3.mlp.down_proj")
+    run = tmp_path / "run"
+    run.mkdir()
+    cfg: dict[str, Any] = {"export": {"rank": rank}}
+    if with_model:
+        cfg["model_dir"] = str(model)
+    (run / "run.json").write_text(json.dumps(cfg))
+    return run, w
+
+
+def _peft(where: Path, d: LowRankDelta, base: dict[str, str] | None = None) -> Path:
+    save_peft(Edit((d,), "base", base or {}, {}), where)
+    return where
+
+
+def test_load_candidates_round_trip_and_list_pinned(tmp_path: Path) -> None:
+    import hashlib
+
+    run, w = _run_dir(tmp_path)
+    key = "model.layers.0.mlp.down_proj.weight"
+    sha = hashlib.sha256(w.tobytes()).hexdigest()
+    d = _delta("model.layers.0.mlp.down_proj", 3, 4)
+    cand = _peft(tmp_path / "c", d, {key: sha})
+    loaded, note = load_candidates([cand], run)
+    [[(_, b, a)]] = loaded
     np.testing.assert_allclose(b @ a, d.B @ d.A, rtol=1e-5)
+    assert "base not checked" not in note
+    assert json.loads((run / CANDIDATES).read_text())[0]["path"] == str(cand)
+    load_candidates([cand], run)  # same list on resume: fine
+    other = _peft(tmp_path / "o", _delta("model.layers.0.mlp.down_proj", 3, 4, seed=1))
+    with pytest.raises(ValueError, match="changed since the run started"):
+        load_candidates([cand, other], run)
+
+
+def test_load_candidates_refuses_other_base(tmp_path: Path) -> None:
+    run, _ = _run_dir(tmp_path)
+    d = _delta("model.layers.0.mlp.down_proj", 3, 4)
+    cand = _peft(tmp_path / "c", d, {"model.layers.0.mlp.down_proj.weight": "0" * 64})
+    with pytest.raises(ValueError, match="differs from the run model"):
+        load_candidates([cand], run)
+    assert not (run / CANDIDATES).exists()
+
+
+def test_load_candidates_refuses_rank_above_export(tmp_path: Path) -> None:
+    run, _ = _run_dir(tmp_path, rank=1)
+    cand = _peft(tmp_path / "c", _delta("model.layers.0.mlp.down_proj", 3, 4, rank=2))
+    with pytest.raises(ValueError, match=r"rank 2, above the run's export rank 1"):
+        load_candidates([cand], run)
+
+
+def test_load_candidates_notes_unpinned_base(tmp_path: Path) -> None:
+    run, _ = _run_dir(tmp_path)
+    cand = _peft(tmp_path / "c", _delta("model.layers.0.mlp.down_proj", 3, 4))
+    _, note = load_candidates([cand], run)
+    assert "1 without base sha256" in note
+
+
+def test_main_refuses_a_bad_candidate_before_starting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run, _ = _run_dir(tmp_path, rank=1)
+    cand = _peft(tmp_path / "c", _delta("model.layers.0.mlp.down_proj", 3, 4, rank=2))
+    assert main([str(run), "--edit", str(cand)]) == 2
+    assert "export rank" in capsys.readouterr().err
+
+
+def test_confirm_done_reads_results_in_order(tmp_path: Path) -> None:
+    lines = [
+        {"event": "confirm_query", "query": 1},
+        {"event": "confirm_result", "passed": True},
+        {"event": "confirm_query", "query": 2},
+        {"event": "confirm_result", "passed": False},
+    ]
+    (tmp_path / "record.jsonl").write_text(
+        "".join(json.dumps(x) + "\n" for x in lines) + '{"event": "conf'
+    )
+    assert confirm_done(tmp_path) == [True, False]
+    assert confirm_done(tmp_path / "none") == []
 
 
 class FakeSession:
@@ -94,21 +208,24 @@ class FakeSession:
             self.jobs[h] = {"handle": h, "state": "done", "result": result}
             out = {"handle": h, "state": "queued"}
         else:
-            out = {"ok": True}
+            out = {"ok": True, **args}
         return SimpleNamespace(is_error=False, structured_content=out, content=[])
 
     def tools(self) -> list[str]:
         return [t for t, _ in self.calls if t != "status"]
 
+    def codes(self) -> list[str]:
+        return [a["code"] for t, a in self.calls if t == "exec_python"]
 
-C1 = [("layers.0.mlp.down_proj", np.ones((2, 1)), np.ones((1, 2)))]
-C2 = [("layers.0.mlp.down_proj", np.zeros((2, 1)), np.ones((1, 2)))]
+
+C1 = [("model.layers.0.mlp.down_proj", np.ones((2, 1)), np.ones((1, 2)))]
+C2 = [("model.layers.0.mlp.down_proj", np.zeros((2, 1)), np.ones((1, 2)))]
 
 
 @pytest.mark.anyio
 async def test_last_passing_candidate_is_reapplied_then_finished() -> None:
     s: Any = FakeSession([True, False])
-    await run_edits(s, [C1, C2])
+    out = await run_edits(s, [C1, C2], note="candidates: x")
     assert s.tools() == [
         "exec_python",
         "confirm",
@@ -117,9 +234,10 @@ async def test_last_passing_candidate_is_reapplied_then_finished() -> None:
         "exec_python",
         "finish",
     ]
-    codes = [a["code"] for t, a in s.calls if t == "exec_python"]
-    assert codes[2] == codes[0] == apply_code(C1)
+    assert s.codes()[2] == s.codes()[0] == apply_code(C1)
     assert all(a.get("wait_s") == 50 for t, a in s.calls if t == "status")
+    assert "candidate 1 exported" in out[-1]["summary"]
+    assert "candidates: x" in out[-1]["summary"]
 
 
 @pytest.mark.anyio
@@ -134,7 +252,30 @@ async def test_no_pass_still_finishes() -> None:
     s: Any = FakeSession([False])
     out = await run_edits(s, [C1])
     assert s.tools() == ["exec_python", "confirm", "finish"]
-    assert out[-1] == {"ok": True}
+    assert "no candidate passed" in out[-1]["summary"]
+
+
+@pytest.mark.anyio
+async def test_resume_skips_confirmed_candidates() -> None:
+    # killed after candidate 1 passed: only candidate 2 is confirmed, then 1 is exported
+    s: Any = FakeSession([False])
+    await run_edits(s, [C1, C2], done=[True])
+    assert s.tools() == ["exec_python", "confirm", "exec_python", "finish"]
+    assert s.codes() == [apply_code(C2), apply_code(C1)]
+
+
+@pytest.mark.anyio
+async def test_resume_after_last_result_only_reapplies_and_finishes() -> None:
+    s: Any = FakeSession([])
+    await run_edits(s, [C1], done=[True])
+    assert s.tools() == ["exec_python", "finish"]
+
+
+@pytest.mark.anyio
+async def test_more_results_than_candidates_is_refused() -> None:
+    s: Any = FakeSession([])
+    with pytest.raises(ValueError, match="2 confirm results for 1 candidates"):
+        await run_edits(s, [C1], done=[True, False])
 
 
 @pytest.mark.anyio
@@ -156,67 +297,76 @@ async def test_refused_confirm_stops_the_run() -> None:
     assert "finish" not in s.tools()
 
 
-def test_edit_run_end_to_end(
+def test_edit_run_end_to_end_exports_the_passing_candidate(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Real server, kernel and tiny model: the PEFT edit is applied, confirmed, exported."""
-    import json
-
+    """Real server, kernel, confirm and tiny model. Candidate 1 passes (the golds are
+    its own outputs, from a first run's confirm checkpoint), candidate 2 does not;
+    candidate 1 is exported and the record says so."""
     pytest.importorskip("torch")
     pytest.importorskip("transformers")
     from mcp_tiny_hf import save_tiny_model, weight_key
-    from safetensors import safe_open
 
     from astro_weights.mcp import sandbox
-    from astro_weights.mcp.editors.scripted import main
     from astro_weights.mcp.record import RunRecord
 
     model = save_tiny_model(tmp_path / "model")
-    key = weight_key(model, "layers.0.mlp.down_proj.weight")
+    key = weight_key(model, "layers.1.self_attn.v_proj.weight")  # moves greedy outputs
+    from safetensors import safe_open
+
     with safe_open(str(next(model.glob("*.safetensors"))), "np") as f:
-        out_dim, in_dim = f.get_tensor(key).shape
-    rng = np.random.default_rng(0)
-    d = LowRankDelta(
-        module=key.removesuffix(".weight"),
-        B=0.002 * rng.standard_normal((out_dim, 1)).astype(np.float32),
-        A=rng.standard_normal((1, in_dim)).astype(np.float32),
-    )
-    save_peft(Edit((d,), "base", {}, {}), tmp_path / "cand")
-    items = tmp_path / "items.jsonl"
-    items.write_text(
-        "".join(
-            json.dumps({"item_id": f"i{i}", "prompt": f"w{i} w{i + 1}", "gold": "x"})
-            + "\n"
-            for i in range(3)
-        )
-    )
-    run = tmp_path / "run"
-    run.mkdir()
-    cfg = {
-        "seed": 7,
-        "editor": "scripted",
-        "model": None,
-        "model_dir": str(model),
-        "limits": {"forward_passes": 5, "code_runs": 5, "tokens": 0, "dollars": 0},
-        "kernel": {"timeout_s": 60},
-        "forward": {"device": "cpu", "max_new_tokens": 4},
-        "confirm": {
-            "items": str(items),
-            "grader": "exact",
-            "margin": 0.0,
-            "max_queries": 2,
-        },
-    }
-    (run / "run.json").write_text(json.dumps(cfg))
+        w = f.get_tensor(key).astype(np.float32)
+    module = key.removesuffix(".weight")
+
+    def cand(name: str, seed: int) -> Path:
+        d = _delta(module, w.shape[0], w.shape[1], seed=seed)
+        scale = (
+            0.45 * np.linalg.norm(w) / np.linalg.norm(d.B @ d.A)
+        )  # under the 0.5 cap
+        return _peft(tmp_path / name, LowRankDelta(module, scale * d.B, d.A))
+
+    c1, c2 = cand("c1", 0), cand("c2", 5)
+    prompts = [f"w{i} w{i + 1} w{i + 2}" for i in range(6)]
     flags = ["--unsafe-kernel"] if sandbox.probe() is None else []
-    code = main([str(run), "--edit", str(tmp_path / "cand"), *flags])
-    assert code == 0, capsys.readouterr().out[-3000:]
+
+    def start(run: Path, golds: list[str], queries: int) -> Path:
+        items = run.parent / f"{run.name}-items.jsonl"
+        items.write_text(
+            "".join(
+                json.dumps({"item_id": f"i{i}", "prompt": p, "gold": g}) + "\n"
+                for i, (p, g) in enumerate(zip(prompts, golds, strict=True))
+            )
+        )
+        run.mkdir()
+        cfg = {
+            "seed": 7, "editor": "scripted", "model": None, "model_dir": str(model),
+            "limits": {"forward_passes": 5, "code_runs": 8, "tokens": 0, "dollars": 0},
+            "kernel": {"timeout_s": 60},
+            "forward": {"device": "cpu", "max_new_tokens": 8},
+            "confirm": {"items": str(items), "grader": "exact", "margin": 0.0, "max_queries": queries},
+        }  # fmt: skip
+        (run / "run.json").write_text(json.dumps(cfg))
+        return run
+
+    probe = start(tmp_path / "probe", ["?"] * 6, 1)
+    assert main([str(probe), "--edit", str(c1), *flags]) == 0, capsys.readouterr().out[
+        -2000:
+    ]
+    rows = [
+        json.loads(line)
+        for f in (probe / "confirm").glob("*.jsonl")
+        if not f.name.startswith("base-")
+        for line in f.read_text().splitlines()
+    ]
+    golds = [r["text"] for r in sorted(rows, key=lambda r: r["index"])]
+    run = start(tmp_path / "run", golds, 2)
+    assert main([str(run), "--edit", str(c1), "--edit", str(c2), *flags]) == 0
     events = RunRecord.open(run / "record.jsonl").read()
-    kinds = [e["event"] for e in events]
-    assert kinds.count("confirm_query") == 1
-    assert kinds.count("confirm_result") == 1
-    assert kinds[-1] == "finish"
+    results = [e for e in events if e["event"] == "confirm_result"]
+    assert [r["passed"] for r in results] == [True, False], results
     [export] = [e for e in events if e["event"] == "confirm_export"]
-    [result] = [e for e in events if e["event"] == "confirm_result"]
-    assert export["exported_candidate"] == result["candidate"]
-    assert export["exported_is_best"] is result["passed"]
+    assert export["exported_is_best"] is True
+    assert export["exported_candidate"] == results[0]["candidate"]
+    counts = RunRecord.open(run / "record.jsonl").confirm_counts()
+    assert counts["candidates_tried"] == 2
+    assert counts["confirm_queries"] == 2

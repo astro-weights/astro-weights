@@ -16,6 +16,8 @@ candidate, so a gate can read it like an agent run.
 
 import argparse
 import base64
+import hashlib
+import inspect
 import io
 import json
 import sys
@@ -42,6 +44,8 @@ __all__ = [
     "run_edits",
     "run_scripted",
 ]
+
+CANDIDATES = "scripted_edits.json"  # the --edit list a run started with
 
 Args = Mapping[str, Any] | Callable[[Sequence[str]], Mapping[str, Any]]
 
@@ -194,13 +198,38 @@ def _npy(a: Any) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def match_weight(module: str, names: Sequence[str]) -> str:
+    """The one weight in ``names`` for a PEFT module name.
+
+    Both sides drop leading wrapper parts (``base_model``, ``model``,
+    ``language_model``) and ``.weight``; the rest must be equal, so
+    ``model.layers.3.mlp.down_proj`` finds ``model.language_model.layers.3.mlp.down_proj.weight``
+    but never a ``vision_tower`` or ``mtp`` weight. ValueError unless exactly one matches.
+    """
+
+    def core(name: str) -> str:
+        parts = name.removesuffix(".weight").split(".")
+        while parts and parts[0] in ("base_model", "model", "language_model"):
+            parts.pop(0)
+        return ".".join(parts)
+
+    key = core(module)
+    hits = [n for n in names if core(n) == key]
+    if len(hits) != 1:
+        found = "no weight" if not hits else f"several weights: {hits[:4]}"
+        raise ValueError(f"{module}: matches {found}")
+    return hits[0]
+
+
 def apply_code(deltas: Sequence[tuple[str, Any, Any]]) -> str:
     """Kernel code that sets each module to its base weight + B @ A, after dropping
-    every stored edit. ``deltas`` holds (module, B, A); a module is matched to the
-    one weight in NAMES that ends with its ``layers.N....`` part."""
+    every stored edit. ``deltas`` holds (module, B, A); ``match_weight`` maps a
+    module to its weight in NAMES."""
     rows = ",\n".join(f"    ({m!r}, {_npy(b)!r}, {_npy(a)!r})" for m, b, a in deltas)
     return f"""\
-import base64, io, re
+import base64, io
+from collections.abc import Sequence
+{inspect.getsource(match_weight)}
 def _arr(t):
     return np.load(io.BytesIO(base64.b64decode(t)), allow_pickle=False)
 for _n in list(edited()):
@@ -208,12 +237,9 @@ for _n in list(edited()):
 for _m, _b, _a in [
 {rows}
 ]:
-    _key = re.search(r"layers\\.\\d+\\..*$", _m).group(0)
-    _hits = [n for n in NAMES if n.removesuffix(".weight").endswith(_key)]
-    assert len(_hits) == 1, (_m, _hits)
-    _w = load_original(_hits[0])
-    save_edit(_hits[0], _w + _arr(_b) @ _arr(_a))
-    print(_hits[0])
+    _name = match_weight(_m, NAMES)
+    save_edit(_name, load_original(_name) + _arr(_b) @ _arr(_a))
+    print(_name)
 """
 
 
@@ -237,17 +263,31 @@ async def run_edits(
     session: Client | ClientSession,
     candidates: Sequence[Sequence[tuple[str, Any, Any]]],
     *,
+    done: Sequence[bool] = (),
+    note: str = "",
     timeout_s: float = 24 * 3600,
 ) -> list[dict[str, Any]]:
-    """Apply each candidate, confirm it, then finish with the last that passed.
+    """Apply and confirm each candidate not yet confirmed, then finish with the last
+    that passed applied.
 
-    With no pass the candidates' last one stays applied, so ``finish`` reports
+    ``done`` holds the ``passed`` of the confirm results an earlier, killed run of
+    this list already has, in order: those candidates are not confirmed again (the
+    confirm bar moved past them, so a second query would not mean the same). With no
+    pass the stored edits stay as they are and ``finish`` reports
     ``exported_is_best`` false. Returns every tool result in order.
     """
+    if len(done) > len(candidates):
+        raise ValueError(
+            f"the run already has {len(done)} confirm results for "
+            f"{len(candidates)} candidates"
+        )
     results: list[dict[str, Any]] = []
-    passed: int | None = None
+    passed = max((i for i, ok in enumerate(done) if ok), default=None)
+    applied: int | None = None
+    index = 0
 
-    async def step(index: int, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    async def step(tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        nonlocal index
         out = await _call(session, tool, args)
         results.append(out)
         if _failure(out):
@@ -255,47 +295,130 @@ async def run_edits(
         if isinstance(out.get("handle"), str):
             out = await _wait(session, index, out["handle"], timeout_s)
             results.append(out)
+        index += 1
         return out
 
-    i = 0
-    for n, cand in enumerate(candidates):
-        await step(i, "exec_python", {"code": apply_code(cand)})
-        out = await step(i + 1, "confirm", {})
+    for n in range(len(done), len(candidates)):
+        await step("exec_python", {"code": apply_code(candidates[n])})
+        applied = n
+        out = await step("confirm", {})
         if (out.get("result") or {}).get("passed") is True:
             passed = n
-        i += 2
-    if passed is not None and passed != len(candidates) - 1:
-        await step(i, "exec_python", {"code": apply_code(candidates[passed])})
-        i += 1
-    note = (
+    if passed is not None and applied != passed:
+        await step("exec_python", {"code": apply_code(candidates[passed])})
+    outcome = (
         "no candidate passed" if passed is None else f"candidate {passed + 1} exported"
     )
-    await step(
-        i, "finish", {"summary": f"scripted run over {len(candidates)} edits: {note}"}
-    )
+    summary = f"scripted run over {len(candidates)} edits: {outcome}. {note}".strip()
+    await step("finish", {"summary": summary})
     return results
 
 
-def load_candidates(paths: Sequence[Path]) -> list[list[tuple[str, Any, Any]]]:
-    """(module, B, A) per delta of each PEFT adapter directory, scaling in B."""
-    from astro_weights.export.peft import load_peft
+def _file_sha(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
-    return [[(d.module, d.B, d.A) for d in load_peft(p).deltas] for p in paths]
+
+def _model_keys(model_dir: Path) -> list[str]:
+    from safetensors import safe_open
+
+    keys: list[str] = []
+    for f in sorted(model_dir.glob("*.safetensors")):
+        with safe_open(str(f), "np") as h:
+            keys += list(h.keys())
+    return keys
+
+
+def load_candidates(
+    paths: Sequence[Path], run_dir: Path
+) -> tuple[list[list[tuple[str, Any, Any]]], str]:
+    """(module, B, A) per delta of each PEFT adapter, scaling in B, plus a note for
+    the record. Checked before any tool call: ValueError when a candidate's rank is
+    above the run's export rank (the export would not be the confirmed weights),
+    when a recorded base tensor sha256 differs from the run's model, or when the
+    list or its files differ from the ones this run started with
+    (``RUN_DIR/scripted_edits.json``)."""
+    from astro_weights.export.base import _shard, tensor_sha256
+    from astro_weights.export.peft import WEIGHTS, load_peft
+
+    cfg = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    rank = int((cfg.get("export") or {}).get("rank", 8))
+    model_dir = Path(cfg["model_dir"]) if cfg.get("model_dir") else None
+    keys = _model_keys(model_dir) if model_dir is not None else []
+    listed = [{"path": str(p), "sha256": _file_sha(Path(p) / WEIGHTS)} for p in paths]
+    out: list[list[tuple[str, Any, Any]]] = []
+    unpinned = 0
+    for p in paths:
+        edit = load_peft(p)
+        for d in edit.deltas:
+            if d.B.shape[1] > rank:
+                raise ValueError(
+                    f"{p}: {d.module} has rank {d.B.shape[1]}, above the run's "
+                    f"export rank {rank}: set [export] rank >= {d.B.shape[1]}"
+                )
+        if not edit.base_sha256 or model_dir is None:
+            unpinned += 1
+        else:
+            for key, want in edit.base_sha256.items():
+                name = match_weight(key.removesuffix(".weight"), keys)
+                got = tensor_sha256(_shard(model_dir, name), name)
+                if got != want:
+                    raise ValueError(
+                        f"{p}: base tensor {key} sha256 {want} differs from the "
+                        f"run model's {got}"
+                    )
+        out.append([(d.module, d.B, d.A) for d in edit.deltas])
+    seen = run_dir / CANDIDATES
+    if seen.exists():
+        if json.loads(seen.read_text(encoding="utf-8")) != listed:
+            raise ValueError(
+                f"{seen}: the candidate list or its files changed since the run started"
+            )
+    else:
+        seen.write_text(json.dumps(listed, indent=1) + "\n", encoding="utf-8")
+    note = "candidates: " + ", ".join(
+        f"{c['path']} ({c['sha256'][:12]})" for c in listed
+    )
+    if unpinned:
+        note += f"; {unpinned} without base sha256, base not checked"
+    return out, note
+
+
+def confirm_done(run_dir: Path) -> list[bool]:
+    """``passed`` of each confirm result already in the run record, in order."""
+    path = run_dir / "record.jsonl"
+    if not path.exists():
+        return []
+    out: list[bool] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue  # a torn last line
+        if isinstance(e, dict) and e.get("event") == "confirm_result":
+            out.append(e.get("passed") is True)
+    return out
 
 
 async def _run(
-    run_dir: Path, unsafe: bool, edits: Sequence[Path] = ()
+    run_dir: Path,
+    unsafe: bool,
+    loaded: tuple[list[list[tuple[str, Any, Any]]], str] | None = None,
 ) -> list[dict[str, Any]]:
     args = ["-m", "astro_weights.mcp", str(run_dir)] + (
         ["--unsafe-kernel"] if unsafe else []
     )
     params = StdioServerParameters(command=sys.executable, args=args)
     failure: ScriptFailed | None = None
-    candidates = load_candidates(edits) if edits else None
     async with Client(params) as client:
         try:
-            if candidates is not None:
-                return await run_edits(client, candidates)
+            if loaded is not None:
+                return await run_edits(
+                    client, loaded[0], done=confirm_done(run_dir), note=loaded[1]
+                )
             return await run_scripted(client)
         except ScriptFailed as exc:  # keep it out of the transport's exception group
             failure = exc
@@ -324,7 +447,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {args.run_dir / 'run.json'} not found", file=sys.stderr)
         return 2
     try:
-        results = anyio.run(_run, args.run_dir, args.unsafe_kernel, args.edit)
+        loaded = load_candidates(args.edit, args.run_dir) if args.edit else None
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    try:
+        results = anyio.run(_run, args.run_dir, args.unsafe_kernel, loaded)
     except ScriptFailed as exc:
         print(json.dumps({"error": str(exc), "step": exc.index, "result": exc.result}))
         return 1
