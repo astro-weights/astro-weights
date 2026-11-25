@@ -38,6 +38,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Docs: how-to "Run one eval arm from a TOML file" (`astro-weights gen`: write ARM.toml, run, resume after a kill, exit codes). CLI reference `gen` section links to it.
 - The scripted editor takes candidate edits made outside the run (`[editor] edit = [PEFT dirs]` in the run config, `--edit` on its command line): it applies each to the base weights, sends it to `confirm`, and exports the last one that passed, so the gate can read the run record of a scripted or closed-form edit.
 - The MCP `status` tool takes `wait_s` (capped at 55 s) and blocks until the job is done or failed, so an editor waiting on a long `confirm` query makes one call per minute instead of polling and spending its token budget.
+- `astro-weights gate` reports the generation cap and the share of records that hit it for every arm it reads (confirm, side-effect, test, report and suite arms), in the report, in `--json` and in `verdict.json` (`max_new_tokens`, `cap_hit`). New optional `GATE.toml` key `max_cap_hit` refuses the gate (exit 2, no verdict, test split not spent) when any arm is above it; without the key nothing changes. (#195)
 
 ### Changed
 
