@@ -405,9 +405,10 @@ arms on the test split, each against base:
 arm   kind  n    diff     95% CI              method  MDE     tokens diff
 edit  edit  299  +0.0000  [-0.0161, +0.0161]  normal  0.0230  -30.0
 
-confirm cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%  controls max=0.0% (c00)
-test cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%
-suite.gsm8k cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%
+cap-hit share (max_new_tokens 256 in the confirm base header):
+  confirm: base=0.0%  edit=0.0%  controls max=0.0% (c00)
+  test: base=0.0%  edit=0.0%
+  suite.gsm8k: base=0.0%  edit=0.0%
 verdict file: verdict.json
 exit 0 confirmed
 ```
@@ -416,7 +417,7 @@ Stage 2 (selection on confirm) happens in the agent run, so the report has no st
 
 ### Cap-hit guard
 
-An answer cut at `max_new_tokens` has no final answer, so it is graded wrong and its tokens stop at the cap: a cap that bites hides both accuracy and token changes. The report prints one cap-hit line per set of arms (`cap unknown` when the base header has no `max_new_tokens`), and `verdict.json` keeps the shares. Set `max_cap_hit` in `GATE.toml` (a share in [0, 1], for example `max_cap_hit = 0.01`) to refuse the gate when any arm the gate reads is above it: confirm base, edit and controls, each `[confirm.side.NAME]` table's arms, test base, edit and report arms (all K records), and each regression suite's base and edit. The refusal names the arms and shares, exits 2 and writes no verdict; the test check runs before the seal, so a refused run never spends the test split. Raise `max_new_tokens` and rerun those arms. Without the key nothing is refused.
+An answer cut at `max_new_tokens` has no final answer, so it is graded wrong and its tokens stop at the cap: a cap that bites hides both accuracy and token changes. The report prints one cap-hit line per set of arms under the cap from the confirm base header (`cap unknown` when that header has no `max_new_tokens`), and `verdict.json` keeps the shares. Set `max_cap_hit` in `GATE.toml` (a share in [0, 1], for example `max_cap_hit = 0.01`) to refuse the gate when any arm the gate reads is above it: confirm base, edit and controls, each `[confirm.side.NAME]` table's arms (not `accuracy`, which uses the confirm records), test base, edit and report arms (all K records), and each regression suite's base and edit. The refusal names the arms and shares, exits 2 and writes no verdict; the test check runs before the seal, so a refused run never spends the test split. Raise `max_new_tokens` and rerun those arms. Without the key nothing is refused.
 
 The test split is now sealed for this edit. A second run is refused and seals nothing:
 

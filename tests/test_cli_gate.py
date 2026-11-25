@@ -640,11 +640,9 @@ def test_cap_hit_is_reported_and_kept_in_the_verdict(
     _cap_some(cfg.parent / "test" / "edit.jsonl", 4)
     code, out, _ = gate(cfg, capsys=capsys)
     assert code == 0  # no key, no refusal
-    assert (
-        "confirm cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%  controls max="
-        in out
-    )
-    assert "suite.gsm8k cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%" in out
+    assert "cap-hit share (max_new_tokens 256 in the confirm base header):" in out
+    assert "  confirm: base=0.0%  edit=0.0%  controls max=" in out
+    assert "  suite.gsm8k: base=0.0%  edit=0.0%" in out
     v = verdict(cfg)
     assert v.max_new_tokens == 256
     assert set(v.cap_hit) == {"confirm", "test", "suite.gsm8k", "suite.ifeval"}
@@ -728,6 +726,27 @@ def test_cap_hit_guard_on_a_side_effect_arm(
     assert not (cfg.parent / "seal").exists()
 
 
+def test_an_accuracy_side_table_is_not_read(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build()  # accuracy uses the confirm records; its side table is ignored
+    cfg.write_text(
+        cfg.read_text().replace(
+            "[test]",
+            '[confirm.side.accuracy]\nbase = "nope/base.jsonl"\n'
+            'edit = "nope/edit.jsonl"\ncontrols = "nope/controls"\n\n[test]',
+        )
+    )
+    code, _, err = gate(cfg, capsys=capsys)
+    assert code == 0, err
+    assert set(verdict(cfg).cap_hit) == {
+        "confirm",
+        "test",
+        "suite.gsm8k",
+        "suite.ifeval",
+    }
+
+
 def test_test_split_refusal_leaves_an_existing_ledger_alone(
     build: Build, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -766,5 +785,6 @@ def test_cap_unknown_without_max_new_tokens(
         h.write_text(json.dumps(data))
     code, out, err = gate(cfg, capsys=capsys)
     assert code == 1, err
-    assert "confirm cap-hit (cap unknown): base=0.0%" in out
+    assert "cap-hit share (cap unknown in the confirm base header):" in out
+    assert "  confirm: base=0.0%" in out
     assert verdict(cfg).max_new_tokens is None

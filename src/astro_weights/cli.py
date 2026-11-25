@@ -486,6 +486,7 @@ def _side_arms(cfg: GateConfig) -> dict[str, ArmsResult]:
     return {
         f"side.{name}": _confirm_arms(cfg, f.base, f.edit, f.controls)
         for name, f in cfg.confirm.side.items()
+        if name != "accuracy"  # accuracy uses the confirm records, as _controls does
     }
 
 
@@ -616,12 +617,11 @@ def _cap_hits(arms: ArmsResult) -> dict[str, float]:
     }
 
 
-def _cap_line(arms: ArmsResult, cap: int | None) -> str:
+def _cap_line(arms: ArmsResult) -> str:
     """One report line: cap-hit of base, edit and report arms; controls as their max."""
     ctl = arms.controls()
     hits = {n: v for n, v in _cap_hits(arms).items() if n not in ctl}
-    where = "cap unknown" if cap is None else f"max_new_tokens {cap}"
-    line = f"cap-hit ({where}): " + "  ".join(f"{n}={v:.1%}" for n, v in hits.items())
+    line = "  ".join(f"{n}={v:.1%}" for n, v in hits.items())
     if ctl:
         worst = max(ctl, key=lambda n: ctl[n].cap_hit_edit)
         line += f"  controls max={ctl[worst].cap_hit_edit:.1%} ({worst})"
@@ -683,9 +683,10 @@ def _gate_output(
             print(f"\narms on the {name} split, each against base:")
             print(format_arms(arms))
     if cap_splits:
-        print()
+        where = "cap unknown" if cap is None else f"max_new_tokens {cap}"
+        print(f"\ncap-hit share ({where} in the confirm base header):")
     for name, arms in cap_splits.items():
-        print(f"{name} {_cap_line(arms, cap)}")
+        print(f"  {name}: {_cap_line(arms)}")
     print(f"verdict file: {written}" if written else "no verdict file written")
 
 
