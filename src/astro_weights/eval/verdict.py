@@ -31,8 +31,9 @@ class Verdict:
     engine ("llama.cpp", "vllm", "hf") and its version or build.
 
     `max_new_tokens` is the generation cap of the arms (None when their headers do not
-    say). `cap_hit` maps a split ("confirm", "test") to the share of records that hit
-    the cap, per arm ("base", "edit", each control and report arm). A capped answer is
+    say). `cap_hit` maps a set of arms ("confirm", "test", "side.NAME" per side-effect
+    table, "suite.NAME" per regression suite) to the share of records that hit the
+    cap, per arm ("base", "edit", each control and report arm). A capped answer is
     censored, not wrong: read every score and token claim beside these shares. Both
     keys may be absent in files written before they existed.
     """

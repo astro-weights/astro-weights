@@ -640,10 +640,14 @@ def test_cap_hit_is_reported_and_kept_in_the_verdict(
     _cap_some(cfg.parent / "test" / "edit.jsonl", 4)
     code, out, _ = gate(cfg, capsys=capsys)
     assert code == 0  # no key, no refusal
-    assert "cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%  controls max=" in out
+    assert (
+        "confirm cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%  controls max="
+        in out
+    )
+    assert "suite.gsm8k cap-hit (max_new_tokens 256): base=0.0%  edit=0.0%" in out
     v = verdict(cfg)
     assert v.max_new_tokens == 256
-    assert set(v.cap_hit) == {"confirm", "test"}
+    assert set(v.cap_hit) == {"confirm", "test", "suite.gsm8k", "suite.ifeval"}
     assert set(v.cap_hit["confirm"]) == {"base", "edit"} | {
         f"control-{j:02d}" for j in range(fixture.N_CONTROLS)
     }
@@ -664,18 +668,21 @@ def test_cap_hit_in_json(build: Build, capsys: pytest.CaptureFixture[str]) -> No
 
 @pytest.mark.parametrize(
     "path",
-    ["confirm/base.jsonl", "confirm/controls/control-07.jsonl", "test/edit.jsonl"],
-)
+    ["confirm/base.jsonl", "confirm/controls/control-07.jsonl", "test/base.jsonl",
+     "test/edit.jsonl", "test/prompt.jsonl", "gsm8k-edit.jsonl"],
+)  # fmt: skip
 def test_cap_hit_guard_refuses_and_never_spends_the_seal(
     build: Build, capsys: pytest.CaptureFixture[str], path: str
 ) -> None:
-    cfg = build()
+    named = {"gsm8k-edit.jsonl": "suite.gsm8k edit"}
+    cfg = build(arms=True)
     _set_guard(cfg, 0.01)
     _cap_some(cfg.parent / path, 10)
     code, _, err = gate(cfg, capsys=capsys)
     assert code == 2
     assert "cap-hit guard" in err
-    assert Path(path).stem in err
+    p = Path(path)
+    assert named.get(path, f"{p.parent.name} {p.stem}".replace("controls ", "")) in err
     assert "above max_cap_hit 1.00%" in err
     assert not (cfg.parent / "verdict.json").exists()
     assert not (cfg.parent / "seal").exists()
@@ -696,3 +703,68 @@ def test_cap_hit_guard_value_is_checked(build: Build, bad: str) -> None:
     cfg.write_text(f"max_cap_hit = {bad}\n" + cfg.read_text())
     with pytest.raises(ValueError, match="max_cap_hit"):
         load_gate_config(cfg)
+
+
+def test_cap_hit_guard_on_a_side_effect_arm(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build()
+    side = cfg.parent / "side"
+    shutil.copytree(cfg.parent / "confirm", side)
+    cfg.write_text(
+        cfg.read_text()
+        .replace('side_effects = ["accuracy"]', 'side_effects = ["accuracy", "style"]')
+        .replace(
+            "[test]",
+            '[confirm.side.style]\nbase = "side/base.jsonl"\n'
+            'edit = "side/edit.jsonl"\ncontrols = "side/controls"\n\n[test]',
+        )
+    )
+    _set_guard(cfg, 0.01)
+    _cap_some(side / "edit.jsonl", 10)
+    code, _, err = gate(cfg, capsys=capsys)
+    assert code == 2
+    assert "side.style edit" in err
+    assert not (cfg.parent / "seal").exists()
+
+
+def test_test_split_refusal_leaves_an_existing_ledger_alone(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build()
+    assert gate(cfg, capsys=capsys)[0] == 0
+    before = ledger(cfg)
+    (cfg.parent / "verdict.json").unlink()
+    _set_guard(cfg, 0.01)
+    _cap_some(cfg.parent / "test" / "edit.jsonl", 10)
+    code, _, err = gate(cfg, capsys=capsys)
+    assert code == 2
+    assert "test edit" in err
+    assert ledger(cfg) == before
+    assert not (cfg.parent / "verdict.json").exists()
+
+
+def test_a_control_cannot_be_named_base(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build()
+    ctl = cfg.parent / "confirm" / "controls"
+    for ext in (".jsonl", ".header.json"):
+        (ctl / f"control-00{ext}").rename(ctl / f"base{ext}")
+    code, _, err = gate(cfg, capsys=capsys)
+    assert code == 2
+    assert "cannot be named base.jsonl" in err
+
+
+def test_cap_unknown_without_max_new_tokens(
+    build: Build, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = build(controls_beat=False)  # confirm fails, so no floor is needed
+    for h in cfg.parent.rglob("*.header.json"):
+        data = json.loads(h.read_text())
+        del data["max_new_tokens"]
+        h.write_text(json.dumps(data))
+    code, out, err = gate(cfg, capsys=capsys)
+    assert code == 1, err
+    assert "confirm cap-hit (cap unknown): base=0.0%" in out
+    assert verdict(cfg).max_new_tokens is None

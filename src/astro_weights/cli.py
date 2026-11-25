@@ -468,8 +468,8 @@ def _confirm_arms(
     if not controls.is_dir():
         raise ValueError(f"{controls}: not a directory of control arm files")
     files = sorted(controls.glob("*.jsonl"))
-    if "edit" in {p.stem for p in files}:
-        raise ValueError(f"{controls}: a control file cannot be named edit.jsonl")
+    if bad := {"base", "edit"} & {p.stem for p in files}:
+        raise ValueError(f"{controls}: a control file cannot be named {min(bad)}.jsonl")
     for p in (edit, *files):
         _same_settings(base, p, cfg.arm_keys)
     named = [(p, _records(p)) for p in (base, edit, *files)]
@@ -481,17 +481,23 @@ def _confirm_arms(
     return compare_arms(named[0][1], arms, kinds, n_boot=cfg.boot, seed=cfg.seed)
 
 
-def _controls(cfg: GateConfig, arms: ArmsResult) -> ControlVerdict:
+def _side_arms(cfg: GateConfig) -> dict[str, ArmsResult]:
+    """Each `[confirm.side.NAME]` table's arms on the confirm split, by split name."""
+    return {
+        f"side.{name}": _confirm_arms(cfg, f.base, f.edit, f.controls)
+        for name, f in cfg.confirm.side.items()
+    }
+
+
+def _controls(
+    cfg: GateConfig, arms: ArmsResult, side: Mapping[str, ArmsResult]
+) -> ControlVerdict:
     """The control rule on the confirm split, with every named side effect."""
     c = cfg.confirm
     sides = {}
     for name in c.side_effects:
-        if name == "accuracy":
-            sides[name] = (arms.results["edit"], list(arms.controls().values()))
-        else:
-            f = c.side[name]
-            s = _confirm_arms(cfg, f.base, f.edit, f.controls)
-            sides[name] = (s.results["edit"], list(s.controls().values()))
+        s = arms if name == "accuracy" else side[f"side.{name}"]
+        sides[name] = (s.results["edit"], list(s.controls().values()))
     return control_rule(
         arms.results["edit"],
         list(arms.controls().values()),
@@ -522,6 +528,7 @@ class _TestStage:
     arms: ArmsResult
     floor: FloorResult
     suites: dict[str, tuple[PairedResult, float, str]]
+    suite_arms: dict[str, ArmsResult]
     k: int
     config_hash: str
     infra_errors: int
@@ -545,13 +552,14 @@ def _test_stage(cfg: GateConfig, confirm_base: Path, unseal: bool) -> _TestStage
     floor = load_floor(t.floor, key)
     if floor is None:
         raise ValueError(f"{t.floor}: no floor for config_hash {key}; measure it first")
-    suites = {}
+    suites, suite_arms = {}, {}
     for name, s in cfg.suites.items():
         _same_settings(s.base, s.edit, cfg.arm_keys)
         edit_vs_base = compare_arms(
             _records(s.base), {"edit": _records(s.edit)}, n_boot=cfg.boot, seed=cfg.seed
         )
         suites[name] = (edit_vs_base.results["edit"], s.margin, s.margin_source)
+        suite_arms[f"suite.{name}"] = edit_vs_base
     base, edit = _records(t.base), _records(t.edit)
     arms = {"edit": edit} | {n: _records(p) for n, p in shown.items()}
     kinds = {n: REPORT_ARMS[k][1] for k, (n, _) in REPORT_ARMS.items() if n in shown}
@@ -559,7 +567,9 @@ def _test_stage(cfg: GateConfig, confirm_base: Path, unseal: bool) -> _TestStage
     infra = _infra_errors(t.base, t.edit)
     named = [(t.base, base), (t.edit, edit)]
     report = [(p, arms[n]) for n, p in shown.items()]
-    return _TestStage(named, compared, floor, suites, manifest.k, key, infra, report)
+    return _TestStage(
+        named, compared, floor, suites, suite_arms, manifest.k, key, infra, report
+    )
 
 
 def _open_seal(cfg: GateConfig, stage: _TestStage, unseal: bool) -> _Seal:
@@ -610,23 +620,28 @@ def _cap_line(arms: ArmsResult, cap: int | None) -> str:
     """One report line: cap-hit of base, edit and report arms; controls as their max."""
     ctl = arms.controls()
     hits = {n: v for n, v in _cap_hits(arms).items() if n not in ctl}
-    line = f"cap-hit (max_new_tokens {cap}): " + "  ".join(
-        f"{n}={v:.1%}" for n, v in hits.items()
-    )
+    where = "cap unknown" if cap is None else f"max_new_tokens {cap}"
+    line = f"cap-hit ({where}): " + "  ".join(f"{n}={v:.1%}" for n, v in hits.items())
     if ctl:
         worst = max(ctl, key=lambda n: ctl[n].cap_hit_edit)
         line += f"  controls max={ctl[worst].cap_hit_edit:.1%} ({worst})"
     return line
 
 
-def _cap_guard(limit: float | None, split: str, arms: ArmsResult) -> None:
+def _cap_guard(limit: float | None, splits: Mapping[str, ArmsResult]) -> None:
     """Refuse (exit 2, no verdict) when any arm's cap-hit share is above `limit`."""
     if limit is None:
         return
-    if over := {n: v for n, v in _cap_hits(arms).items() if v > limit}:
+    over = {
+        f"{split} {n}": v
+        for split, arms in splits.items()
+        for n, v in _cap_hits(arms).items()
+        if v > limit
+    }
+    if over:
         shown = ", ".join(f"{n} {v:.2%}" for n, v in over.items())
         print(
-            f"error: cap-hit guard: on the {split} split {shown} above max_cap_hit "
+            f"error: cap-hit guard: {shown} above max_cap_hit "
             f"{limit:.2%}; answers cut at the cap are censored, not wrong. Raise "
             "max_new_tokens and rerun those arms. No verdict written.",
             file=sys.stderr,
@@ -642,9 +657,11 @@ def _gate_output(
     written: Path | None,
     as_json: bool,
     cap: int | None = None,
+    cap_splits: Mapping[str, ArmsResult] | None = None,
 ) -> None:
     searched = {"candidates_tried": counts[0], "confirm_queries": counts[1]}
     splits = {"confirm": confirm, "test": test}
+    cap_splits = cap_splits or {}
     if as_json:
         _emit(
             {
@@ -655,7 +672,7 @@ def _gate_output(
                     k: None if a is None else arms_dict(a) for k, a in splits.items()
                 },
                 "max_new_tokens": cap,
-                "cap_hit": {k: _cap_hits(a) for k, a in splits.items() if a},
+                "cap_hit": {k: _cap_hits(a) for k, a in cap_splits.items()},
             }
         )
         return
@@ -665,7 +682,10 @@ def _gate_output(
         if arms is not None:
             print(f"\narms on the {name} split, each against base:")
             print(format_arms(arms))
-            print(_cap_line(arms, cap))
+    if cap_splits:
+        print()
+    for name, arms in cap_splits.items():
+        print(f"{name} {_cap_line(arms, cap)}")
     print(f"verdict file: {written}" if written else "no verdict file written")
 
 
@@ -678,8 +698,10 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
         return _GATE_EXIT[screened.outcome]
     c = cfg.confirm
     confirm = _confirm_arms(cfg, c.base, c.edit, c.controls)
-    _cap_guard(cfg.max_cap_hit, "confirm", confirm)
-    controls = _controls(cfg, confirm)
+    side = _side_arms(cfg)
+    splits = {"confirm": confirm, **side}
+    _cap_guard(cfg.max_cap_hit, splits)
+    controls = _controls(cfg, confirm, side)
     inputs = GateInputs(
         screens,
         cfg.margin,
@@ -691,7 +713,9 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
     stage = None
     if controls.passed:  # a failed confirm never spends the sealed test split
         stage = _test_stage(cfg, c.base, unseal)
-        _cap_guard(cfg.max_cap_hit, "test", stage.arms)
+        later = {"test": stage.arms, **stage.suite_arms}
+        _cap_guard(cfg.max_cap_hit, later)
+        splits |= later
         inputs = replace(
             inputs,
             test=stage.arms.results["edit"],
@@ -714,11 +738,7 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
         stage.infra_errors if stage else _infra_errors(c.base, c.edit),
         dict(cfg.footprint),
         cap,
-        {
-            k: _cap_hits(a)
-            for k, a in (("confirm", confirm), ("test", stage and stage.arms))
-            if a
-        },
+        {k: _cap_hits(a) for k, a in splits.items()},
     )
     written = out or config.parent / "verdict.json"
     # Write first, rename after sealing: a bad --out never spends the test split.
@@ -734,7 +754,14 @@ def _gate_run(config: Path, as_json: bool, unseal: bool, out: Path | None) -> in
     finally:
         tmp.unlink(missing_ok=True)
     _gate_output(
-        result, counts, confirm, stage.arms if stage else None, written, as_json, cap
+        result,
+        counts,
+        confirm,
+        stage.arms if stage else None,
+        written,
+        as_json,
+        cap,
+        splits,
     )
     return _GATE_EXIT[result.outcome]
 
