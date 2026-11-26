@@ -55,6 +55,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - When a concurrent endpoint run hits an error, items before the failing one that were still in flight are now waited for and written, as documented, so a resume does not request them again.
 - A `confirm` query killed mid-way no longer counts toward `max_queries` (the record gets a `confirm_interrupted` event), and its outputs are checkpointed per item under `RUN_DIR/confirm/`, so a resumed run generates only the items not yet written.
 - `generate_records` takes a `header` (from `run_header`) and writes it beside `out`; a resume now refuses a file whose header has another config (model, adapter, `max_new_tokens`, `sampling`, `batch_size` or `system`) instead of mixing the two runs in one file.
+- `astro-weights gen` takes `model_id` for `kind = "suites"` arms, as it does for `http` and `bfcl`. Without it the suite header recorded the served name, so a base and a LoRA arm served from one server could not be compared by `gate`. (#198)
 
 ## [0.2.2] - 2026-11-19
 
