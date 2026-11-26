@@ -51,6 +51,7 @@ _KEYS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             "cache_dir",
             "suite_paths",
             "system",
+            "model_id",
         ),
     ),
     "bfcl": (

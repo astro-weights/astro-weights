@@ -33,13 +33,19 @@ class HFBackend:
 
 @dataclass(frozen=True)
 class HttpBackend:
-    """An OpenAI-compatible server and the model name to ask for."""
+    """An OpenAI-compatible server and the model name to ask for.
+
+    `model_id` is recorded in the header as the model's identity (as in
+    `run_header_http`); without it the header falls back to the served name, so a
+    base and a LoRA arm on one server would not compare.
+    """
 
     base_url: str
     model: str
     api_key: str | None = None
     concurrency: int = 1
     extra_body: Mapping[str, Any] | None = None
+    model_id: str | None = None
 
 
 def _placeholder(gold: str, output: str) -> bool:
@@ -84,7 +90,7 @@ def _header(
         return run_header_http(
             backend.base_url, backend.model, max_new_tokens, seed, backend.extra_body,
             api_key=backend.api_key, concurrency=backend.concurrency,
-            system=system,
+            system=system, model_id=backend.model_id,
         )  # fmt: skip
     from astro_weights.runners.generate import run_header
 

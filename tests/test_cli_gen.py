@@ -670,3 +670,33 @@ def test_suites_kind_runs_and_resumes(
     )  # fmt: skip
     assert code == 2
     assert path.read_bytes() == before
+
+
+def test_suites_kind_model_id_lets_base_and_lora_arms_compare(
+    tmp_path: Path, ifeval_pin: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def respond(_b: dict[str, Any]) -> Reply:
+        return ok("- a\n- b\n- c\nDone")
+
+    def arm(name: str, **extra: Any) -> Path:
+        return _write(
+            tmp_path / f"{name}.toml", kind="suites", arm=name, base_url=url,
+            model=name, max_new_tokens=16, out_dir=f"suites-{len(extra)}",
+            suites=["ifeval"], suite_paths={"ifeval": str(ifeval_pin)}, **extra,
+        )  # fmt: skip
+
+    with serve(respond) as (url, state):
+        for name in ("base", "edit"):
+            assert gen(arm(name, model_id="gemma"), capsys=capsys)[0] == 0
+            assert gen(arm(name), capsys=capsys)[0] == 0
+    assert {r["body"]["model"] for r in state.requests if "body" in r} == {
+        "base",
+        "edit",
+    }  # served names
+
+    def ids(d: str) -> list[Any]:
+        return [read_header(header_path(tmp_path / d / "ifeval" / f"{a}.jsonl"))["model_id"]
+                for a in ("base", "edit")]  # fmt: skip
+
+    assert ids("suites-1") == ["gemma", "gemma"]
+    assert ids("suites-0") == ["base", "edit"]  # without it: the served name

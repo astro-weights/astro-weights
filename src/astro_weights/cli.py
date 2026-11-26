@@ -1199,7 +1199,12 @@ def _plan_suites(cfg: ArmConfig, resume: bool) -> _GenPlan:
     assert out_dir is not None
     key = _api_key(cfg)
     backend = HttpBackend(
-        cfg.base_url, cfg.model, key, cfg.concurrency, cfg.extra_body or None
+        cfg.base_url,
+        cfg.model,
+        key,
+        cfg.concurrency,
+        cfg.extra_body or None,
+        model_id=cfg.model_id,
     )
     paths = tuple(out_dir / n / f"{cfg.arm}.jsonl" for n in cfg.suites)
     spy = _Spy()
