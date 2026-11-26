@@ -177,7 +177,7 @@
   "read_result": "(run_dir: pathlib.Path, jobs: astro_weights.mcp.handles.HandleStore, handle: Any, key: Any) -> numpy.ndarray | list[str]"
  },
  "astro_weights.mcp.jobs": {
-  "ConfirmConfig": "(items: pathlib.Path, grader: str, margin: float, max_queries: int, target: str = 'accuracy', batch_size: int = 1) -> None",
+  "ConfirmConfig": "(items: pathlib.Path, grader: str, margin: float, max_queries: int, target: str = 'accuracy', batch_size: int = 1, max_cap_hit: float | None = None) -> None",
   "JobRunner": "(store: astro_weights.mcp.handles.HandleStore, ledger: astro_weights.mcp.budget.Ledger, executors: collections.abc.Mapping[str, collections.abc.Callable[[dict[str, Any]], dict[str, Any]]], budget_kind: collections.abc.Mapping[str, typing.Literal['forward_passes', 'code_runs', 'tokens', 'dollars']]) -> None",
   "RunConfig": "(seed: int, editor: str, model: str | None, limits: astro_weights.mcp.budget.Limits, model_dir: pathlib.Path | None = None, kernel_timeout_s: float = 600.0, kernel_mem_gib: int = 16, forward_device: str = 'auto', forward_dtype: str = 'auto', forward_max_new_tokens: int = 4096, export_rank: int = 8, export_max_rel_residual: float = 0.05, export_base_gguf: pathlib.Path | None = None, export_gguf_out_type: str = 'q8_0', kernel_allow_nested_userns: bool = False, confirm: astro_weights.mcp.jobs.ConfirmConfig | None = None) -> None",
   "load_run_config": "(run_dir: pathlib.Path) -> astro_weights.mcp.jobs.RunConfig"

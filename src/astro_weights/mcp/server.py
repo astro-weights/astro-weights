@@ -218,7 +218,7 @@ def _export(
     return {"export": summary}
 
 
-def _confirm_text(limit: int, target: str = "accuracy") -> str:
+def _confirm_text(limit: int, target: str = "accuracy", cap_guard: bool = False) -> str:
     rule = (
         "The edits pass when the edited model writes fewer output tokens over "
         "held-out confirm items than the current best (the base model at first, "
@@ -229,6 +229,11 @@ def _confirm_text(limit: int, target: str = "accuracy") -> str:
         "model at first, then the last edits that passed) on held-out confirm items "
         "by more than the run's margin; a tie fails. "
     )
+    if cap_guard:
+        rule += (
+            "Edits also fail when too many answers, of the edited or the base "
+            "model, hit the generation cap. "
+        )
     return (
         "Start a confirm query of the stored edits; returns a handle to poll with "
         'status. Coarse feedback only: the job result is {"passed": bool} and '
@@ -428,7 +433,11 @@ def build_server(
                     return refuse("confirm_limit", str(exc))
 
         server.tool(
-            description=_confirm_text(cfg.confirm.max_queries, cfg.confirm.target)
+            description=_confirm_text(
+                cfg.confirm.max_queries,
+                cfg.confirm.target,
+                cfg.confirm.max_cap_hit is not None,
+            )
         )(confirm)
 
     @server.tool()  # type: ignore[untyped-decorator, unused-ignore]

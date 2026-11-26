@@ -5,6 +5,7 @@ A fake generator stands in for the model, except in the one tiny-model test.
 
 import json
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -574,10 +575,17 @@ def tokens_run(tmp_path: Path, n: int = EX03_N, **confirm: Any) -> Path:
 
 
 class TokenModel:
-    """Base: ``base`` (correct, total tokens); edited: the next pair in ``script``."""
+    """Base: ``base`` (correct, total tokens); edited: the next pair in ``script``.
+
+    A third number in a tuple is that arm's cap hits (default 1).
+    """
 
     def __init__(
-        self, run: Path, n: int, base: tuple[int, int], script: list[tuple[int, int]]
+        self,
+        run: Path,
+        n: int,
+        base: tuple[int, ...],
+        script: Sequence[tuple[int, ...]],
     ) -> None:
         self.run, self.n, self.base = run, n, base
         self.script = list(script)
@@ -589,15 +597,16 @@ class TokenModel:
         self.sizes.append(params.get("batch_size", 1))
         assert len(params["prompts"]) == self.n
         if params["arm"] == "base":
-            (right, total), cand = self.base, "base"
+            got, cand = self.base, "base"
         else:
-            right, total = self.script.pop(0)
+            got = self.script.pop(0)
             manifest = json.loads((self.run / "edits" / "manifest.json").read_text())
             cand = candidate_id({k: v["sha256"] for k, v in manifest.items()})
+        right, total, hits = (*got, 1)[:3]
         texts = [f"g{i}" if i < right else "wrong" for i in range(self.n)]
         tokens = [total // self.n] * self.n
         tokens[0] += total - sum(tokens)
-        caps = [i == 0 for i in range(self.n)]
+        caps = [i < hits for i in range(self.n)]
         return {"texts": texts, "tokens": tokens, "hit_cap": caps, "candidate": cand}
 
 
@@ -751,6 +760,10 @@ async def test_batch_size_reaches_both_arms(tmp_path: Path) -> None:
         ({"batch_size": True}, "confirm.batch_size must be an int"),
         ({"batch_size": 2.0}, "confirm.batch_size must be an int"),
         ({"other": 1}, "optional"),
+        ({"max_cap_hit": 1.5}, "confirm.max_cap_hit must be a number in"),
+        ({"max_cap_hit": -0.1}, "confirm.max_cap_hit must be a number in"),
+        ({"max_cap_hit": True}, "confirm.max_cap_hit must be a number in"),
+        ({"max_cap_hit": "0.01"}, "confirm.max_cap_hit must be a number in"),
     ],
 )
 def test_bad_target_or_batch_size(tmp_path: Path, extra: Any, msg: str) -> None:
@@ -827,3 +840,72 @@ async def test_tool_description_states_the_target_rule(
             TOKENS_RULE,
         )
         assert TOKENS_RULE in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("target", ["accuracy", "tokens"])
+async def test_cap_guard_fails_censored_edits(tmp_path: Path, target: str) -> None:
+    # n 4, limit 0.25: 1 cap hit ties the limit and holds, 2 are over
+    run = tokens_run(tmp_path, n=4, target=target, max_cap_hit=0.25)
+    model = TokenModel(run, 4, (2, 40, 1), [(4, 30, 2), (4, 30, 1)])
+    async with Client(build_server(run, {"confirm": model})) as client:
+        for scale in (0.1, 0.2):
+            save_edit(run, scale)
+            out = await query(client, [])
+            assert set(out["result"]) == {"passed"}
+    first, second = events(run, "confirm_result")
+    assert (first["passed"], first["cap_over"], first["hit_cap"]) == (
+        False,
+        ["edited"],
+        2,
+    )
+    assert (second["passed"], second["hit_cap"]) == (True, 1)
+    assert "cap_over" not in second
+    assert second["best_candidate"] == second["candidate"]
+    (base,) = events(run, "confirm_base")
+    assert (base["base_correct"], base["base_hit_cap"]) == (2, 1)
+    pinned = RunRecord.open(run / "record.jsonl").read()[0]["config"]["confirm"]
+    assert pinned["max_cap_hit"] == 0.25
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("target", ["accuracy", "tokens"])
+async def test_cap_guard_on_a_cut_base_fails_every_query(
+    tmp_path: Path, target: str
+) -> None:
+    run = tokens_run(tmp_path, n=4, target=target, max_cap_hit=0.25)
+    model = TokenModel(run, 4, (2, 40, 2), [(4, 30, 0)])
+    save_edit(run, 0.1)
+    async with Client(build_server(run, {"confirm": model})) as client:
+        assert (await query(client, []))["result"] == {"passed": False}
+    model2 = TokenModel(run, 4, (0, 0, 0), [(4, 30, 0)])  # base must not run again
+    save_edit(run, 0.2)
+    async with Client(build_server(run, {"confirm": model2})) as client:
+        assert (await query(client, []))["result"] == {"passed": False}
+    assert model2.calls == ["edited"]
+    assert [e["cap_over"] for e in events(run, "confirm_result")] == [["base"]] * 2
+
+
+@pytest.mark.anyio
+async def test_cap_guard_off_keeps_the_old_record(tmp_path: Path) -> None:
+    run = tokens_run(tmp_path, n=4, target="accuracy")
+    model = TokenModel(run, 4, (2, 40, 4), [(4, 30, 4)])
+    save_edit(run, 0.1)
+    async with Client(build_server(run, {"confirm": model})) as client:
+        assert (await query(client, []))["result"] == {"passed": True}
+        tools = {t.name: t.description or "" for t in (await client.list_tools()).tools}
+    (result,) = events(run, "confirm_result")
+    assert "hit_cap" not in result
+    assert "cap_over" not in result
+    assert not events(run, "confirm_base")
+    assert "generation cap" not in tools["confirm"]
+
+
+@pytest.mark.anyio
+async def test_cap_guard_is_named_in_the_tool_text(tmp_path: Path) -> None:
+    run = tokens_run(tmp_path, n=4, max_cap_hit=0.01)
+    async with Client(
+        build_server(run, {"confirm": TokenModel(run, 4, (0, 0), [])})
+    ) as c:
+        tools = {t.name: t.description or "" for t in (await c.list_tools()).tools}
+    assert "hit the generation cap" in tools["confirm"]

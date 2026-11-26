@@ -16,7 +16,19 @@ fails), and (b) ``c - base >= -margin * n``, accuracy non-inferior to the base
 model (never to an earlier edit, so passes cannot drift down). The token bar is
 the base model's total on the first query, then the total of the last edit that
 passed. Base counts are recorded once (``confirm_base``) and restored on a
-restart, so the base arm never runs twice. Cap hits are recorded, not used.
+restart, so the base arm never runs twice.
+
+Cap-hit guard (optional ``max_cap_hit``, a share in [0, 1]; absent = off, as
+before). An answer cut at ``max_new_tokens`` is graded wrong and its tokens stop
+at the cap, so an edit can look shorter or as accurate only because it is cut.
+With the key set, a query fails, whatever the rule above says, when more than
+that share of confirm items hit the cap in the edited arm or in the base arm (a
+cut base makes the bar itself censored; raise ``max_new_tokens``). The shares are
+exact (``Fraction``), a tie with the limit holds. The result records ``hit_cap``
+and, on a guard fail, ``cap_over`` (the arms over); with ``target = "accuracy"``
+the base counts go to a ``confirm_base`` event too, so a restart keeps them. The
+agent still sees only ``{"passed": false}``. Same rule as the gate's
+``max_cap_hit`` (``GATE.toml``).
 
 ``batch_size > 1`` generates that many items at once with left padding, for both
 arms alike; greedy outputs can then differ from ``batch_size = 1`` (see
@@ -153,6 +165,8 @@ def pin(cfg: ConfirmConfig, items: Items) -> dict[str, Any]:
         out["target"] = cfg.target
     if cfg.batch_size != 1:
         out["batch_size"] = cfg.batch_size
+    if cfg.max_cap_hit is not None:
+        out["max_cap_hit"] = cfg.max_cap_hit
     return out
 
 
@@ -300,6 +314,7 @@ class _State:
         self.best: str | None = None  # candidate of the last pass
         self.base: tuple[int, int] | None = None  # tokens target: correct, tokens
         self.bar_tokens: int | None = None  # tokens target: total of the best
+        self.base_caps: int | None = None  # cap hits of the base arm
 
 
 def _interrupted(events: list[dict[str, Any]]) -> list[int]:
@@ -328,10 +343,13 @@ def _restore(events: list[dict[str, Any]]) -> _State:
     st.last = max((int(e["query"]) for e in asked), default=0)
     for e in events:
         if e["event"] == "confirm_base":
-            st.base = (int(e["base_correct"]), int(e["base_tokens"]))
-            st.bar_tokens = st.base[1]
+            if isinstance(e.get("base_hit_cap"), int):
+                st.base_caps = e["base_hit_cap"]
+            if "base_tokens" in e:  # tokens target
+                st.base = (int(e["base_correct"]), int(e["base_tokens"]))
+                st.bar_tokens = st.base[1]
             if st.bar is None:  # a crash before the first result: best is still base
-                st.bar = st.base[0]
+                st.bar = int(e["base_correct"])
         if e["event"] != "confirm_result":
             continue
         if isinstance(e.get("best"), int):
@@ -418,9 +436,26 @@ class Confirmer:
         )
         return {**out, "correct": n, "candidate": str(out["candidate"])}
 
-    def _correct(self, arm: str) -> tuple[int, str]:
-        out = self._arm(arm)
-        return out["correct"], out["candidate"]
+    @staticmethod
+    def _caps(out: dict[str, Any], n: int) -> int:
+        """Cap hits of one arm's outputs; ValueError when not one bool per item."""
+        caps = out.get("hit_cap")
+        if not isinstance(caps, list) or len(caps) != n:
+            raise ValueError("bad cap hits")
+        if not all(isinstance(c, bool) for c in caps):
+            raise ValueError("bad cap hits")
+        return sum(caps)
+
+    def _cap_over(self, edit_caps: int, n: int) -> list[str]:
+        """Arms whose cap-hit share is above ``max_cap_hit``; empty when guard off."""
+        limit = self._cfg.max_cap_hit
+        if limit is None:
+            return []
+        if self._st.base_caps is None:
+            raise ValueError("base cap hits unknown")
+        lim = Fraction(str(limit))
+        arms = {"base": self._st.base_caps, "edited": edit_caps}
+        return [a for a, c in arms.items() if Fraction(c, n) > lim]
 
     @staticmethod
     def _tokens(out: dict[str, Any], n: int) -> tuple[int, int]:
@@ -444,15 +479,31 @@ class Confirmer:
     def _query(self, query: int) -> bool:
         if self._cfg.target == "tokens":
             return self._query_tokens(query)
-        fields: dict[str, Any] = {"query": query, "n": len(self._golds)}
+        n = len(self._golds)
+        fields: dict[str, Any] = {"query": query, "n": n}
+        guard = self._cfg.max_cap_hit is not None
         passed = False
         try:
             if self._bar is None:
-                self._bar, _ = self._correct("base")
+                base = self._arm("base")
+                self._bar = base["correct"]
+                if guard:
+                    self._st.base_caps = self._caps(base, n)
+                    self._record.event(
+                        "confirm_base",
+                        n=n,
+                        base_correct=self._bar,
+                        base_hit_cap=self._st.base_caps,
+                    )
             fields["bar"] = self._bar
-            correct, fields["candidate"] = self._correct("edited")
+            out = self._arm("edited")
+            correct, fields["candidate"] = out["correct"], out["candidate"]
             fields["correct"] = correct
-            passed = passes(correct, self._bar, len(self._golds), self._cfg.margin)
+            passed = passes(correct, self._bar, n, self._cfg.margin)
+            if guard:
+                fields["hit_cap"] = self._caps(out, n)
+                if over := self._cap_over(fields["hit_cap"], n):
+                    fields["cap_over"], passed = over, False
             if passed:
                 self._bar = correct
                 self.best_candidate = fields["best_candidate"] = fields["candidate"]
@@ -471,6 +522,7 @@ class Confirmer:
                 base = self._arm("base")
                 tokens, caps = self._tokens(base, n)
                 st.base, st.bar_tokens = (base["correct"], tokens), tokens
+                st.base_caps = caps
                 st.bar = base["correct"]
                 self._record.event(
                     "confirm_base",
@@ -494,6 +546,10 @@ class Confirmer:
                 n,
                 self._cfg.margin,
             )
+            if self._cfg.max_cap_hit is not None:
+                fields["hit_cap"] = self._caps(out, n)
+                if over := self._cap_over(fields["hit_cap"], n):
+                    fields["cap_over"], passed = over, False
             if passed:
                 st.bar_tokens, st.bar = fields["tokens"], out["correct"]
                 self.best_candidate = fields["best_candidate"] = out["candidate"]
