@@ -1,1 +1,0 @@
-`astro-weights gen` takes `model_id` for `kind = "suites"` arms, as it does for `http` and `bfcl`. Without it the suite header recorded the served name, so a base and a LoRA arm served from one server could not be compared by `gate`.
