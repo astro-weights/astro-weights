@@ -104,7 +104,7 @@ astro-weights gen [--resume] [--json] ARM.toml
 | `kind` | Runner | Keys (required first) |
 |---|---|---|
 | `http` | `generate_records_http` with `run_header_http` for the header | `arm`, `base_url`, `model`, `max_new_tokens`, `out` (records JSONL), `items` (JSONL of `{"item_id", "prompt", "gold"}`), `grader` (`exact`, `choice` or `math`; `math` needs the `eval` extra). Optional: `seed` (0), `k` (1), `manifest` with `split`, `extra_body`, `serving_flags`, `model_id`, `system`, `concurrency` (1), `timeout` (120), `api_key_env` |
-| `suites` | `run_suites` with `HttpBackend` | `arm`, `base_url`, `model`, `max_new_tokens`, `out_dir` (records go to `out_dir/<suite>/<arm>.jsonl`), `suites` (list of names). Optional: `seed`, `limit`, `cache_dir`, `suite_paths` (table of name to file), `extra_body`, `system`, `concurrency`, `api_key_env` |
+| `suites` | `run_suites` with `HttpBackend` | `arm`, `base_url`, `model`, `max_new_tokens`, `out_dir` (records go to `out_dir/<suite>/<arm>.jsonl`), `suites` (list of names). Optional: `seed`, `limit`, `cache_dir`, `suite_paths` (table of name to file), `extra_body`, `system`, `model_id`, `concurrency`, `api_key_env` |
 | `bfcl` | `load_bfcl` then `run_bfcl`, header from `run_header_http` with `k = trials` | `arm`, `base_url`, `model`, `max_new_tokens`, `out`, `bfcl_root`. Optional: `trials` (1), `max_steps_per_turn` (20), `seed`, `extra_body`, `serving_flags`, `model_id`, `timeout`, `api_key_env` |
 
 - `api_key_env` names an environment variable that holds the key; the key itself never goes in the file or the header.
