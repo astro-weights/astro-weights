@@ -1,0 +1,1 @@
+The MCP `confirm` tool takes an optional `max_cap_hit` in `run.json`, the same guard as the gate's. With it set, a confirm query fails when a larger share of the edited or the base model's answers hit `max_new_tokens`, so an edit cannot be picked for answers cut at the cap. The run record keeps the cap hits. Without the key nothing changes.

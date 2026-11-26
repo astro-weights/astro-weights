@@ -33,7 +33,7 @@ _FORWARD_KEYS = ("device", "dtype", "max_new_tokens")
 _EXPORT_KEYS = ("rank", "max_rel_residual", "base_gguf", "gguf_out_type")
 _GGUF_OUT_TYPES = ("q8_0", "f16", "bf16")
 _CONFIRM_KEYS = ("items", "grader", "margin", "max_queries")
-_CONFIRM_OPTIONAL = ("target", "batch_size")
+_CONFIRM_OPTIONAL = ("target", "batch_size", "max_cap_hit")
 TARGETS = ("accuracy", "tokens")
 GRADERS = ("exact", "choice", "math")
 MAX_NEW_TOKENS = 32768
@@ -51,7 +51,9 @@ class ConfirmConfig:
     the margin) or ``"tokens"`` (fewer output tokens than the best, accuracy
     within the margin of base); match it to the gate's ``control_target``.
     ``batch_size`` (optional, default 1) is the number of confirm items generated
-    at once, the same for the base and the edited arm.
+    at once, the same for the base and the edited arm. ``max_cap_hit``
+    (optional, a share in [0, 1]) fails a query when more of the edited or the
+    base arm's confirm items than that hit ``max_new_tokens``; absent = off.
     """
 
     items: Path
@@ -60,6 +62,7 @@ class ConfirmConfig:
     max_queries: int
     target: str = "accuracy"
     batch_size: int = 1
+    max_cap_hit: float | None = None
 
 
 @dataclass(frozen=True)
@@ -240,13 +243,25 @@ def _confirm_config(path: Path, run_dir: Path, confirm: Any) -> ConfirmConfig | 
     batch = confirm.get("batch_size", 1)
     if not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
         raise ValueError(f"{path}: confirm.batch_size must be an int >= 1")
+    cap = confirm.get("max_cap_hit")
+    if cap is not None:
+        number = isinstance(cap, int | float) and not isinstance(cap, bool)
+        if not number or not 0 <= cap <= 1:
+            raise ValueError(f"{path}: confirm.max_cap_hit must be a number in [0, 1]")
+        cap = float(cap)
     if (run_dir / items).resolve().is_relative_to(run_dir.resolve()):
         raise ValueError(
             f"{path}: confirm.items must be outside the run directory, where "
             "agent code and results live"
         )
     return ConfirmConfig(
-        run_dir / items, str(grader), float(margin), max_queries, str(target), batch
+        run_dir / items,
+        str(grader),
+        float(margin),
+        max_queries,
+        str(target),
+        batch,
+        cap,
     )
 
 
