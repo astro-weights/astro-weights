@@ -39,6 +39,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - The scripted editor takes candidate edits made outside the run (`[editor] edit = [PEFT dirs]` in the run config, `--edit` on its command line): it applies each to the base weights, sends it to `confirm`, and exports the last one that passed, so the gate can read the run record of a scripted or closed-form edit.
 - The MCP `status` tool takes `wait_s` (capped at 55 s) and blocks until the job is done or failed, so an editor waiting on a long `confirm` query makes one call per minute instead of polling and spending its token budget.
 - `astro-weights gate` reports the generation cap and the share of records that hit it for every arm it reads (confirm, side-effect, test, report and suite arms), in the report, in `--json` and in `verdict.json` (`max_new_tokens`, `cap_hit`). New optional `GATE.toml` key `max_cap_hit` refuses the gate (exit 2, no verdict, test split not spent) when any arm is above it; without the key nothing changes. (#195)
+- The MCP `confirm` tool takes an optional `max_cap_hit` in `run.json`, the same guard as the gate's. With it set, a confirm query fails when a larger share of the edited or the base model's answers hit `max_new_tokens`, so an edit cannot be picked for answers cut at the cap. The run record keeps the cap hits. Without the key nothing changes. (#199)
 
 ### Changed
 
