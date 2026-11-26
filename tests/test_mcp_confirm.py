@@ -909,3 +909,35 @@ async def test_cap_guard_is_named_in_the_tool_text(tmp_path: Path) -> None:
     ) as c:
         tools = {t.name: t.description or "" for t in (await c.list_tools()).tools}
     assert "hit the generation cap" in tools["confirm"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("target", ["accuracy", "tokens"])
+@pytest.mark.parametrize("arm", ["base", "edited"])
+async def test_cap_guard_without_cap_data_fails_closed_and_recovers(
+    tmp_path: Path, target: str, arm: str
+) -> None:
+    run = tokens_run(tmp_path, n=4, target=target, max_cap_hit=0.25)
+    good = TokenModel(run, 4, (2, 40, 0), [(4, 30, 0)])
+
+    def no_caps(params: dict[str, Any]) -> dict[str, Any]:
+        out = good(params)
+        if params["arm"] == arm:
+            del out["hit_cap"]
+        return out
+
+    save_edit(run, 0.1)
+    async with Client(build_server(run, {"confirm": no_caps})) as client:
+        assert (await query(client, []))["result"] == {"passed": False}
+    (bad,) = events(run, "confirm_result")
+    assert bad["error"] == "CapHitsMissing"
+    assert bad["passed"] is False
+    assert "best_candidate" not in bad
+    if arm == "base":  # nothing about the base kept: the next query reruns it
+        assert bad["best"] is None
+        assert not events(run, "confirm_base")
+    fixed = TokenModel(run, 4, (2, 40, 0), [(4, 30, 0)])
+    save_edit(run, 0.2)
+    async with Client(build_server(run, {"confirm": fixed})) as client:
+        assert (await query(client, []))["result"] == {"passed": True}
+    assert fixed.calls == (["base", "edited"] if arm == "base" else ["edited"])

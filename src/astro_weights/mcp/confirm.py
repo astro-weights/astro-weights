@@ -84,6 +84,10 @@ GRADERS: dict[str, Callable[[str, str], bool]] = {
 KIND = "confirm"
 
 
+class CapHitsMissing(ValueError):
+    """``max_cap_hit`` is set but an arm's outputs carry no valid ``hit_cap`` list."""
+
+
 class ConfirmLimit(Exception):
     """``confirm.max_queries`` queries were already made."""
 
@@ -441,9 +445,9 @@ class Confirmer:
         """Cap hits of one arm's outputs; ValueError when not one bool per item."""
         caps = out.get("hit_cap")
         if not isinstance(caps, list) or len(caps) != n:
-            raise ValueError("bad cap hits")
+            raise CapHitsMissing("max_cap_hit needs one bool hit_cap per item")
         if not all(isinstance(c, bool) for c in caps):
-            raise ValueError("bad cap hits")
+            raise CapHitsMissing("max_cap_hit needs one bool hit_cap per item")
         return sum(caps)
 
     def _cap_over(self, edit_caps: int, n: int) -> list[str]:
@@ -452,7 +456,7 @@ class Confirmer:
         if limit is None:
             return []
         if self._st.base_caps is None:
-            raise ValueError("base cap hits unknown")
+            raise CapHitsMissing("base cap hits unknown")
         lim = Fraction(str(limit))
         arms = {"base": self._st.base_caps, "edited": edit_caps}
         return [a for a, c in arms.items() if Fraction(c, n) > lim]
@@ -486,15 +490,15 @@ class Confirmer:
         try:
             if self._bar is None:
                 base = self._arm("base")
-                self._bar = base["correct"]
-                if guard:
+                if guard:  # before the bar: a bad base leaves it unset, so it reruns
                     self._st.base_caps = self._caps(base, n)
                     self._record.event(
                         "confirm_base",
                         n=n,
-                        base_correct=self._bar,
+                        base_correct=base["correct"],
                         base_hit_cap=self._st.base_caps,
                     )
+                self._bar = base["correct"]
             fields["bar"] = self._bar
             out = self._arm("edited")
             correct, fields["candidate"] = out["correct"], out["candidate"]
@@ -508,6 +512,7 @@ class Confirmer:
                 self._bar = correct
                 self.best_candidate = fields["best_candidate"] = fields["candidate"]
         except Exception as exc:  # noqa: BLE001 - the agent sees only passed
+            passed = False  # an error after the rule check still fails
             fields["error"] = type(exc).__name__
         self._record.event("confirm_result", passed=passed, best=self._bar, **fields)
         return passed
@@ -521,6 +526,8 @@ class Confirmer:
             if st.base is None:
                 base = self._arm("base")
                 tokens, caps = self._tokens(base, n)
+                if self._cfg.max_cap_hit is not None:
+                    caps = self._caps(base, n)  # strict, before any state is set
                 st.base, st.bar_tokens = (base["correct"], tokens), tokens
                 st.base_caps = caps
                 st.bar = base["correct"]
@@ -554,6 +561,7 @@ class Confirmer:
                 st.bar_tokens, st.bar = fields["tokens"], out["correct"]
                 self.best_candidate = fields["best_candidate"] = out["candidate"]
         except Exception as exc:  # noqa: BLE001 - the agent sees only passed
+            passed = False  # an error after the rule check still fails
             fields["error"] = type(exc).__name__
         self._record.event("confirm_result", passed=passed, best=st.bar, **fields)
         return passed
