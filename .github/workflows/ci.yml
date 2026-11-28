@@ -218,8 +218,9 @@ jobs:
       - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
 
   # Sign-off check as a workflow job: the DCO app does not report on merge_group.
+  # Dependabot cannot sign off; skip its PRs (login is set by GitHub, not by the commit). ci-ok takes skipped.
   dco:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
